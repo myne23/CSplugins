@@ -1,0 +1,146 @@
+[
+    {
+        "iconUrl": "https://ww3.animeonline.ninja/favicon.ico",
+        "fileHash": "sha256-3ff80731040d4b9e3834f0276e1bb64fcbcd6a26976615e4565d599ac4219401",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 36778,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "version": 3,
+        "internalName": "AnimeOnline",
+        "description": "AnimeOnline provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/AnimeOnline.cs3",
+        "name": "AnimeOnline"
+    },
+    {
+        "iconUrl": "https://www.animoratv.com/favicon.ico",
+        "fileHash": "sha256-3ac2b820b76b7f746fd892973fc8b1e224b7f3249ecd1cb1875d41e2aec6d713",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 54138,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "version": 1,
+        "internalName": "AnimoraTV",
+        "description": "AnimoraTV provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/AnimoraTV.cs3",
+        "name": "AnimoraTV"
+    },
+    {
+        "iconUrl": "https://donghualife.com/favicon.ico",
+        "fileHash": "sha256-a0a3350570f4cdda139ee14da04c3ab5bf162aed91952f214bb0327048609e72",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 112289,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie"
+        ],
+        "version": 1,
+        "internalName": "DonghuaLife",
+        "description": "DonghuaLife provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/DonghuaLife.cs3",
+        "name": "DonghuaLife"
+    },
+    {
+        "iconUrl": "https://donghuaworld.com/wp-content/uploads/2022/11/cropped-PicsArt_10-04-05.53.17-270x270.jpg",
+        "fileHash": "sha256-d6da3accf707d7b66fda191968ececcbfd34f9af71c01ff3a36da7d3a5b58fbb",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 42083,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Anime"
+        ],
+        "version": 1,
+        "internalName": "Donghuaworld",
+        "description": "DonghuaWorld provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/Donghuaworld.cs3",
+        "name": "Donghuaworld"
+    },
+    {
+        "iconUrl": "https://megadede.com/favicon.ico",
+        "fileHash": "sha256-a7602d0c769ae7f6da284481de17a53c548d9d15f768924d0b83ea729f1a00c0",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 51720,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 1,
+        "internalName": "Megadede",
+        "description": "Megadede provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/Megadede.cs3",
+        "name": "Megadede"
+    },
+    {
+        "iconUrl": "https://seriesdonghua.com/favicon.ico",
+        "fileHash": "sha256-ef035eea7794d1be1c1b2fe6d02addb56bbeea1e85607c7d61f7cfe8c705fe5a",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 69398,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Anime"
+        ],
+        "version": 2,
+        "internalName": "SeriesDonghua",
+        "description": "SeriesDonghua + MundoDonghua provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/SeriesDonghua.cs3",
+        "name": "SeriesDonghua"
+    },
+    {
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "fileHash": "sha256-0e234efb1993aa04b4f2bd43190d678b8332818873dc0a6db21381bd2bce8130",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 84619,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "Cloudburst",
+            "Luna712"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 3,
+        "internalName": "W0Fl1X",
+        "description": "W0Fl1X provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/W0Fl1X.cs3",
+        "name": "W0Fl1X"
+    }
+]
