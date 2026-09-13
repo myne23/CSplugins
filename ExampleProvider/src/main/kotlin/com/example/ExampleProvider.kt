@@ -71,7 +71,7 @@ class ExampleProvider : MainAPI() {
             return false
         }
 
-        val tmdbId = parts[0]
+        val tmdbId = parts[0].substringAfterLast("/")
         val season = parts[1]
         val episode = parts[2]
 
