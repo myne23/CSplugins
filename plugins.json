@@ -1,0 +1,65 @@
+[
+    {
+        "iconUrl": "https://www.animoratv.com/favicon.ico",
+        "fileHash": "sha256-5f977ca8effb159f897504344f8899f451ddaae8f5966ae1282ed54ddf2eaff0",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 37060,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "version": 1,
+        "internalName": "AnimoraTV",
+        "description": "AnimoraTV provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/AnimoraTV.cs3",
+        "name": "AnimoraTV"
+    },
+    {
+        "iconUrl": "https://megadede.com/favicon.ico",
+        "fileHash": "sha256-d3758ec1af8f19b519e64dcd1390f2f6dfbc9d8f26797a3cf8a280b5dd3631ac",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 47073,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 1,
+        "internalName": "Megadede",
+        "description": "Megadede provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/Megadede.cs3",
+        "name": "Megadede"
+    },
+    {
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "fileHash": "sha256-58a0eac68069f9e3d8502715c6376a1379bcb267ab539d9efefc01dafcd1eff2",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 84400,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "Cloudburst",
+            "Luna712"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 3,
+        "internalName": "W0Fl1X",
+        "description": "W0Fl1X provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/W0Fl1X.cs3",
+        "name": "W0Fl1X"
+    }
+]
