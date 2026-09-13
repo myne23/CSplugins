@@ -5,6 +5,9 @@ concurrency:
   group: "build"
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 on:
   push:
     branches:
