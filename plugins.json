@@ -1,0 +1,126 @@
+[
+    {
+        "iconUrl": "https://ww3.animeonline.ninja/favicon.ico",
+        "fileHash": "sha256-3ff80731040d4b9e3834f0276e1bb64fcbcd6a26976615e4565d599ac4219401",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 36778,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "version": 3,
+        "internalName": "AnimeOnline",
+        "description": "AnimeOnline provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/AnimeOnline.cs3",
+        "name": "AnimeOnline"
+    },
+    {
+        "iconUrl": "https://www.animoratv.com/favicon.ico",
+        "fileHash": "sha256-3ac2b820b76b7f746fd892973fc8b1e224b7f3249ecd1cb1875d41e2aec6d713",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 54138,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "version": 1,
+        "internalName": "AnimoraTV",
+        "description": "AnimoraTV provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/AnimoraTV.cs3",
+        "name": "AnimoraTV"
+    },
+    {
+        "iconUrl": "https://donghualife.com/favicon.ico",
+        "fileHash": "sha256-3f782dd4d3be80a23b7754128da9a83358e33aa0d0ed5bfe4f83054e0cb5bdb0",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 47272,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie"
+        ],
+        "version": 1,
+        "internalName": "DonghuaLife",
+        "description": "DonghuaLife provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/DonghuaLife.cs3",
+        "name": "DonghuaLife"
+    },
+    {
+        "iconUrl": "https://megadede.com/favicon.ico",
+        "fileHash": "sha256-a7602d0c769ae7f6da284481de17a53c548d9d15f768924d0b83ea729f1a00c0",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 51720,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 1,
+        "internalName": "Megadede",
+        "description": "Megadede provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/Megadede.cs3",
+        "name": "Megadede"
+    },
+    {
+        "iconUrl": "https://seriesdonghua.com/favicon.ico",
+        "fileHash": "sha256-f88daa8aaa3f7c3922f59f708ecb1ed6557dad7b6c9cdbe9f82c98a54795333f",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 63503,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Anime"
+        ],
+        "version": 1,
+        "internalName": "SeriesDonghua",
+        "description": "SeriesDonghua provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/SeriesDonghua.cs3",
+        "name": "SeriesDonghua"
+    },
+    {
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "fileHash": "sha256-0e234efb1993aa04b4f2bd43190d678b8332818873dc0a6db21381bd2bce8130",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 84619,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "Cloudburst",
+            "Luna712"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 3,
+        "internalName": "W0Fl1X",
+        "description": "W0Fl1X provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/W0Fl1X.cs3",
+        "name": "W0Fl1X"
+    }
+]
