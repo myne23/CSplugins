@@ -8,9 +8,12 @@ import org.json.JSONObject
 class ExampleProvider : MainAPI() {
 
     override var mainUrl = "https://wooflix.media/"
-    override var name = "Cinezo Test"
+    override var name = "WOOFLIX"
 
-    override val supportedTypes = setOf(TvType.TvSeries)
+    override val supportedTypes = setOf(
+        TvType.TvSeries,
+        TvType.Movie
+    )
     override var lang = "es"
     override val hasMainPage = false
 
@@ -122,16 +125,34 @@ class ExampleProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
+
+        val isMovie = "/movie/" in url
+
         val tmdbId = url.substringAfterLast("/").toIntOrNull()
-        ?: return newTvSeriesLoadResponse(
-            "Error",
-            url,
-            TvType.TvSeries,
-            emptyList()
-        )
+        ?: return if (isMovie) {
+            newMovieLoadResponse(
+                "Error",
+                url,
+                TvType.Movie,
+                url
+            )
+        } else {
+            newTvSeriesLoadResponse(
+                "Error",
+                url,
+                TvType.TvSeries,
+                emptyList()
+            )
+        }
+
+        val endpoint = if (isMovie) {
+            "movie/$tmdbId"
+        } else {
+            "tv/$tmdbId"
+        }
 
         val detailsUrl =
-        "https://api.themoviedb.org/3/tv/$tmdbId" +
+        "https://api.themoviedb.org/3/$endpoint" +
         "?api_key=e1a8efff4415028c5c266b3fcd50db6e" +
         "&language=en-US"
 
@@ -139,43 +160,81 @@ class ExampleProvider : MainAPI() {
             app.get(detailsUrl)
         } catch (e: Exception) {
             Log.d("CINEZO_TEST", "LOAD DETAILS ERROR: ${e.message}")
-            return newTvSeriesLoadResponse(
-                "Error",
-                url,
-                TvType.TvSeries,
-                emptyList()
-            )
+
+            return if (isMovie) {
+                newMovieLoadResponse(
+                    "Error",
+                    url,
+                    TvType.Movie,
+                    url
+                )
+            } else {
+                newTvSeriesLoadResponse(
+                    "Error",
+                    url,
+                    TvType.TvSeries,
+                    emptyList()
+                )
+            }
         }
 
         if (!details.isSuccessful) {
             Log.d("CINEZO_TEST", "LOAD DETAILS STATUS: ${details.code}")
-            return newTvSeriesLoadResponse(
-                "Error",
-                url,
-                TvType.TvSeries,
-                emptyList()
-            )
+
+            return if (isMovie) {
+                newMovieLoadResponse(
+                    "Error",
+                    url,
+                    TvType.Movie,
+                    url
+                )
+            } else {
+                newTvSeriesLoadResponse(
+                    "Error",
+                    url,
+                    TvType.TvSeries,
+                    emptyList()
+                )
+            }
         }
 
         val json = try {
             JSONObject(details.text)
         } catch (e: Exception) {
             Log.d("CINEZO_TEST", "LOAD DETAILS JSON ERROR: ${e.message}")
-            return newTvSeriesLoadResponse(
-                "Error",
-                url,
-                TvType.TvSeries,
-                emptyList()
+
+            return if (isMovie) {
+                newMovieLoadResponse(
+                    "Error",
+                    url,
+                    TvType.Movie,
+                    url
+                )
+            } else {
+                newTvSeriesLoadResponse(
+                    "Error",
+                    url,
+                    TvType.TvSeries,
+                    emptyList()
+                )
+            }
+        }
+
+        val title = if (isMovie) {
+            json.optString(
+                "title",
+                json.optString("original_title", "Unknown")
+            )
+        } else {
+            json.optString(
+                "name",
+                json.optString("original_name", "Unknown")
             )
         }
 
-        val title = json.optString(
-            "name",
-            json.optString("original_name", "Unknown")
-        )
-
         val posterPath = json.optString("poster_path")
-        val seriesPosterUrl = if (posterPath.isNotBlank()) {
+
+        val contentPosterUrl = if (posterPath.isNotBlank()) {
             "https://image.tmdb.org/t/p/w500$posterPath"
         } else {
             null
@@ -183,92 +242,125 @@ class ExampleProvider : MainAPI() {
 
         val overview = json.optString("overview")
 
-        val seriesYear = json.optString("first_air_date")
-        .take(4)
-        .toIntOrNull()
-
-        val status = when (json.optString("status")) {
-            "Ended", "Canceled" -> ShowStatus.Completed
-            "Returning Series", "In Production" -> ShowStatus.Ongoing
-            else -> ShowStatus.Completed
+        val contentYear = if (isMovie) {
+            json.optString("release_date")
+            .take(4)
+            .toIntOrNull()
+        } else {
+            json.optString("first_air_date")
+            .take(4)
+            .toIntOrNull()
         }
 
-        val seasons = json.optJSONArray("seasons")
-        val episodes = mutableListOf<Episode>()
+        if (isMovie) {
 
-        if (seasons != null) {
-            for (i in 0 until seasons.length()) {
-                val season = seasons.optJSONObject(i) ?: continue
-                val seasonNumber = season.optInt("season_number", -1)
+            return newMovieLoadResponse(
+                title,
+                url,
+                TvType.Movie,
+                url
+            ) {
+                this.posterUrl = contentPosterUrl
+                this.year = contentYear
+                plot = overview
+            }
 
-                if (seasonNumber <= 0) continue
+        } else {
 
-                    val seasonUrl =
-                    "https://api.themoviedb.org/3/tv/$tmdbId/season/$seasonNumber" +
-                    "?api_key=e1a8efff4415028c5c266b3fcd50db6e" +
-                    "&language=en-US"
+            val status = when (json.optString("status")) {
+                "Ended", "Canceled" -> ShowStatus.Completed
+                "Returning Series", "In Production" -> ShowStatus.Ongoing
+                else -> ShowStatus.Completed
+            }
 
-                    val seasonResponse = try {
-                        app.get(seasonUrl)
-                    } catch (e: Exception) {
-                        Log.d(
-                            "CINEZO_TEST",
-                            "SEASON $seasonNumber ERROR: ${e.message}"
-                        )
-                        continue
-                    }
+            val seasons = json.optJSONArray("seasons")
+            val episodes = mutableListOf<Episode>()
 
-                    if (!seasonResponse.isSuccessful) {
-                        Log.d(
-                            "CINEZO_TEST",
-                            "SEASON $seasonNumber STATUS: ${seasonResponse.code}"
-                        )
-                        continue
-                    }
+            if (seasons != null) {
+                for (i in 0 until seasons.length()) {
 
-                    val seasonJson = try {
-                        JSONObject(seasonResponse.text)
-                    } catch (e: Exception) {
-                        continue
-                    }
-
-                    val seasonEpisodes = seasonJson.optJSONArray("episodes")
+                    val seasonObject = seasons.optJSONObject(i)
                     ?: continue
 
-                    for (j in 0 until seasonEpisodes.length()) {
-                        val ep = seasonEpisodes.optJSONObject(j) ?: continue
+                    val seasonNumber =
+                    seasonObject.optInt("season_number", -1)
 
-                        val episodeNumber = ep.optInt("episode_number", -1)
-                        if (episodeNumber <= 0) continue
+                    if (seasonNumber <= 0) continue
 
-                            val episodeName = ep.optString(
-                                "name",
-                                "Episode $episodeNumber"
+                        val seasonUrl =
+                        "https://api.themoviedb.org/3/tv/$tmdbId/season/$seasonNumber" +
+                        "?api_key=e1a8efff4415028c5c266b3fcd50db6e" +
+                        "&language=en-US"
+
+                        val seasonResponse = try {
+                            app.get(seasonUrl)
+                        } catch (e: Exception) {
+                            Log.d(
+                                "CINEZO_TEST",
+                                "SEASON $seasonNumber ERROR: ${e.message}"
                             )
+                            continue
+                        }
 
-                            episodes.add(
-                                newEpisode(
-                                    "$tmdbId|$seasonNumber|$episodeNumber"
-                                ) {
-                                    name = episodeName
-                                    this.season = seasonNumber
-                                    this.episode = episodeNumber
-                                }
+                        if (!seasonResponse.isSuccessful) {
+                            Log.d(
+                                "CINEZO_TEST",
+                                "SEASON $seasonNumber STATUS: ${seasonResponse.code}"
                             )
-                    }
+                            continue
+                        }
+
+                        val seasonJson = try {
+                            JSONObject(seasonResponse.text)
+                        } catch (e: Exception) {
+                            continue
+                        }
+
+                        val seasonEpisodes =
+                        seasonJson.optJSONArray("episodes")
+                        ?: continue
+
+                        for (j in 0 until seasonEpisodes.length()) {
+
+                            val ep =
+                            seasonEpisodes.optJSONObject(j)
+                            ?: continue
+
+                            val episodeNumber =
+                            ep.optInt("episode_number", -1)
+
+                            if (episodeNumber <= 0) continue
+
+                                val episodeName =
+                                ep.optString(
+                                    "name",
+                                    "Episode $episodeNumber"
+                                )
+
+                                episodes.add(
+                                    newEpisode(
+                                        "$tmdbId|$seasonNumber|$episodeNumber"
+                                    ) {
+                                        name = episodeName
+                                        this.season = seasonNumber
+                                        this.episode = episodeNumber
+                                    }
+                                )
+                        }
+                }
             }
-        }
 
-        return newTvSeriesLoadResponse(
-            title,
-            url,
-            TvType.TvSeries,
-            episodes
-        ) {
-            this.posterUrl = seriesPosterUrl
-            this.year = seriesYear
-            plot = overview
-            showStatus = status
+            return newTvSeriesLoadResponse(
+                title,
+                url,
+                TvType.TvSeries,
+                episodes
+            ) {
+                this.posterUrl = contentPosterUrl
+                this.year = contentYear
+                plot = overview
+                showStatus = status
+            }
         }
     }
 
