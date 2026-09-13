@@ -15,18 +15,110 @@ class ExampleProvider : MainAPI() {
     override val hasMainPage = false
 
     override suspend fun search(query: String): List<SearchResponse> {
-        return listOf(
-            newTvSeriesSearchResponse(
-                "Breaking Bad",
-                "https://wooflix.media/play/tv/1396",
-                TvType.TvSeries,
-                false
-            ) {
-                posterUrl =
-                "https://image.tmdb.org/t/p/w500/ztkUQFLlC19CCMYHW9o1zWhJRNq.jpg"
-                year = 2008
+        if (query.isBlank()) return emptyList()
+
+            val url =
+            "https://api.themoviedb.org/3/search/multi" +
+            "?api_key=e1a8efff4415028c5c266b3fcd50db6e" +
+            "&language=en-US" +
+            "&query=${query.replace(" ", "%20")}"
+
+            val response = try {
+                app.get(url)
+            } catch (e: Exception) {
+                Log.d("CINEZO_TEST", "SEARCH ERROR: ${e.message}")
+                return emptyList()
             }
-        )
+
+            if (!response.isSuccessful) {
+                Log.d("CINEZO_TEST", "SEARCH STATUS: ${response.code}")
+                return emptyList()
+            }
+
+            val json = try {
+                JSONObject(response.text)
+            } catch (e: Exception) {
+                Log.d("CINEZO_TEST", "SEARCH JSON ERROR: ${e.message}")
+                return emptyList()
+            }
+
+            val results = json.optJSONArray("results") ?: return emptyList()
+
+            val searchResults = mutableListOf<SearchResponse>()
+
+            for (i in 0 until results.length()) {
+                val item = results.optJSONObject(i) ?: continue
+
+                val mediaType = item.optString("media_type")
+
+                if (mediaType != "tv" && mediaType != "movie") {
+                    continue
+                }
+
+                val id = item.optInt("id", 0)
+                if (id == 0) continue
+
+                    val title = if (mediaType == "tv") {
+                        item.optString(
+                            "name",
+                            item.optString("original_name")
+                        )
+                    } else {
+                        item.optString(
+                            "title",
+                            item.optString("original_title")
+                        )
+                    }
+
+                    if (title.isBlank()) continue
+
+                        val posterPath = item.optString("poster_path")
+                        val poster = if (posterPath.isNotBlank()) {
+                            "https://image.tmdb.org/t/p/w500$posterPath"
+                        } else {
+                            null
+                        }
+
+                        val year = if (mediaType == "tv") {
+                            item.optString("first_air_date").take(4).toIntOrNull()
+                        } else {
+                            item.optString("release_date").take(4).toIntOrNull()
+                        }
+
+                        val resultUrl = if (mediaType == "tv") {
+                            "https://wooflix.media/play/tv/$id"
+                        } else {
+                            "https://wooflix.media/play/movie/$id"
+                        }
+
+                        if (mediaType == "tv") {
+                            searchResults.add(
+                                newTvSeriesSearchResponse(
+                                    title,
+                                    resultUrl,
+                                    TvType.TvSeries,
+                                    false
+                                ) {
+                                    posterUrl = poster
+                                    this.year = year
+                                }
+                            )
+                        } else {
+                            searchResults.add(
+                                newMovieSearchResponse(
+                                    title,
+                                    resultUrl,
+                                    TvType.Movie,
+                                    false
+                                ) {
+                                    posterUrl = poster
+                                    this.year = year
+                                }
+                            )
+                        }
+            }
+
+            return searchResults
     }
 
     override suspend fun load(url: String): LoadResponse {
