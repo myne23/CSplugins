@@ -2,7 +2,7 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-
+import android.util.Log
 import org.json.JSONObject
 
 class ExampleProvider : MainAPI() {
@@ -60,6 +60,10 @@ class ExampleProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
                                    callback: (ExtractorLink) -> Unit
     ): Boolean {
+
+        Log.d("CINEZO_TEST", "========== loadLinks() LLAMADO ==========")
+        Log.d("CINEZO_TEST", "DATA = $data")
+        Log.d("CINEZO_TEST", "isCasting = $isCasting")
 
         val parts = data.split("|")
 
