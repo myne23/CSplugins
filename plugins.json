@@ -1,0 +1,170 @@
+[
+    {
+        "iconUrl": "https://www.animelatinohd.com/favicon.ico",
+        "fileHash": "sha256-1c2781961c7abde94b22a3415e9523cb5f4cdffc6db3b02c77b21cf0164568c1",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 90285,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie",
+            "OVA"
+        ],
+        "version": 1,
+        "internalName": "AnimeLHD",
+        "description": "AnimeLHD (animelatinohd.com): anime sub, latino y castellano",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/AnimeLHD.cs3",
+        "name": "AnimeLHD"
+    },
+    {
+        "iconUrl": "https://ww3.animeonline.ninja/favicon.ico",
+        "fileHash": "sha256-8f677b8d25a42117e6a0a7f17b2ba86cddf7c0d9a7deec143f7899baf8bb6f1c",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 38879,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "version": 3,
+        "internalName": "AnimeOnline",
+        "description": "AnimeOnline provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/AnimeOnline.cs3",
+        "name": "AnimeOnline"
+    },
+    {
+        "iconUrl": "https://animeyt.cc/",
+        "fileHash": "sha256-ee6c672701433338c7ac3c2d8f9ad5330f9c4cd23576aad1333fcc7ba42c2cb3",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 195445,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Anime",
+            "TvSeries",
+            "AnimeMovie"
+        ],
+        "version": 1,
+        "internalName": "AnimES",
+        "description": "AnimES provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/AnimES.cs3",
+        "name": "AnimES"
+    },
+    {
+        "iconUrl": "https://donghualife.com/favicon.ico",
+        "fileHash": "sha256-73fffe62d7490f9c8ea07f20342f73a3c47869356ebd64f247f1351d25e55aa2",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 117189,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Anime",
+            "AnimeMovie"
+        ],
+        "version": 2,
+        "internalName": "DonghuaLife",
+        "description": "DonghuaLife provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/DonghuaLife.cs3",
+        "name": "DonghuaLife"
+    },
+    {
+        "iconUrl": "https://donghuaworld.com/wp-content/uploads/2022/11/cropped-PicsArt_10-04-05.53.17-270x270.jpg",
+        "fileHash": "sha256-d6da3accf707d7b66fda191968ececcbfd34f9af71c01ff3a36da7d3a5b58fbb",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 42083,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Anime"
+        ],
+        "version": 1,
+        "internalName": "Donghuaworld",
+        "description": "DonghuaWorld provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/Donghuaworld.cs3",
+        "name": "Donghuaworld"
+    },
+    {
+        "iconUrl": "https://megadede.com/favicon.ico",
+        "fileHash": "sha256-9ef3dee5c225ab5a74a6e3cab1b00afee8baa4f31c796e59d4492e1057ab6b97",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 57184,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 1,
+        "internalName": "Megadede",
+        "description": "Megadede provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/Megadede.cs3",
+        "name": "Megadede"
+    },
+    {
+        "iconUrl": "https://seriesdonghua.com/favicon.ico",
+        "fileHash": "sha256-b1fae8bda1d04fd06bda1f96f9bcc7a52c144bb9647e680eec7bb6f2cdf93ace",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 69617,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "mmilew"
+        ],
+        "tvTypes": [
+            "Anime"
+        ],
+        "version": 2,
+        "internalName": "SeriesDonghua",
+        "description": "SeriesDonghua + MundoDonghua provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/SeriesDonghua.cs3",
+        "name": "SeriesDonghua"
+    },
+    {
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "fileHash": "sha256-0e234efb1993aa04b4f2bd43190d678b8332818873dc0a6db21381bd2bce8130",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/myne23/CSplugins",
+        "fileSize": 84619,
+        "status": 1,
+        "language": "es",
+        "authors": [
+            "Cloudburst",
+            "Luna712"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 3,
+        "internalName": "W0Fl1X",
+        "description": "W0Fl1X provider",
+        "url": "https://raw.githubusercontent.com/myne23/CSplugins/builds/W0Fl1X.cs3",
+        "name": "W0Fl1X"
+    }
+]
