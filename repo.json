@@ -1,0 +1,8 @@
+{
+  "name": "Myne23 CloudStream",
+  "description": "Mis plugins de CloudStream",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/myne23/CSplugins/builds/plugins.json"
+  ]
+}
