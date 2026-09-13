@@ -122,27 +122,153 @@ class ExampleProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-
-        val episodes = listOf(
-            newEpisode("1396|1|1") {
-                name = "Pilot"
-                season = 1
-                episode = 1
-            }
+        val tmdbId = url.substringAfterLast("/").toIntOrNull()
+        ?: return newTvSeriesLoadResponse(
+            "Error",
+            url,
+            TvType.TvSeries,
+            emptyList()
         )
 
+        val detailsUrl =
+        "https://api.themoviedb.org/3/tv/$tmdbId" +
+        "?api_key=e1a8efff4415028c5c266b3fcd50db6e" +
+        "&language=en-US"
+
+        val details = try {
+            app.get(detailsUrl)
+        } catch (e: Exception) {
+            Log.d("CINEZO_TEST", "LOAD DETAILS ERROR: ${e.message}")
+            return newTvSeriesLoadResponse(
+                "Error",
+                url,
+                TvType.TvSeries,
+                emptyList()
+            )
+        }
+
+        if (!details.isSuccessful) {
+            Log.d("CINEZO_TEST", "LOAD DETAILS STATUS: ${details.code}")
+            return newTvSeriesLoadResponse(
+                "Error",
+                url,
+                TvType.TvSeries,
+                emptyList()
+            )
+        }
+
+        val json = try {
+            JSONObject(details.text)
+        } catch (e: Exception) {
+            Log.d("CINEZO_TEST", "LOAD DETAILS JSON ERROR: ${e.message}")
+            return newTvSeriesLoadResponse(
+                "Error",
+                url,
+                TvType.TvSeries,
+                emptyList()
+            )
+        }
+
+        val title = json.optString(
+            "name",
+            json.optString("original_name", "Unknown")
+        )
+
+        val posterPath = json.optString("poster_path")
+        val seriesPosterUrl = if (posterPath.isNotBlank()) {
+            "https://image.tmdb.org/t/p/w500$posterPath"
+        } else {
+            null
+        }
+
+        val overview = json.optString("overview")
+
+        val seriesYear = json.optString("first_air_date")
+        .take(4)
+        .toIntOrNull()
+
+        val status = when (json.optString("status")) {
+            "Ended", "Canceled" -> ShowStatus.Completed
+            "Returning Series", "In Production" -> ShowStatus.Ongoing
+            else -> ShowStatus.Completed
+        }
+
+        val seasons = json.optJSONArray("seasons")
+        val episodes = mutableListOf<Episode>()
+
+        if (seasons != null) {
+            for (i in 0 until seasons.length()) {
+                val season = seasons.optJSONObject(i) ?: continue
+                val seasonNumber = season.optInt("season_number", -1)
+
+                if (seasonNumber <= 0) continue
+
+                    val seasonUrl =
+                    "https://api.themoviedb.org/3/tv/$tmdbId/season/$seasonNumber" +
+                    "?api_key=e1a8efff4415028c5c266b3fcd50db6e" +
+                    "&language=en-US"
+
+                    val seasonResponse = try {
+                        app.get(seasonUrl)
+                    } catch (e: Exception) {
+                        Log.d(
+                            "CINEZO_TEST",
+                            "SEASON $seasonNumber ERROR: ${e.message}"
+                        )
+                        continue
+                    }
+
+                    if (!seasonResponse.isSuccessful) {
+                        Log.d(
+                            "CINEZO_TEST",
+                            "SEASON $seasonNumber STATUS: ${seasonResponse.code}"
+                        )
+                        continue
+                    }
+
+                    val seasonJson = try {
+                        JSONObject(seasonResponse.text)
+                    } catch (e: Exception) {
+                        continue
+                    }
+
+                    val seasonEpisodes = seasonJson.optJSONArray("episodes")
+                    ?: continue
+
+                    for (j in 0 until seasonEpisodes.length()) {
+                        val ep = seasonEpisodes.optJSONObject(j) ?: continue
+
+                        val episodeNumber = ep.optInt("episode_number", -1)
+                        if (episodeNumber <= 0) continue
+
+                            val episodeName = ep.optString(
+                                "name",
+                                "Episode $episodeNumber"
+                            )
+
+                            episodes.add(
+                                newEpisode(
+                                    "$tmdbId|$seasonNumber|$episodeNumber"
+                                ) {
+                                    name = episodeName
+                                    this.season = seasonNumber
+                                    this.episode = episodeNumber
+                                }
+                            )
+                    }
+            }
+        }
+
         return newTvSeriesLoadResponse(
-            "Breaking Bad",
+            title,
             url,
             TvType.TvSeries,
             episodes
         ) {
-            posterUrl =
-            "https://image.tmdb.org/t/p/w500/ztkUQFLlC19CCMYHW9o1zWhJRNq.jpg"
-            year = 2008
-            plot =
-            "A chemistry teacher diagnosed with cancer turns to manufacturing methamphetamine."
-            showStatus = ShowStatus.Completed
+            this.posterUrl = seriesPosterUrl
+            this.year = seriesYear
+            plot = overview
+            showStatus = status
         }
     }
 
