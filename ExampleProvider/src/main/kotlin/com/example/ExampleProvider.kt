@@ -384,21 +384,27 @@ class ExampleProvider : MainAPI() {
 
         val tmdbId = parts[0].substringAfterLast("/")
 
-        val isMovie = parts[1] == "movie"
+        val emitLink: (ExtractorLink) -> Unit = { link ->
+            Log.d(
+                "WOOFLIX_TEST",
+                "LINK FOUND -> ${link.name} | ${link.type} | ${link.url}"
+            )
+            callback(link)
+        }
 
         /*
-         * ------------------------------------------------------------
-         * MOVIE
+         * ============================================================
+         * MOVIES
          * data = tmdbId|movie
-         * ------------------------------------------------------------
+         * ============================================================
          */
 
-        if (isMovie) {
+        if (parts[1] == "movie") {
 
             val movieId = tmdbId.toIntOrNull()
 
             if (movieId == null) {
-                Log.d("WOOFLIX_TEST", "Invalid movie TMDB ID: $tmdbId")
+                Log.d("WOOFLIX_TEST", "Invalid movie ID: $tmdbId")
                 return false
             }
 
@@ -438,20 +444,28 @@ class ExampleProvider : MainAPI() {
 
                 Log.d(
                     "WOOFLIX_TEST",
-                    "Trying $name -> $sourceUrl"
+                    "TRYING -> $name -> $sourceUrl"
                 )
 
                 try {
+
                     loadExtractor(
                         sourceUrl,
                         "https://wooflix.media/",
                         subtitleCallback,
-                        callback
+                        emitLink
                     )
-                } catch (e: Exception) {
+
                     Log.d(
                         "WOOFLIX_TEST",
-                        "$name ERROR: ${e.message}"
+                        "FINISHED -> $name"
+                    )
+
+                } catch (e: Exception) {
+
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "ERROR -> $name -> ${e.message}"
                     )
                 }
             }
@@ -460,10 +474,10 @@ class ExampleProvider : MainAPI() {
         }
 
         /*
-         * ------------------------------------------------------------
+         * ============================================================
          * TV
          * data = tmdbId|season|episode
-         * ------------------------------------------------------------
+         * ============================================================
          */
 
         if (parts.size != 3) {
@@ -510,41 +524,47 @@ class ExampleProvider : MainAPI() {
 
             Log.d(
                 "WOOFLIX_TEST",
-                "Trying $name -> $sourceUrl"
+                "TRYING -> $name -> $sourceUrl"
             )
 
             try {
+
                 loadExtractor(
                     sourceUrl,
                     "https://wooflix.media/",
                     subtitleCallback,
-                    callback
+                    emitLink
                 )
-            } catch (e: Exception) {
+
                 Log.d(
                     "WOOFLIX_TEST",
-                    "$name ERROR: ${e.message}"
+                    "FINISHED -> $name"
+                )
+
+            } catch (e: Exception) {
+
+                Log.d(
+                    "WOOFLIX_TEST",
+                    "ERROR -> $name -> ${e.message}"
                 )
             }
         }
 
         /*
-         * ------------------------------------------------------------
-         * CINEZO / FLIKHub fallback
-         * ------------------------------------------------------------
-         *
-         * Esto lo mantenemos porque ya sabemos que funciona.
+         * ============================================================
+         * CINEZO / FLIKHub
+         * ============================================================
          */
 
         val cinezoUrl =
         "https://proxy1.flikhub.net/tv?id=$tmdbId&season=$season&episode=$episode"
 
-        try {
+        Log.d(
+            "WOOFLIX_TEST",
+            "TRYING -> Cinezo -> $cinezoUrl"
+        )
 
-            Log.d(
-                "WOOFLIX_TEST",
-                "Trying Cinezo -> $cinezoUrl"
-            )
+        try {
 
             val response = app.get(
                 cinezoUrl,
@@ -604,6 +624,11 @@ class ExampleProvider : MainAPI() {
                                                 file
                                             )
                                         )
+
+                                        Log.d(
+                                            "WOOFLIX_TEST",
+                                            "SUBTITLE -> $label"
+                                        )
                                     }
                                 }
                             }
@@ -633,6 +658,7 @@ class ExampleProvider : MainAPI() {
 
                             val linkType =
                             when (type.lowercase()) {
+
                                 "dash" ->
                                 ExtractorLinkType.DASH
 
@@ -642,6 +668,11 @@ class ExampleProvider : MainAPI() {
                                 else ->
                                     ExtractorLinkType.VIDEO
                             }
+
+                            Log.d(
+                                "WOOFLIX_TEST",
+                                "CINEZO LINK -> $sourceName | $type | $sourceUrl"
+                            )
 
                             callback(
                                 newExtractorLink(
@@ -664,6 +695,10 @@ class ExampleProvider : MainAPI() {
                         }
 
                         "done" -> {
+                            Log.d(
+                                "WOOFLIX_TEST",
+                                "Cinezo DONE"
+                            )
                             break
                         }
                     }
