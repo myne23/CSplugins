@@ -371,350 +371,287 @@ class ExampleProvider : MainAPI() {
                                    callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        Log.d("WOOFLIX_TEST", "========== loadLinks() ==========")
         Log.d("WOOFLIX_TEST", "DATA = $data")
-        Log.d("WOOFLIX_TEST", "isCasting = $isCasting")
 
-        val parts = data.split("|")
+        val parts = data.substringAfterLast("/").split("|")
+        if (parts.isEmpty()) return false
 
-        if (parts.size < 2) {
-            Log.d("WOOFLIX_TEST", "Invalid data format")
-            return false
-        }
-
-        val tmdbId = parts[0].substringAfterLast("/")
-
-        /*
-         * ============================================================
-         * PELÍCULA
-         * data = tmdbId|movie
-         * ============================================================
-         */
-
-        if (parts[1] == "movie") {
-
-            val movieId = tmdbId.toIntOrNull()
-
-            if (movieId == null) {
-                Log.d("WOOFLIX_TEST", "Invalid movie ID: $tmdbId")
-                return false
-            }
-
-            val sources = listOf(
-                "MoviesAPI" to
-                "https://moviesapi.to/movie/$movieId",
-
-                "VidLink" to
-                "https://vidlink.pro/movie/$movieId",
-
-                "VidSrc Embed" to
-                "https://vidsrc-embed.ru/embed/movie/$movieId",
-
-                "VidEasy" to
-                "https://player.videasy.net/movie/$movieId",
-
-                "111Movies" to
-                "https://111movies.com/movie/$movieId",
-
-                "VidZee" to
-                "https://player.vidzee.wtf/embed/movie/$movieId",
-
-                "VidSrc" to
-                "https://vidsrc.to/embed/movie/$movieId",
-
-                "2Embed" to
-                "https://www.2embed.cc/embed/$movieId",
-
-                "Mapple" to
-                "https://mapple.uk/watch/movie/$movieId",
-
-                "AutoEmbed" to
-                "https://player.autoembed.cc/embed/movie/$movieId"
-            )
-
-            for ((name, sourceUrl) in sources) {
-
-                Log.d(
-                    "WOOFLIX_TEST",
-                    "TRYING -> $name -> $sourceUrl"
-                )
-
-                var linksFound = 0
-
-                try {
-
-                    val result = loadExtractor(
-                        sourceUrl,
-                        "https://wooflix.media/",
-                        subtitleCallback
-                    ) { link ->
-
-                        linksFound++
-
-                        Log.d(
-                            "WOOFLIX_TEST",
-                            "LINK FOUND -> $name | ${link.name} | ${link.type} | ${link.url}"
-                        )
-
-                        callback(link)
-                    }
-
-                    Log.d(
-                        "WOOFLIX_TEST",
-                        "RESULT -> $name | extractor=$result | links=$linksFound"
-                    )
-
-                } catch (e: Exception) {
-
-                    Log.d(
-                        "WOOFLIX_TEST",
-                        "ERROR -> $name -> ${e.message}"
-                    )
-                }
-            }
-
-            return true
-        }
-
-        /*
-         * ============================================================
-         * TV
-         * data = tmdbId|season|episode
-         * ============================================================
-         */
-
-        if (parts.size != 3) {
-            Log.d("WOOFLIX_TEST", "Invalid TV data format")
-            return false
-        }
-
-        val season = parts[1]
-        val episode = parts[2]
-
-        val sources = listOf(
-            "MoviesAPI" to
-            "https://moviesapi.to/tv/$tmdbId-$season-$episode",
-
-            "VidLink" to
-            "https://vidlink.pro/tv/$tmdbId/$season/$episode",
-
-            "VidSrc Embed" to
-            "https://vidsrc-embed.ru/embed/tv/$tmdbId-$season-$episode",
-
-            "VidEasy" to
-            "https://player.videasy.net/tv/$tmdbId/$season/$episode",
-
-            "111Movies" to
-            "https://111movies.com/tv/$tmdbId/$season/$episode",
-
-            "VidZee" to
-            "https://player.vidzee.wtf/embed/tv/$tmdbId/$season/$episode",
-
-            "VidSrc" to
-            "https://vidsrc.to/embed/tv/$tmdbId/$season/$episode",
-
-            "2Embed" to
-            "https://www.2embed.cc/embedtv/$tmdbId&s=$season&e=$episode",
-
-            "Mapple" to
-            "https://mapple.uk/watch/tv/$tmdbId-$season-$episode",
-
-            "AutoEmbed" to
-            "https://player.autoembed.cc/embed/tv/$tmdbId/$season/$episode"
-        )
-
-        for ((name, sourceUrl) in sources) {
-
-            Log.d(
-                "WOOFLIX_TEST",
-                "TRYING -> $name -> $sourceUrl"
-            )
+            val tmdbId = parts[0]
+            val isMovie = parts.getOrNull(1) == "movie"
+            val season = if (!isMovie) parts.getOrNull(1)?.toIntOrNull() else null
+            val episode = if (!isMovie) parts.getOrNull(2)?.toIntOrNull() else null
 
             var linksFound = 0
 
+            // ============================================================
+            // VIDLINK DIRECT API
+            // ============================================================
             try {
+                Log.d(
+                    "WOOFLIX_TEST",
+                    "VIDLINK -> tmdb=$tmdbId season=$season episode=$episode movie=$isMovie"
+                )
 
-                val result = loadExtractor(
-                    sourceUrl,
-                    "https://wooflix.media/",
-                    subtitleCallback
-                ) { link ->
+                // VidLink requires an encoded TMDB ID.
+                val tokenResponse = app.get(
+                    "https://enc-dec.app/api/enc-vidlink?text=$tmdbId",
+                    timeout = 15
+                )
 
-                    linksFound++
+                val tokenJson = JSONObject(tokenResponse.text)
+                val token = tokenJson.optString("result")
+
+                if (token.isBlank()) {
+                    Log.d("WOOFLIX_TEST", "VIDLINK -> token EMPTY")
+                } else {
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "VIDLINK -> token=${token.take(20)}..."
+                    )
+
+                    val apiUrl = if (isMovie) {
+                        "https://vidlink.pro/api/b/movie/$token?multiLang=0"
+                    } else {
+                        "https://vidlink.pro/api/b/tv/$token/$season/$episode?multiLang=0"
+                    }
+
+                    Log.d("WOOFLIX_TEST", "VIDLINK API -> $apiUrl")
+
+                    val response = app.get(
+                        apiUrl,
+                        headers = mapOf(
+                            "Origin" to "https://vidlink.pro",
+                            "Referer" to "https://vidlink.pro/",
+                            "User-Agent" to USER_AGENT
+                        ),
+                        timeout = 20
+                    )
 
                     Log.d(
                         "WOOFLIX_TEST",
-                        "LINK FOUND -> $name | ${link.name} | ${link.type} | ${link.url}"
+                        "VIDLINK STATUS -> ${response.code}"
                     )
 
-                    callback(link)
-                }
+                    val json = JSONObject(response.text)
 
-                Log.d(
-                    "WOOFLIX_TEST",
-                    "RESULT -> $name | extractor=$result | links=$linksFound"
-                )
+                    // ------------------------------------------------------------
+                    // VIDEO SOURCES
+                    // ------------------------------------------------------------
+                    val stream = json.optJSONObject("stream")
 
-            } catch (e: Exception) {
+                    if (stream != null) {
+                        val qualities = stream.optJSONObject("qualities")
 
-                Log.d(
-                    "WOOFLIX_TEST",
-                    "ERROR -> $name -> ${e.message}"
-                )
-            }
-        }
+                        if (qualities != null) {
+                            val qualityKeys = qualities.keys()
 
-        /*
-         * ============================================================
-         * CINEZO / FLIKHub
-         * ============================================================
-         */
+                            while (qualityKeys.hasNext()) {
+                                val qualityKey = qualityKeys.next()
+                                val qualityObject = qualities.optJSONObject(qualityKey)
 
-        val cinezoUrl =
-        "https://proxy1.flikhub.net/tv?id=$tmdbId&season=$season&episode=$episode"
+                                if (qualityObject == null) continue
 
-        Log.d(
-            "WOOFLIX_TEST",
-            "TRYING -> Cinezo -> $cinezoUrl"
-        )
+                                    val videoUrl = qualityObject.optString("url")
+                                    val videoType = qualityObject.optString("type", "mp4")
 
-        try {
+                                    if (videoUrl.isBlank()) continue
 
-            val response = app.get(
-                cinezoUrl,
-                headers = mapOf(
-                    "Accept" to "text/event-stream",
-                    "Referer" to "https://player.cinezo.live/"
-                ),
-                timeout = 30
-            )
-
-            Log.d(
-                "WOOFLIX_TEST",
-                "Cinezo status = ${response.code}"
-            )
-
-            if (response.isSuccessful) {
-
-                for (line in response.text.lines()) {
-
-                    if (!line.startsWith("data: ")) {
-                        continue
-                    }
-
-                    val json = try {
-                        JSONObject(line.removePrefix("data: "))
-                    } catch (_: Exception) {
-                        continue
-                    }
-
-                    when (json.optString("type")) {
-
-                        "meta" -> {
-
-                            val subtitles =
-                            json.optJSONArray("subtitles")
-
-                            if (subtitles != null) {
-
-                                for (i in 0 until subtitles.length()) {
-
-                                    val subtitle =
-                                    subtitles.optJSONObject(i)
-                                    ?: continue
-
-                                    val label =
-                                    subtitle.optString("label")
-
-                                    val file =
-                                    subtitle.optString("file")
-
-                                    if (file.isNotBlank()) {
-
-                                        subtitleCallback(
-                                            newSubtitleFile(
-                                                label,
-                                                file
-                                            )
-                                        )
+                                        val quality = qualityKey.toIntOrNull()
+                                        ?: Qualities.Unknown.value
 
                                         Log.d(
                                             "WOOFLIX_TEST",
-                                            "SUBTITLE -> $label"
+                                            "VIDLINK LINK -> ${quality}p | $videoType | $videoUrl"
                                         )
-                                    }
-                                }
+
+                                        callback(
+                                            newExtractorLink(
+                                                "VidLink",
+                                                "VidLink ${quality}p",
+                                                videoUrl,
+                                                ExtractorLinkType.VIDEO
+                                            ) {
+                                                this.quality = quality
+                                                this.referer = "https://vidlink.pro/"
+                                                this.headers = mapOf(
+                                                    "Origin" to "https://vidlink.pro",
+                                                    "Referer" to "https://vidlink.pro/",
+                                                    "User-Agent" to USER_AGENT
+                                                )
+                                            }
+                                        )
+
+                                        linksFound++
                             }
-                        }
-
-                        "source" -> {
-
-                            val source =
-                            json.optJSONObject("source")
-                            ?: continue
-
-                            val sourceName =
-                            source.optString("source")
-
-                            val label =
-                            source.optString("label")
-
-                            val sourceUrl =
-                            source.optString("url")
-
-                            val type =
-                            source.optString("type")
-
-                            if (sourceUrl.isBlank()) {
-                                continue
-                            }
-
-                            val linkType = when (type.lowercase()) {
-                                "dash" -> ExtractorLinkType.DASH
-                                "m3u8" -> ExtractorLinkType.M3U8
-                                else -> ExtractorLinkType.VIDEO
-                            }
-
-                            Log.d(
-                                "WOOFLIX_TEST",
-                                "CINEZO LINK -> $sourceName | $type | $sourceUrl"
-                            )
-
-                            callback(
-                                newExtractorLink(
-                                    sourceName.ifBlank { "Cinezo" },
-                                    label.ifBlank { sourceName },
-                                    sourceUrl,
-                                    linkType
-                                ) {
-                                    referer =
-                                    "https://player.cinezo.live/"
-
-                                    quality =
-                                    Qualities.Unknown.value
-                                }
-                            )
-                        }
-
-                        "done" -> {
-                            Log.d(
-                                "WOOFLIX_TEST",
-                                "Cinezo DONE"
-                            )
-                            break
                         }
                     }
+
+                    // ------------------------------------------------------------
+                    // SUBTITLES
+                    // ------------------------------------------------------------
+                    if (stream != null) {
+                        val captions = stream.optJSONArray("captions")
+
+                        if (captions != null) {
+                            for (i in 0 until captions.length()) {
+                                val subtitle = captions.optJSONObject(i) ?: continue
+
+                                val subtitleUrl = subtitle.optString("url")
+                                val language = subtitle.optString("language", "Unknown")
+
+                                if (subtitleUrl.isBlank()) continue
+
+                                    Log.d(
+                                        "WOOFLIX_TEST",
+                                        "VIDLINK SUBTITLE -> $language | $subtitleUrl"
+                                    )
+
+                                    subtitleCallback(
+                                        newSubtitleFile(
+                                            language,
+                                            subtitleUrl
+                                        )
+                                    )
+                            }
+                        }
+                    }
+
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "VIDLINK DONE -> links=$linksFound"
+                    )
                 }
+            } catch (e: Exception) {
+                Log.e(
+                    "WOOFLIX_TEST",
+                    "VIDLINK ERROR -> ${e.javaClass.simpleName}: ${e.message}",
+                    e
+                )
             }
 
-        } catch (e: Exception) {
+            // ============================================================
+            // CINEZO FALLBACK
+            // ============================================================
+            try {
+                if (isMovie) {
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "CINEZO -> movie skipped for now"
+                    )
+                } else {
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "TRYING -> Cinezo"
+                    )
 
-            Log.d(
-                "WOOFLIX_TEST",
-                "Cinezo ERROR: ${e.message}"
-            )
-        }
+                    val cinezoUrl =
+                    "https://proxy1.flikhub.net/tv?id=$tmdbId&season=$season&episode=$episode"
 
-        return true
+                    val response = app.get(
+                        cinezoUrl,
+                        headers = mapOf(
+                            "Accept" to "text/event-stream",
+                            "Referer" to "https://player.cinezo.live/",
+                            "Origin" to "https://player.cinezo.live",
+                            "User-Agent" to USER_AGENT
+                        ),
+                        timeout = 30
+                    )
+
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "Cinezo status=${response.code}"
+                    )
+
+                    val lines = response.text.lines()
+
+                    for (line in lines) {
+                        if (!line.startsWith("data:")) continue
+
+                            val jsonText = line.removePrefix("data:").trim()
+                            if (jsonText.isBlank()) continue
+
+                                try {
+                                    val json = JSONObject(jsonText)
+
+                                    val subtitles = json.optJSONArray("subtitles")
+                                    if (subtitles != null) {
+                                        for (i in 0 until subtitles.length()) {
+                                            val sub = subtitles.optJSONObject(i) ?: continue
+
+                                            val url = sub.optString("url")
+                                            val language = sub.optString("language", "Unknown")
+
+                                            if (url.isNotBlank()) {
+                                                Log.d(
+                                                    "WOOFLIX_TEST",
+                                                    "SUBTITLE -> $language"
+                                                )
+
+                                                subtitleCallback(
+                                                    newSubtitleFile(
+                                                        language,
+                                                        url
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    val sources = json.optJSONArray("sources")
+                                    if (sources != null) {
+                                        for (i in 0 until sources.length()) {
+                                            val source = sources.optJSONObject(i) ?: continue
+
+                                            val name = source.optString("name", "Cinezo")
+                                            val url = source.optString("url")
+
+                                            if (url.isBlank()) continue
+
+                                                val type = if (
+                                                    url.contains(".m3u8", ignoreCase = true)
+                                                ) {
+                                                    ExtractorLinkType.M3U8
+                                                } else {
+                                                    ExtractorLinkType.VIDEO
+                                                }
+
+                                                Log.d(
+                                                    "WOOFLIX_TEST",
+                                                    "CINEZO LINK -> $name | $url"
+                                                )
+
+                                                callback(
+                                                    newExtractorLink(
+                                                        "Cinezo",
+                                                        name,
+                                                        url,
+                                                        type
+                                                    ) {
+                                                        this.referer = "https://player.cinezo.live/"
+                                                    }
+                                                )
+
+                                                linksFound++
+                                        }
+                                    }
+                                } catch (_: Exception) {
+                                }
+                    }
+
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "CINEZO DONE -> total links=$linksFound"
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(
+                    "WOOFLIX_TEST",
+                    "CINEZO ERROR -> ${e.javaClass.simpleName}: ${e.message}",
+                    e
+                )
+            }
+
+            return linksFound > 0
     }
 }
