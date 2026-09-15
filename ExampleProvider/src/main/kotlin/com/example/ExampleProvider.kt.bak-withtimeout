@@ -520,8 +520,6 @@ class ExampleProvider : MainAPI() {
             }
         }
 
-            try {
-            kotlinx.coroutines.withTimeout(8000L) {
             run {
                 Log.d("WOOFLIX_TEST", "=== ENTRANDO al run de VidLink ===")
                 Log.d("WOOFLIX_TEST", "=== A: antes del app.get de enc-dec ===")
@@ -537,7 +535,7 @@ class ExampleProvider : MainAPI() {
 
             if (token == null) {
                 Log.d("WOOFLIX_TEST", "No VidLink token")
-                return@run
+                return false
             }
 
             val streamUrl = if (kind == "tv") {
@@ -564,7 +562,7 @@ class ExampleProvider : MainAPI() {
 
             if (!response.isSuccessful) {
                 Log.d("WOOFLIX_TEST", "VidLink HTTP ${response.code}")
-                return@run
+                return false
             }
 
             val json = JSONObject(response.text)
@@ -572,7 +570,7 @@ class ExampleProvider : MainAPI() {
 
             if (stream == null) {
                 Log.d("WOOFLIX_TEST", "VidLink stream=null")
-                return@run
+                return false
             }
 
             val deliveryType = stream.optString("deliveryType")
@@ -758,10 +756,6 @@ class ExampleProvider : MainAPI() {
             )
 
             } // fin run VidLink
-            }
-            } catch (e: Exception) {
-                Log.e("WOOFLIX_TEST", "VidLink timeout/error: ${e.message}")
-            }
 
             // ------------------------------------------------------------
             // VidSrc / data.vidsrcme.ru (bloque independiente)
