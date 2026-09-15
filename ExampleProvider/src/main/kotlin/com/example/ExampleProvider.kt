@@ -919,18 +919,109 @@ class ExampleProvider : MainAPI() {
                                         .takeIf { it.isNotBlank() }
                                         ?: continue
 
+                                    // Cinezo sometimes reports "mp4" for
+                                    // an HLS URL. Detect the real container
+                                    // from the URL as well.
+                                    val urlLower = sourceUrl
+                                        .lowercase()
+
                                     val sourceType = source
                                         .optString("type")
                                         .lowercase()
 
                                     val linkType =
-                                        when (sourceType) {
-                                            "dash" ->
+                                        when {
+                                            sourceType == "dash" ||
+                                                urlLower.contains(".mpd") ->
                                                 ExtractorLinkType.DASH
-                                            "hls", "m3u8" ->
+
+                                            sourceType == "hls" ||
+                                                sourceType == "m3u8" ||
+                                                urlLower.contains(".m3u8") ->
                                                 ExtractorLinkType.M3U8
+
                                             else ->
                                                 ExtractorLinkType.VIDEO
+                                        }
+
+                                    // Cinezo embeds the real request headers
+                                    // inside the source URL.
+                                    val parsedHeaders =
+                                        try {
+                                            val uri =
+                                                java.net.URI(sourceUrl)
+
+                                            val query =
+                                                uri.rawQuery.orEmpty()
+
+                                            val headerParam =
+                                                query
+                                                    .split("&")
+                                                    .firstOrNull {
+                                                        it.startsWith(
+                                                            "headers="
+                                                        )
+                                                    }
+                                                    ?: query
+                                                        .split("&")
+                                                        .firstOrNull {
+                                                            it.startsWith(
+                                                                "proxyHeaders="
+                                                            )
+                                                        }
+
+                                            if (headerParam != null) {
+                                                val encoded =
+                                                    headerParam.substringAfter(
+                                                        "="
+                                                    )
+
+                                                val decoded =
+                                                    java.net.URLDecoder.decode(
+                                                        encoded,
+                                                        "UTF-8"
+                                                    )
+
+                                                val headerJson =
+                                                    JSONObject(decoded)
+
+                                                buildMap {
+                                                    val keys =
+                                                        headerJson.keys()
+
+                                                    while (keys.hasNext()) {
+                                                        val key = keys.next()
+                                                        put(
+                                                            key,
+                                                            headerJson.optString(
+                                                                key
+                                                            )
+                                                        )
+                                                    }
+                                                }
+                                            } else {
+                                                emptyMap()
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.d(
+                                                "WOOFLIX_TEST",
+                                                "Cinezo header parse error: ${e.message}"
+                                            )
+                                            emptyMap()
+                                        }
+
+                                    val finalHeaders =
+                                        if (parsedHeaders.isNotEmpty()) {
+                                            parsedHeaders
+                                        } else {
+                                            mapOf(
+                                                "Origin" to
+                                                    "https://player.cinezo.live",
+                                                "Referer" to
+                                                    "https://player.cinezo.live/",
+                                                "User-Agent" to
+                                                    "Mozilla/5.0"
+                                            )
                                         }
 
                                     callback(
@@ -941,16 +1032,16 @@ class ExampleProvider : MainAPI() {
                                             type = linkType
                                         ) {
                                             referer =
-                                                "https://player.cinezo.live/"
-                                            headers = mapOf(
-                                                "Origin" to
-                                                    "https://player.cinezo.live",
-                                                "Referer" to
-                                                    "https://player.cinezo.live/",
-                                                "User-Agent" to
-                                                    "Mozilla/5.0"
-                                            )
+                                                finalHeaders["Referer"]
+                                                    ?: "https://player.cinezo.live/"
+
+                                            headers = finalHeaders
                                         }
+                                    )
+
+                                    Log.d(
+                                        "WOOFLIX_TEST",
+                                        "Cinezo link added: $label type=$linkType headers=${finalHeaders.keys}"
                                     )
 
                                     cinezoSources++
