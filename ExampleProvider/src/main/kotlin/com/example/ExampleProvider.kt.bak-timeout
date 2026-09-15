@@ -523,8 +523,7 @@ class ExampleProvider : MainAPI() {
             run {
                 Log.d("WOOFLIX_TEST", "=== ENTRANDO al run de VidLink ===")
                 val tokenResponse = app.get(
-                "https://enc-dec.app/api/enc-vidlink?text=$tmdbId",
-                timeout = 8000
+                "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
             ).text
 
             val token = JSONObject(tokenResponse)
@@ -555,7 +554,6 @@ class ExampleProvider : MainAPI() {
                     "Cache-Control" to "no-cache",
                     "User-Agent" to "Mozilla/5.0"
                 )
-            , timeout = 8000
             )
 
             if (!response.isSuccessful) {
