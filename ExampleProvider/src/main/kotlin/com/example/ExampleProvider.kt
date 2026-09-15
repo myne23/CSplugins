@@ -793,6 +793,22 @@ class ExampleProvider : MainAPI() {
                         ?.takeIf { it.isNotBlank() }
 
                     if (encrypted == null || wasmUrl == null) {
+                        val dataObject = vidsrcJson.optJSONObject("data")
+                        val vsObject = vidsrcJson.optJSONObject("vs")
+
+                        val encryptedType =
+                            dataObject?.opt("stream_urls")?.javaClass?.name ?: "null"
+
+                        Log.d(
+                            "WOOFLIX_TEST",
+                            "VidSrc DEBUG topKeys=${vidsrcJson.keys().asSequence().toList()} " +
+                                "dataKeys=${dataObject?.keys()?.asSequence()?.toList()} " +
+                                "vsKeys=${vsObject?.keys()?.asSequence()?.toList()} " +
+                                "streamType=$encryptedType " +
+                                "streamValue=${dataObject?.opt("stream_urls")} " +
+                                "wasmUrl=$wasmUrl"
+                        )
+
                         Log.d(
                             "WOOFLIX_TEST",
                             "VidSrc missing stream_urls or wasm_url"
