@@ -9,7 +9,7 @@ version = 1
 cloudstream {
     // All of these properties are optional, you can safely remove any of them.
 
-    description = "Wooflix provider: movies and TV shows"
+    description = "Cinezo test provider"
     authors = listOf("Cloudburst", "Luna712")
 
     /**
@@ -21,10 +21,10 @@ cloudstream {
     **/
     status = 1 // Will be 3 if unspecified
 
-    tvTypes = listOf("Movie", "TvSeries")
+    tvTypes = listOf("Movie")
 
     requiresResources = true
-    language = "es"
+    language = "en"
 
     // Random CC logo I found
     iconUrl = "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png"
