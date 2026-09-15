@@ -832,6 +832,151 @@ class ExampleProvider : MainAPI() {
                 }
             }
 
+            // ------------------------------------------------------------
+            // Cinezo / Flikhub
+            // ------------------------------------------------------------
+            if (kind == "tv") {
+                try {
+                    val cinezoUrl =
+                        "https://proxy1.flikhub.net/tv" +
+                            "?id=$tmdbId&season=$season&episode=$episode"
+
+                    val cinezoResponse = app.get(
+                        cinezoUrl,
+                        headers = mapOf(
+                            "Accept" to "text/event-stream",
+                            "Origin" to "https://player.cinezo.live",
+                            "Referer" to "https://player.cinezo.live/",
+                            "User-Agent" to "Mozilla/5.0"
+                        ),
+                        timeout = 15000
+                    )
+
+                    var cinezoSources = 0
+                    var cinezoSubtitles = 0
+
+                    for (line in cinezoResponse.text.lines()) {
+                        if (!line.startsWith("data:")) continue
+
+                        val payload = line
+                            .removePrefix("data:")
+                            .trim()
+
+                        if (payload.isBlank()) continue
+
+                        try {
+                            val event = JSONObject(payload)
+                            val eventType = event.optString("type")
+
+                            when (eventType) {
+                                "meta" -> {
+                                    val subtitles =
+                                        event.optJSONArray("subtitles")
+
+                                    if (subtitles != null) {
+                                        for (i in 0 until subtitles.length()) {
+                                            val subtitle =
+                                                subtitles.optJSONObject(i)
+                                                    ?: continue
+
+                                            val label = subtitle
+                                                .optString("label")
+                                                .ifBlank { "Unknown" }
+
+                                            val file = subtitle
+                                                .optString("file")
+                                                .takeIf { it.isNotBlank() }
+                                                ?: continue
+
+                                            subtitleCallback(
+                                                SubtitleFile(
+                                                    "Cinezo - $label",
+                                                    file
+                                                )
+                                            )
+
+                                            cinezoSubtitles++
+                                        }
+                                    }
+                                }
+
+                                "source" -> {
+                                    val source =
+                                        event.optJSONObject("source")
+                                            ?: continue
+
+                                    val label = source
+                                        .optString("label")
+                                        .ifBlank {
+                                            source.optString(
+                                                "source",
+                                                "Cinezo"
+                                            )
+                                        }
+
+                                    val sourceUrl = source
+                                        .optString("url")
+                                        .takeIf { it.isNotBlank() }
+                                        ?: continue
+
+                                    val sourceType = source
+                                        .optString("type")
+                                        .lowercase()
+
+                                    val linkType =
+                                        when (sourceType) {
+                                            "dash" ->
+                                                ExtractorLinkType.DASH
+                                            "hls", "m3u8" ->
+                                                ExtractorLinkType.M3U8
+                                            else ->
+                                                ExtractorLinkType.VIDEO
+                                        }
+
+                                    callback(
+                                        newExtractorLink(
+                                            source = "Cinezo",
+                                            name = "Cinezo - $label",
+                                            url = sourceUrl,
+                                            type = linkType
+                                        ) {
+                                            referer =
+                                                "https://player.cinezo.live/"
+                                            headers = mapOf(
+                                                "Origin" to
+                                                    "https://player.cinezo.live",
+                                                "Referer" to
+                                                    "https://player.cinezo.live/",
+                                                "User-Agent" to
+                                                    "Mozilla/5.0"
+                                            )
+                                        }
+                                    )
+
+                                    cinezoSources++
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.d(
+                                "WOOFLIX_TEST",
+                                "Cinezo event parse error: ${e.message}"
+                            )
+                        }
+                    }
+
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "Cinezo done: sources=$cinezoSources subtitles=$cinezoSubtitles"
+                    )
+                } catch (e: Exception) {
+                    Log.e(
+                        "WOOFLIX_TEST",
+                        "Cinezo failed",
+                        e
+                    )
+                }
+            }
+
             return true
         } catch (e: Exception) {
             Log.e("WOOFLIX_TEST", "VidLink resolver failed", e)
