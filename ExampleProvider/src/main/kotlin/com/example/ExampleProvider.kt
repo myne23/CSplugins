@@ -372,7 +372,9 @@ class ExampleProvider : MainAPI() {
     ): Boolean {
         val parts = data.split("|")
 
-        val tmdbId = parts.getOrNull(0) ?: return false
+        val rawTmdbId = parts.getOrNull(0) ?: return false
+        val tmdbId = rawTmdbId.substringAfterLast("/").toIntOrNull()?.toString()
+            ?: return false
         val kind = parts.getOrNull(1) ?: return false
 
         val season = if (kind == "tv") parts.getOrNull(2)?.toIntOrNull() else null
