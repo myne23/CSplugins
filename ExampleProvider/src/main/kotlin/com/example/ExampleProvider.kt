@@ -749,6 +749,89 @@ class ExampleProvider : MainAPI() {
                 "VidLink done: delivery=$deliveryType fileLinks=$fileLinks"
             )
 
+            // ------------------------------------------------------------
+            // Additional providers
+            // ------------------------------------------------------------
+            val externalSources = if (kind == "tv") {
+                listOf(
+                    Triple(
+                        "VidZee",
+                        "https://player.vidzee.wtf/embed/tv/$tmdbId/$season/$episode",
+                        "https://player.vidzee.wtf/"
+                    ),
+                    Triple(
+                        "VidSrc",
+                        "https://vidsrc.to/embed/tv/$tmdbId/$season/$episode",
+                        "https://vidsrc.to/"
+                    ),
+                    Triple(
+                        "Mapple",
+                        "https://mapple.uk/watch/tv/$tmdbId-$season-$episode",
+                        "https://mapple.uk/"
+                    ),
+                    Triple(
+                        "VidEasy",
+                        "https://player.videasy.net/tv/$tmdbId/$season/$episode",
+                        "https://player.videasy.net/"
+                    ),
+                    Triple(
+                        "MoviesAPI",
+                        "https://moviesapi.to/tv/$tmdbId-$season-$episode",
+                        "https://moviesapi.to/"
+                    )
+                )
+            } else {
+                listOf(
+                    Triple(
+                        "VidZee",
+                        "https://player.vidzee.wtf/embed/movie/$tmdbId",
+                        "https://player.vidzee.wtf/"
+                    ),
+                    Triple(
+                        "VidSrc",
+                        "https://vidsrc.to/embed/movie/$tmdbId",
+                        "https://vidsrc.to/"
+                    ),
+                    Triple(
+                        "Mapple",
+                        "https://mapple.uk/watch/movie/$tmdbId",
+                        "https://mapple.uk/"
+                    ),
+                    Triple(
+                        "VidEasy",
+                        "https://player.videasy.net/movie/$tmdbId",
+                        "https://player.videasy.net/"
+                    ),
+                    Triple(
+                        "MoviesAPI",
+                        "https://moviesapi.to/movie/$tmdbId",
+                        "https://moviesapi.to/"
+                    )
+                )
+            }
+
+            for ((sourceName, sourceUrl, sourceReferer) in externalSources) {
+                try {
+                    val matched = loadExtractor(
+                        sourceUrl,
+                        sourceReferer,
+                        subtitleCallback,
+                        callback
+                    )
+
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "$sourceName extractor matched=$matched"
+                    )
+                } catch (e: Exception) {
+                    Log.e(
+                        "WOOFLIX_TEST",
+                        "$sourceName failed",
+                        e
+                    )
+                }
+            }
+
             return true
         } catch (e: Exception) {
             Log.e("WOOFLIX_TEST", "VidLink resolver failed", e)
