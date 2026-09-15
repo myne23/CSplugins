@@ -812,16 +812,30 @@ class ExampleProvider : MainAPI() {
 
             for ((sourceName, sourceUrl, sourceReferer) in externalSources) {
                 try {
+                    var extractedLinks = 0
+
+                    val extractorCallback: (ExtractorLink) -> Unit = { link ->
+                        extractedLinks++
+
+                        Log.d(
+                            "WOOFLIX_TEST",
+                            "$sourceName LINK -> name=${link.name} type=${link.type} " +
+                                "quality=${link.quality} url=${link.url.take(120)}"
+                        )
+
+                        callback(link)
+                    }
+
                     val matched = loadExtractor(
                         sourceUrl,
                         sourceReferer,
                         subtitleCallback,
-                        callback
+                        extractorCallback
                     )
 
                     Log.d(
                         "WOOFLIX_TEST",
-                        "$sourceName extractor matched=$matched"
+                        "$sourceName extractor matched=$matched links=$extractedLinks"
                     )
                 } catch (e: Exception) {
                     Log.e(
