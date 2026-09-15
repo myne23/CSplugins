@@ -1330,32 +1330,6 @@ class ExampleProvider : MainAPI() {
 
                                 if (finalUrl == null) continue
 
-                                try {
-                                    val playlistResponse = app.get(
-                                        finalUrl,
-                                        headers = mapOf(
-                                            "Origin" to
-                                                "https://cloudorchestranova.com",
-                                            "Referer" to
-                                                "https://cloudorchestranova.com/",
-                                            "User-Agent" to
-                                                "Mozilla/5.0"
-                                        ),
-                                        timeout = 10000
-                                    )
-
-                                    Log.d(
-                                        "WOOFLIX_TEST",
-                                        "VidSrc playlist ${index + 1} HTTP ${playlistResponse.code} " +
-                                            "bytes=${playlistResponse.text.length}"
-                                    )
-                                } catch (e: Exception) {
-                                    Log.d(
-                                        "WOOFLIX_TEST",
-                                        "VidSrc playlist ${index + 1} check error: ${e.message}"
-                                    )
-                                }
-
                                 callback(
                                     newExtractorLink(
                                         source = "VidSrc",
@@ -1396,103 +1370,12 @@ class ExampleProvider : MainAPI() {
                 )
             }
 
-                Log.d(
-                    "WOOFLIX_TEST",
-                    "VidLink block completed"
-                )
             } catch (e: Exception) {
                 Log.e(
                     "WOOFLIX_TEST",
                     "VidLink resolver failed; continuing with other providers",
                     e
                 )
-            }
-
-            // ------------------------------------------------------------
-            // Additional providers
-            // ------------------------------------------------------------
-            val externalSources = if (kind == "tv") {
-                listOf(
-                    Triple(
-                        "VidZee",
-                        "https://player.vidzee.wtf/embed/tv/$tmdbId/$season/$episode",
-                        "https://player.vidzee.wtf/"
-                    ),
-                    Triple(
-                        "Mapple",
-                        "https://mapple.uk/watch/tv/$tmdbId-$season-$episode",
-                        "https://mapple.uk/"
-                    ),
-                    Triple(
-                        "VidEasy",
-                        "https://player.videasy.net/tv/$tmdbId/$season/$episode",
-                        "https://player.videasy.net/"
-                    ),
-                    Triple(
-                        "MoviesAPI",
-                        "https://moviesapi.to/tv/$tmdbId-$season-$episode",
-                        "https://moviesapi.to/"
-                    )
-                )
-            } else {
-                listOf(
-                    Triple(
-                        "VidZee",
-                        "https://player.vidzee.wtf/embed/movie/$tmdbId",
-                        "https://player.vidzee.wtf/"
-                    ),
-                    Triple(
-                        "Mapple",
-                        "https://mapple.uk/watch/movie/$tmdbId",
-                        "https://mapple.uk/"
-                    ),
-                    Triple(
-                        "VidEasy",
-                        "https://player.videasy.net/movie/$tmdbId",
-                        "https://player.videasy.net/"
-                    ),
-                    Triple(
-                        "MoviesAPI",
-                        "https://moviesapi.to/movie/$tmdbId",
-                        "https://moviesapi.to/"
-                    )
-                )
-            }
-
-            for ((sourceName, sourceUrl, sourceReferer) in externalSources) {
-                try {
-                    var extractedLinks = 0
-
-                    val extractorCallback: (ExtractorLink) -> Unit = { link ->
-                        extractedLinks++
-
-                        Log.d(
-                            "WOOFLIX_TEST",
-                            "$sourceName LINK -> name=${link.name} type=${link.type} " +
-                                "quality=${link.quality} url=${link.url.take(120)}"
-                        )
-
-                        callback(link)
-                    }
-
-                    val matched = loadExtractor(
-                        sourceUrl,
-                        sourceReferer,
-                        subtitleCallback,
-                        extractorCallback
-                    )
-
-                    Log.d(
-                        "WOOFLIX_TEST",
-                        "$sourceName extractor matched=$matched links=$extractedLinks"
-                    )
-                } catch (e: Exception) {
-                    Log.e(
-                        "WOOFLIX_TEST",
-                        "$sourceName failed",
-                        e
-                    )
-                }
             }
 
             // ------------------------------------------------------------
@@ -1581,6 +1464,24 @@ class ExampleProvider : MainAPI() {
                                         .optString("url")
                                         .takeIf { it.isNotBlank() }
                                         ?: continue
+
+                                    val sourceId = source
+                                        .optString("source")
+                                        .lowercase()
+                                    val sourceLabel = source
+                                        .optString("label")
+                                        .lowercase()
+
+                                    if (
+                                        sourceId == "berlin" ||
+                                        sourceId == "cinefreak" ||
+                                        sourceLabel == "berlin" ||
+                                        sourceLabel == "cinefreak" ||
+                                        sourceLabel.contains("berlin") ||
+                                        sourceLabel.contains("cinefreak")
+                                    ) {
+                                        continue
+                                    }
 
                                     // Cinezo sometimes reports "mp4" for
                                     // an HLS URL. Detect the real container
