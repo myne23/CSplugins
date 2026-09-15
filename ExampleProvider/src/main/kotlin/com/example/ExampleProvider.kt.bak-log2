@@ -521,7 +521,6 @@ class ExampleProvider : MainAPI() {
         }
 
             run {
-                Log.d("WOOFLIX_TEST", "=== ENTRANDO al run de VidLink ===")
                 val tokenResponse = app.get(
                 "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
             ).text

@@ -384,7 +384,6 @@ class ExampleProvider : MainAPI() {
             "WOOFLIX_TEST",
             "loadLinks -> tmdb=$tmdbId kind=$kind season=$season episode=$episode"
         )
-        Log.d("WOOFLIX_TEST", "=== ARRANCANDO VidLink ===")
 
         fun base64Url(value: String): String {
             return android.util.Base64.encodeToString(
@@ -521,7 +520,6 @@ class ExampleProvider : MainAPI() {
         }
 
             run {
-                Log.d("WOOFLIX_TEST", "=== ENTRANDO al run de VidLink ===")
                 val tokenResponse = app.get(
                 "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
             ).text
@@ -756,7 +754,6 @@ class ExampleProvider : MainAPI() {
             // ------------------------------------------------------------
             // VidSrc / data.vidsrcme.ru (bloque independiente)
             // ------------------------------------------------------------
-            Log.d("WOOFLIX_TEST", "=== ARRANCANDO VidSrc ===")
             try {
                 val vidsrcApiUrl = if (kind == "tv") {
                     "https://data.vidsrcme.ru/api.php" +
