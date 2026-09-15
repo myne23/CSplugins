@@ -258,7 +258,7 @@ class ExampleProvider : MainAPI() {
                 title,
                 url,
                 TvType.Movie,
-                url
+                "$tmdbId|movie"
             ) {
                 this.posterUrl = contentPosterUrl
                 this.year = contentYear
@@ -339,7 +339,7 @@ class ExampleProvider : MainAPI() {
 
                                 episodes.add(
                                     newEpisode(
-                                        "$tmdbId|$seasonNumber|$episodeNumber"
+                                        "$tmdbId|tv|$seasonNumber|$episodeNumber"
                                     ) {
                                         name = episodeName
                                         this.season = seasonNumber
