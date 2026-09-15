@@ -520,7 +520,7 @@ class ExampleProvider : MainAPI() {
         }
 
         try {
-            run {
+            try {
                 val tokenResponse = app.get(
                 "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
             ).text
@@ -1369,7 +1369,14 @@ class ExampleProvider : MainAPI() {
                     e
                 )
             }
-            } // fin run VidLink
+
+            } catch (e: Exception) {
+                Log.e(
+                    "WOOFLIX_TEST",
+                    "VidLink resolver failed; continuing with other providers",
+                    e
+                )
+            }
 
             // ------------------------------------------------------------
             // Cinezo / Flikhub
