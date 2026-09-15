@@ -750,6 +750,600 @@ class ExampleProvider : MainAPI() {
             )
 
             // ------------------------------------------------------------
+            // VidSrc / data.vidsrcme.ru
+            // ------------------------------------------------------------
+            try {
+                val vidsrcApiUrl = if (kind == "tv") {
+                    "https://data.vidsrcme.ru/api.php" +
+                        "?type=tv&tmdb=$tmdbId" +
+                        "&season=$season&episode=$episode&stream_urls"
+                } else {
+                    "https://data.vidsrcme.ru/api.php" +
+                        "?type=movie&tmdb=$tmdbId&stream_urls"
+                }
+
+                val vidsrcHeaders = mapOf(
+                    "Accept" to "application/json,text/plain,*/*",
+                    "Origin" to "https://cloudorchestranova.com",
+                    "Referer" to "https://cloudorchestranova.com/",
+                    "User-Agent" to "Mozilla/5.0"
+                )
+
+                val vidsrcResponse = app.get(
+                    vidsrcApiUrl,
+                    headers = vidsrcHeaders,
+                    timeout = 15000
+                )
+
+                if (!vidsrcResponse.isSuccessful) {
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "VidSrc API HTTP ${vidsrcResponse.code}"
+                    )
+                } else {
+                    val vidsrcJson = JSONObject(vidsrcResponse.text)
+                    val encrypted = vidsrcJson
+                        .optJSONObject("data")
+                        ?.optString("stream_urls")
+                        ?.takeIf { it.isNotBlank() }
+
+                    val wasmUrl = vidsrcJson
+                        .optJSONObject("vs")
+                        ?.optString("wasm_url")
+                        ?.takeIf { it.isNotBlank() }
+
+                    if (encrypted == null || wasmUrl == null) {
+                        Log.d(
+                            "WOOFLIX_TEST",
+                            "VidSrc missing stream_urls or wasm_url"
+                        )
+                    } else {
+                        fun readLeb(
+                            bytes: ByteArray,
+                            start: Int
+                        ): Pair<Long, Int> {
+                            var pos = start
+                            var value = 0L
+                            var shift = 0
+
+                            while (pos < bytes.size) {
+                                val b = bytes[pos].toInt() and 0xff
+                                pos++
+
+                                value = value or
+                                    ((b and 0x7f).toLong() shl shift)
+
+                                if ((b and 0x80) == 0) {
+                                    return value to pos
+                                }
+
+                                shift += 7
+                                if (shift > 63) break
+                            }
+
+                            return 0L to pos
+                        }
+
+                        data class WasmDataSegment(
+                            val offset: Int,
+                            val data: ByteArray
+                        )
+
+                        fun parseWasmDataSegments(
+                            bytes: ByteArray
+                        ): List<WasmDataSegment> {
+                            val segments = mutableListOf<WasmDataSegment>()
+
+                            if (
+                                bytes.size < 8 ||
+                                bytes[0] != 0x00.toByte() ||
+                                bytes[1] != 0x61.toByte() ||
+                                bytes[2] != 0x73.toByte() ||
+                                bytes[3] != 0x6d.toByte()
+                            ) {
+                                return emptyList()
+                            }
+
+                            var pos = 8
+
+                            while (pos < bytes.size) {
+                                val sectionId = bytes[pos].toInt() and 0xff
+                                pos++
+
+                                val sectionLenResult = readLeb(bytes, pos)
+                                val sectionLen = sectionLenResult.first.toInt()
+                                pos = sectionLenResult.second
+
+                                if (sectionLen < 0 || pos + sectionLen > bytes.size) {
+                                    break
+                                }
+
+                                val sectionEnd = pos + sectionLen
+
+                                if (sectionId == 11) {
+                                    val countResult = readLeb(bytes, pos)
+                                    val count = countResult.first.toInt()
+                                    pos = countResult.second
+
+                                    repeat(count) {
+                                        if (pos >= sectionEnd) return@repeat
+
+                                        val flagResult = readLeb(bytes, pos)
+                                        val flag = flagResult.first.toInt()
+                                        pos = flagResult.second
+
+                                        // Active data segment, memory 0.
+                                        // Flag 0: offset expression follows.
+                                        // Flag 2: memory index follows, then offset expression.
+                                        if (flag == 2) {
+                                            val memResult = readLeb(bytes, pos)
+                                            pos = memResult.second
+                                        }
+
+                                        if (flag == 0 || flag == 2) {
+                                            if (pos >= sectionEnd) return@repeat
+
+                                            val opcode = bytes[pos].toInt() and 0xff
+                                            pos++
+
+                                            if (opcode != 0x41) return@repeat
+
+                                            val offsetResult = readLeb(bytes, pos)
+                                            val offset = offsetResult.first.toInt()
+                                            pos = offsetResult.second
+
+                                            if (pos >= sectionEnd) return@repeat
+
+                                            val endOpcode =
+                                                bytes[pos].toInt() and 0xff
+                                            pos++
+
+                                            if (endOpcode != 0x0b) return@repeat
+
+                                            val sizeResult = readLeb(bytes, pos)
+                                            val size = sizeResult.first.toInt()
+                                            pos = sizeResult.second
+
+                                            if (
+                                                size < 0 ||
+                                                pos + size > sectionEnd
+                                            ) {
+                                                return@repeat
+                                            }
+
+                                            val data = bytes.copyOfRange(
+                                                pos,
+                                                pos + size
+                                            )
+
+                                            segments.add(
+                                                WasmDataSegment(
+                                                    offset,
+                                                    data
+                                                )
+                                            )
+
+                                            pos += size
+                                        } else {
+                                            // Passive / unsupported segment.
+                                            val sizeResult = readLeb(bytes, pos)
+                                            pos = sizeResult.second
+
+                                            val size = sizeResult.first.toInt()
+
+                                            if (
+                                                size < 0 ||
+                                                pos + size > sectionEnd
+                                            ) {
+                                                return@repeat
+                                            }
+
+                                            pos += size
+                                        }
+                                    }
+                                }
+
+                                pos = sectionEnd
+                            }
+
+                            return segments
+                        }
+
+                        fun rotl32(
+                            value: Int,
+                            shift: Int
+                        ): Int {
+                            return Integer.rotateLeft(value, shift)
+                        }
+
+                        fun chacha20Block(
+                            key: ByteArray,
+                            counter: Int,
+                            nonce: ByteArray
+                        ): ByteArray {
+                            fun leWord(
+                                bytes: ByteArray,
+                                offset: Int
+                            ): Int {
+                                return (bytes[offset].toInt() and 0xff) or
+                                    ((bytes[offset + 1].toInt() and 0xff) shl 8) or
+                                    ((bytes[offset + 2].toInt() and 0xff) shl 16) or
+                                    ((bytes[offset + 3].toInt() and 0xff) shl 24)
+                            }
+
+                            fun quarterRound(
+                                x: IntArray,
+                                a: Int,
+                                b: Int,
+                                c: Int,
+                                d: Int
+                            ) {
+                                x[a] = x[a] + x[b]
+                                x[d] = rotl32(x[d] xor x[a], 16)
+
+                                x[c] = x[c] + x[d]
+                                x[b] = rotl32(x[b] xor x[c], 12)
+
+                                x[a] = x[a] + x[b]
+                                x[d] = rotl32(x[d] xor x[a], 8)
+
+                                x[c] = x[c] + x[d]
+                                x[b] = rotl32(x[b] xor x[c], 7)
+                            }
+
+                            val constants = byteArrayOf(
+                                0x65, 0x78, 0x70, 0x61,
+                                0x6e, 0x64, 0x20, 0x33,
+                                0x32, 0x2d, 0x62, 0x79,
+                                0x74, 0x65, 0x20, 0x6b
+                            )
+
+                            val state = IntArray(16)
+
+                            for (i in 0 until 4) {
+                                state[i] = leWord(constants, i * 4)
+                            }
+
+                            for (i in 0 until 8) {
+                                state[4 + i] =
+                                    leWord(key, i * 4)
+                            }
+
+                            state[12] = counter
+                            state[13] = leWord(nonce, 0)
+                            state[14] = leWord(nonce, 4)
+                            state[15] = leWord(nonce, 8)
+
+                            val working = state.copyOf()
+
+                            repeat(10) {
+                                quarterRound(
+                                    working, 0, 4, 8, 12
+                                )
+                                quarterRound(
+                                    working, 1, 5, 9, 13
+                                )
+                                quarterRound(
+                                    working, 2, 6, 10, 14
+                                )
+                                quarterRound(
+                                    working, 3, 7, 11, 15
+                                )
+
+                                quarterRound(
+                                    working, 0, 5, 10, 15
+                                )
+                                quarterRound(
+                                    working, 1, 6, 11, 12
+                                )
+                                quarterRound(
+                                    working, 2, 7, 8, 13
+                                )
+                                quarterRound(
+                                    working, 3, 4, 9, 14
+                                )
+                            }
+
+                            val output = ByteArray(64)
+
+                            for (i in 0 until 16) {
+                                val v = working[i] + state[i]
+                                output[i * 4] =
+                                    (v and 0xff).toByte()
+                                output[i * 4 + 1] =
+                                    ((v ushr 8) and 0xff).toByte()
+                                output[i * 4 + 2] =
+                                    ((v ushr 16) and 0xff).toByte()
+                                output[i * 4 + 3] =
+                                    ((v ushr 24) and 0xff).toByte()
+                            }
+
+                            return output
+                        }
+
+                        fun decryptVidSrc(
+                            encoded: String,
+                            wasm: ByteArray
+                        ): String {
+                            val raw = android.util.Base64.decode(
+                                encoded,
+                                android.util.Base64.DEFAULT
+                            )
+
+                            if (raw.size < 13) {
+                                throw IllegalArgumentException(
+                                    "VidSrc ciphertext too short"
+                                )
+                            }
+
+                            val segments = parseWasmDataSegments(wasm)
+
+                            val segmentZero =
+                                segments.firstOrNull {
+                                    it.offset == 0 &&
+                                        it.data.size >= 32
+                                }?.data?.copyOfRange(0, 32)
+                                    ?: throw IllegalStateException(
+                                        "VidSrc key segment not found"
+                                    )
+
+                            val candidates = segments.filter {
+                                it.offset != 0 &&
+                                    it.data.size == 32
+                            }
+
+                            val nonce = raw.copyOfRange(0, 12)
+                            val ciphertext =
+                                raw.copyOfRange(12, raw.size)
+
+                            val expectedPrefix =
+                                "https://".toByteArray(Charsets.UTF_8)
+
+                            var key: ByteArray? = null
+
+                            for (candidate in candidates) {
+                                val candidateKey =
+                                    ByteArray(32)
+
+                                for (i in 0 until 32) {
+                                    candidateKey[i] =
+                                        (
+                                            segmentZero[i].toInt() xor
+                                                candidate.data[i].toInt()
+                                            ).toByte()
+                                }
+
+                                val block =
+                                    chacha20Block(
+                                        candidateKey,
+                                        0,
+                                        nonce
+                                    )
+
+                                var matches = true
+
+                                for (i in expectedPrefix.indices) {
+                                    val plain =
+                                        (
+                                            ciphertext[i].toInt() xor
+                                                block[i].toInt()
+                                            ).toByte()
+
+                                    if (
+                                        plain !=
+                                        expectedPrefix[i]
+                                    ) {
+                                        matches = false
+                                        break
+                                    }
+                                }
+
+                                if (matches) {
+                                    key = candidateKey
+                                    break
+                                }
+                            }
+
+                            val realKey = key
+                                ?: throw IllegalStateException(
+                                    "VidSrc dynamic key not found"
+                                )
+
+                            val output =
+                                ByteArray(ciphertext.size)
+
+                            var counter = 0
+
+                            for (
+                                pos in ciphertext.indices step 64
+                            ) {
+                                val block =
+                                    chacha20Block(
+                                        realKey,
+                                        counter,
+                                        nonce
+                                    )
+
+                                val end = minOf(
+                                    pos + 64,
+                                    ciphertext.size
+                                )
+
+                                for (i in pos until end) {
+                                    output[i] =
+                                        (
+                                            ciphertext[i].toInt() xor
+                                                block[i - pos].toInt()
+                                            ).toByte()
+                                }
+
+                                counter++
+                            }
+
+                            return output.toString(
+                                Charsets.UTF_8
+                            )
+                        }
+
+                        val wasmResponse = app.get(
+                            wasmUrl,
+                            headers = mapOf(
+                                "User-Agent" to "Mozilla/5.0",
+                                "Referer" to "https://cloudorchestranova.com/"
+                            ),
+                            timeout = 15000
+                        )
+
+                        if (!wasmResponse.isSuccessful) {
+                            Log.d(
+                                "WOOFLIX_TEST",
+                                "VidSrc WASM HTTP ${wasmResponse.code}"
+                            )
+                        } else {
+                            val wasmBytes = wasmResponse.body.bytes()
+
+                            val decodedStreams =
+                                decryptVidSrc(
+                                    encrypted,
+                                    wasmBytes
+                                )
+
+                            val streamUrls =
+                                decodedStreams
+                                    .lines()
+                                    .map { it.trim() }
+                                    .filter {
+                                        it.startsWith(
+                                            "http://"
+                                        ) ||
+                                        it.startsWith(
+                                            "https://"
+                                        )
+                                    }
+
+                            Log.d(
+                                "WOOFLIX_TEST",
+                                "VidSrc decrypted streams=${streamUrls.size}"
+                            )
+
+                            val tokenCache =
+                                mutableMapOf<String, String>()
+
+                            suspend fun addToken(
+                                originalUrl: String
+                            ): String? {
+                                return try {
+                                    val uri =
+                                        java.net.URI(
+                                            originalUrl
+                                        )
+
+                                    val origin =
+                                        "${uri.scheme}://${uri.host}"
+
+                                    val cached =
+                                        tokenCache[origin]
+
+                                    val token =
+                                        cached
+                                            ?: app.get(
+                                                "$origin/generate.php",
+                                                headers = mapOf(
+                                                    "Referer" to
+                                                        "https://cloudorchestranova.com/",
+                                                    "Origin" to
+                                                        "https://cloudorchestranova.com",
+                                                    "User-Agent" to
+                                                        "Mozilla/5.0"
+                                                ),
+                                                timeout = 10000
+                                            )
+                                                .text
+                                                .trim()
+                                                .also {
+                                                    tokenCache[
+                                                        origin
+                                                    ] = it
+                                                }
+
+                                    if (token.isBlank()) {
+                                        null
+                                    } else {
+                                        val separator =
+                                            if (
+                                                uri.rawQuery
+                                                    .isNullOrBlank()
+                                            ) {
+                                                "?"
+                                            } else {
+                                                "&"
+                                            }
+
+                                        "$originalUrl${separator}token=${
+                                            java.net.URLEncoder.encode(
+                                                token,
+                                                "UTF-8"
+                                            )
+                                        }"
+                                    }
+                                } catch (e: Exception) {
+                                    Log.d(
+                                        "WOOFLIX_TEST",
+                                        "VidSrc token error: ${e.message}"
+                                    )
+                                    null
+                                }
+                            }
+
+                            for ((index, streamUrl) in
+                                streamUrls.withIndex()
+                            ) {
+                                val finalUrl =
+                                    addToken(streamUrl)
+
+                                if (finalUrl == null) continue
+
+                                callback(
+                                    newExtractorLink(
+                                        source = "VidSrc",
+                                        name = "VidSrc ${index + 1}",
+                                        url = finalUrl,
+                                        type = ExtractorLinkType.M3U8
+                                    ) {
+                                        referer =
+                                            "https://cloudorchestranova.com/"
+
+                                        headers = mapOf(
+                                            "Origin" to
+                                                "https://cloudorchestranova.com",
+                                            "Referer" to
+                                                "https://cloudorchestranova.com/",
+                                            "User-Agent" to
+                                                "Mozilla/5.0"
+                                        )
+
+                                        quality =
+                                            Qualities.Unknown.value
+                                    }
+                                )
+                            }
+
+                            Log.d(
+                                "WOOFLIX_TEST",
+                                "VidSrc done: links=${streamUrls.size}"
+                            )
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(
+                    "WOOFLIX_TEST",
+                    "VidSrc resolver failed",
+                    e
+                )
+            }
+
+            // ------------------------------------------------------------
             // Additional providers
             // ------------------------------------------------------------
             val externalSources = if (kind == "tv") {
@@ -758,11 +1352,6 @@ class ExampleProvider : MainAPI() {
                         "VidZee",
                         "https://player.vidzee.wtf/embed/tv/$tmdbId/$season/$episode",
                         "https://player.vidzee.wtf/"
-                    ),
-                    Triple(
-                        "VidSrc",
-                        "https://vidsrc.to/embed/tv/$tmdbId/$season/$episode",
-                        "https://vidsrc.to/"
                     ),
                     Triple(
                         "Mapple",
@@ -786,11 +1375,6 @@ class ExampleProvider : MainAPI() {
                         "VidZee",
                         "https://player.vidzee.wtf/embed/movie/$tmdbId",
                         "https://player.vidzee.wtf/"
-                    ),
-                    Triple(
-                        "VidSrc",
-                        "https://vidsrc.to/embed/movie/$tmdbId",
-                        "https://vidsrc.to/"
                     ),
                     Triple(
                         "Mapple",
