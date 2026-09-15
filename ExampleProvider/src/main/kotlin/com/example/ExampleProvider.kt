@@ -520,7 +520,8 @@ class ExampleProvider : MainAPI() {
         }
 
         try {
-            val tokenResponse = app.get(
+            try {
+                val tokenResponse = app.get(
                 "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
             ).text
 
@@ -1262,27 +1263,37 @@ class ExampleProvider : MainAPI() {
 
                                     val token =
                                         cached
-                                            ?: app.get(
-                                                "$origin/generate.php",
-                                                headers = mapOf(
-                                                    "Referer" to
-                                                        "https://cloudorchestranova.com/",
-                                                    "Origin" to
-                                                        "https://cloudorchestranova.com",
-                                                    "User-Agent" to
-                                                        "Mozilla/5.0"
-                                                ),
-                                                timeout = 10000
-                                            )
-                                                .text
-                                                .trim()
-                                                .also {
-                                                    tokenCache[
-                                                        origin
-                                                    ] = it
+                                            ?: run {
+                                                val tokenResponse = app.get(
+                                                    "$origin/generate.php",
+                                                    headers = mapOf(
+                                                        "Referer" to
+                                                            "https://cloudorchestranova.com/",
+                                                        "Origin" to
+                                                            "https://cloudorchestranova.com",
+                                                        "User-Agent" to
+                                                            "Mozilla/5.0"
+                                                    ),
+                                                    timeout = 10000
+                                                )
+
+                                                Log.d(
+                                                    "WOOFLIX_TEST",
+                                                    "VidSrc token HTTP ${tokenResponse.code} host=$origin"
+                                                )
+
+                                                if (!tokenResponse.isSuccessful) {
+                                                    return@run null
                                                 }
 
-                                    if (token.isBlank()) {
+                                                tokenResponse.text
+                                                    .trim()
+                                                    .also {
+                                                        tokenCache[origin] = it
+                                                    }
+                                            }
+
+                                    if (token.isNullOrBlank()) {
                                         null
                                     } else {
                                         val separator =
@@ -1318,6 +1329,32 @@ class ExampleProvider : MainAPI() {
                                     addToken(streamUrl)
 
                                 if (finalUrl == null) continue
+
+                                try {
+                                    val playlistResponse = app.get(
+                                        finalUrl,
+                                        headers = mapOf(
+                                            "Origin" to
+                                                "https://cloudorchestranova.com",
+                                            "Referer" to
+                                                "https://cloudorchestranova.com/",
+                                            "User-Agent" to
+                                                "Mozilla/5.0"
+                                        ),
+                                        timeout = 10000
+                                    )
+
+                                    Log.d(
+                                        "WOOFLIX_TEST",
+                                        "VidSrc playlist ${index + 1} HTTP ${playlistResponse.code} " +
+                                            "bytes=${playlistResponse.text.length}"
+                                    )
+                                } catch (e: Exception) {
+                                    Log.d(
+                                        "WOOFLIX_TEST",
+                                        "VidSrc playlist ${index + 1} check error: ${e.message}"
+                                    )
+                                }
 
                                 callback(
                                     newExtractorLink(
@@ -1355,6 +1392,18 @@ class ExampleProvider : MainAPI() {
                 Log.e(
                     "WOOFLIX_TEST",
                     "VidSrc resolver failed",
+                    e
+                )
+            }
+
+                Log.d(
+                    "WOOFLIX_TEST",
+                    "VidLink block completed"
+                )
+            } catch (e: Exception) {
+                Log.e(
+                    "WOOFLIX_TEST",
+                    "VidLink resolver failed; continuing with other providers",
                     e
                 )
             }
