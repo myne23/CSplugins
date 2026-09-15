@@ -368,47 +368,181 @@ class ExampleProvider : MainAPI() {
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-                                   callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit
     ): Boolean {
         val parts = data.split("|")
 
         val rawTmdbId = parts.getOrNull(0) ?: return false
         val tmdbId = rawTmdbId.substringAfterLast("/").toIntOrNull()?.toString()
             ?: return false
-        val kind = parts.getOrNull(1) ?: return false
 
+        val kind = parts.getOrNull(1) ?: return false
         val season = if (kind == "tv") parts.getOrNull(2)?.toIntOrNull() else null
         val episode = if (kind == "tv") parts.getOrNull(3)?.toIntOrNull() else null
 
-        Log.d("WOOFLIX_TEST", "loadLinks -> tmdb=$tmdbId kind=$kind season=$season episode=$episode")
+        Log.d(
+            "WOOFLIX_TEST",
+            "loadLinks -> tmdb=$tmdbId kind=$kind season=$season episode=$episode"
+        )
+
+        fun base64Url(value: String): String {
+            return android.util.Base64.encodeToString(
+                value.toByteArray(Charsets.UTF_8),
+                android.util.Base64.URL_SAFE or
+                    android.util.Base64.NO_WRAP or
+                    android.util.Base64.NO_PADDING
+            )
+        }
+
+        fun proxyMp4(
+            originalUrl: String,
+            headersObject: JSONObject?
+        ): String? {
+            return try {
+                val uri = java.net.URI(originalUrl)
+                val path = uri.rawPath ?: return null
+
+                val query = uri.rawQuery ?: ""
+                val allowed = mutableListOf<String>()
+
+                if (query.isNotBlank()) {
+                    query.split("&").forEach { item ->
+                        val key = item.substringBefore("=", item)
+                        if (
+                            key == "auth" ||
+                            key == "expires" ||
+                            key == "hash" ||
+                            key == "key" ||
+                            key == "sign" ||
+                            key == "t" ||
+                            key == "token"
+                        ) {
+                            allowed.add(item)
+                        }
+                    }
+                }
+
+                val parts = mutableListOf<String>()
+
+                if (allowed.isNotEmpty()) {
+                    parts.addAll(allowed)
+                }
+
+                if (headersObject != null && headersObject.length() > 0) {
+                    parts.add(
+                        "headers=" + java.net.URLEncoder.encode(
+                            headersObject.toString(),
+                            "UTF-8"
+                        )
+                    )
+                }
+
+                parts.add(
+                    "host=" + java.net.URLEncoder.encode(
+                        "${uri.scheme}://${uri.host}",
+                        "UTF-8"
+                    )
+                )
+
+                "https://noon.mooncase.online/mp$path?${parts.joinToString("&")}"
+            } catch (e: Exception) {
+                Log.e("WOOFLIX_TEST", "MP4 proxy error", e)
+                null
+            }
+        }
+
+        fun proxyHls(
+            playlist: String,
+            headersObject: JSONObject?
+        ): String? {
+            return try {
+                val uri = java.net.URI(playlist)
+                val path = uri.rawPath ?: return null
+
+                val query = uri.rawQuery ?: ""
+                val params = mutableListOf<String>()
+
+                if (query.isNotBlank()) {
+                    query.split("&").forEach { item ->
+                        val key = item.substringBefore("=", item)
+
+                        // Mirrors VidLink's HLS proxy behavior:
+                        // exclude headers/host from copied query params.
+                        if (key != "headers" && key != "host") {
+                            params.add(item)
+                        }
+                    }
+                }
+
+                if (headersObject != null && headersObject.length() > 0) {
+                    params.add(
+                        "headers=" + java.net.URLEncoder.encode(
+                            headersObject.toString(),
+                            "UTF-8"
+                        )
+                    )
+                }
+
+                params.add(
+                    "host=" + java.net.URLEncoder.encode(
+                        "${uri.scheme}://${uri.host}",
+                        "UTF-8"
+                    )
+                )
+
+                "https://noon.mooncase.online/proxy$path?${params.joinToString("&")}"
+            } catch (e: Exception) {
+                Log.e("WOOFLIX_TEST", "HLS proxy error", e)
+                null
+            }
+        }
+
+        fun proxyDash(
+            playlist: String,
+            cookie: String?
+        ): String? {
+            return try {
+                if (cookie.isNullOrBlank()) return null
+
+                val uri = java.net.URI(playlist)
+                val path = uri.rawPath ?: return null
+                val host = "${uri.scheme}://${uri.host}"
+
+                val sc = base64Url(cookie)
+
+                "https://noon.mooncase.online/sacdn$path" +
+                    "?host=${java.net.URLEncoder.encode(host, "UTF-8")}" +
+                    "&sc=$sc"
+            } catch (e: Exception) {
+                Log.e("WOOFLIX_TEST", "DASH proxy error", e)
+                null
+            }
+        }
 
         try {
-            // ------------------------------------------------------------
-            // 1. Obtener token de VidLink
-            // ------------------------------------------------------------
             val tokenResponse = app.get(
                 "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
             ).text
 
             val token = JSONObject(tokenResponse)
-            .optString("result")
-            .takeIf { it.isNotBlank() }
+                .optString("result")
+                .takeIf { it.isNotBlank() }
 
             if (token == null) {
                 Log.d("WOOFLIX_TEST", "No VidLink token")
                 return false
             }
 
-            // ------------------------------------------------------------
-            // 2. Pedir DASH/HEVC, que es la variante que VidLink
-            //    utiliza en navegadores compatibles
-            // ------------------------------------------------------------
             val streamUrl = if (kind == "tv") {
-                "https://vidlink.pro/api/b/tv/$token/$season/$episode?multiLang=0&_=${System.nanoTime()}"
+                "https://vidlink.pro/api/b/tv/$token/$season/$episode" +
+                    "?multiLang=0&_=${System.nanoTime()}"
             } else {
-                "https://vidlink.pro/api/b/movie/$token?multiLang=0&_=${System.nanoTime()}"
+                "https://vidlink.pro/api/b/movie/$token" +
+                    "?multiLang=0&_=${System.nanoTime()}"
             }
 
+            // First request asks VidLink for its richest playback format.
+            // If it comes back as file/mp4 we still handle that below.
             val response = app.get(
                 streamUrl,
                 headers = mapOf(
@@ -433,8 +567,19 @@ class ExampleProvider : MainAPI() {
                 return false
             }
 
+            val deliveryType = stream.optString("deliveryType")
+                .lowercase()
+
+            val streamType = stream.optString("type")
+                .lowercase()
+
+            Log.d(
+                "WOOFLIX_TEST",
+                "VidLink stream type=$streamType delivery=$deliveryType"
+            )
+
             // ------------------------------------------------------------
-            // 3. Captions
+            // Captions
             // ------------------------------------------------------------
             val captions = stream.optJSONArray("captions")
 
@@ -442,108 +587,147 @@ class ExampleProvider : MainAPI() {
                 for (i in 0 until captions.length()) {
                     val caption = captions.optJSONObject(i) ?: continue
 
-                    val url = caption.optString("url")
-                    .takeIf { it.isNotBlank() }
-                    ?: continue
+                    val captionUrl = caption.optString("url")
+                        .takeIf { it.isNotBlank() }
+                        ?: continue
 
-                    val language = caption.optString("language")
-                    .ifBlank { caption.optString("lang") }
-                    .ifBlank { "Unknown" }
+                    val language =
+                        caption.optString("language")
+                            .ifBlank { caption.optString("lang") }
+                            .ifBlank { "Unknown" }
 
                     subtitleCallback(
                         SubtitleFile(
                             language,
-                            url
+                            captionUrl
                         )
                     )
                 }
             }
 
             // ------------------------------------------------------------
-            // 4. DASH playlist
+            // DASH
             // ------------------------------------------------------------
             val playlist = stream.optString("playlist")
-            .takeIf { it.isNotBlank() }
+                .takeIf { it.isNotBlank() }
 
-            val requiresProxy = stream.optBoolean("requiresProxy", false)
-
-            if (playlist != null && stream.optString("deliveryType") == "dash") {
-                try {
-                    val originalUri = java.net.URI(playlist)
-
-                    val path = originalUri.rawPath ?: return false
-                    val origin = "${originalUri.scheme}://${originalUri.host}"
-
-                    val playlistHeaders =
+            if (
+                playlist != null &&
+                (deliveryType == "dash" || streamType == "dash")
+            ) {
+                val playlistHeaders =
                     stream.optJSONObject("playlistHeaders")
 
-                    val cookie = playlistHeaders
+                val cookie = playlistHeaders
                     ?.optString("Cookie")
                     ?.takeIf { it.isNotBlank() }
 
-                    if (cookie != null && requiresProxy) {
-                        val sc = android.util.Base64.encodeToString(
-                            cookie.toByteArray(Charsets.UTF_8),
-                                                                    android.util.Base64.URL_SAFE or
-                                                                    android.util.Base64.NO_WRAP or
-                                                                    android.util.Base64.NO_PADDING
-                        )
+                val dashUrl = if (stream.optBoolean("requiresProxy", false)) {
+                    proxyDash(playlist, cookie)
+                } else {
+                    playlist
+                }
 
-                        val proxyUrl =
-                        "https://noon.mooncase.online/sacdn$path" +
-                        "?host=${java.net.URLEncoder.encode(origin, "UTF-8")}" +
-                        "&sc=$sc"
-
-                        Log.d("WOOFLIX_TEST", "DASH proxy=$proxyUrl")
-
-                        callback(
-                            newExtractorLink(
-                                source = "VidLink",
-                                name = "VidLink DASH HEVC 1080p",
-                                url = proxyUrl,
-                                type = ExtractorLinkType.DASH
-                            ) {
-                                referer = "https://vidlink.pro/"
-                                headers = mapOf(
-                                    "Origin" to "https://vidlink.pro",
-                                    "Referer" to "https://vidlink.pro/",
-                                    "User-Agent" to "Mozilla/5.0"
-                                )
-                                quality = Qualities.P1080.value
-                            }
-                        )
-
-                        Log.d("WOOFLIX_TEST", "DASH link added")
-                        return true
+                if (dashUrl != null) {
+                    val quality = stream.optInt("height", 0).let {
+                        if (it > 0) it else Qualities.Unknown.value
                     }
-                } catch (e: Exception) {
-                    Log.e("WOOFLIX_TEST", "DASH proxy error", e)
+
+                    callback(
+                        newExtractorLink(
+                            source = "VidLink",
+                            name = "VidLink DASH HEVC",
+                            url = dashUrl,
+                            type = ExtractorLinkType.DASH
+                        ) {
+                            referer = "https://vidlink.pro/"
+                            headers = mapOf(
+                                "Origin" to "https://vidlink.pro",
+                                "Referer" to "https://vidlink.pro/",
+                                "User-Agent" to "Mozilla/5.0"
+                            )
+                            this.quality = quality
+                        }
+                    )
+
+                    Log.d("WOOFLIX_TEST", "DASH link added")
                 }
             }
 
             // ------------------------------------------------------------
-            // 5. Fallback: MP4 qualities
+            // HLS
+            // ------------------------------------------------------------
+            if (
+                playlist != null &&
+                (deliveryType == "hls" || streamType == "hls")
+            ) {
+                val playlistHeaders =
+                    stream.optJSONObject("playlistHeaders")
+
+                val hlsUrl = if (stream.optBoolean("requiresProxy", false)) {
+                    proxyHls(playlist, playlistHeaders)
+                } else {
+                    playlist
+                }
+
+                if (hlsUrl != null) {
+                    callback(
+                        newExtractorLink(
+                            source = "VidLink",
+                            name = "VidLink HLS",
+                            url = hlsUrl,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            referer = "https://vidlink.pro/"
+                            headers = mapOf(
+                                "Origin" to "https://vidlink.pro",
+                                "Referer" to "https://vidlink.pro/",
+                                "User-Agent" to "Mozilla/5.0"
+                            )
+                        }
+                    )
+
+                    Log.d("WOOFLIX_TEST", "HLS link added")
+                }
+            }
+
+            // ------------------------------------------------------------
+            // FILE / MP4 qualities
             // ------------------------------------------------------------
             val qualities = stream.optJSONObject("qualities")
+            var fileLinks = 0
 
             if (qualities != null) {
                 val keys = qualities.keys()
 
                 while (keys.hasNext()) {
                     val qualityKey = keys.next()
-                    val qualityObj = qualities.optJSONObject(qualityKey) ?: continue
+                    val qualityObj = qualities.optJSONObject(qualityKey)
+                        ?: continue
 
-                    val url = qualityObj.optString("url")
-                    .takeIf { it.isNotBlank() }
-                    ?: continue
+                    val originalUrl = qualityObj.optString("url")
+                        .takeIf { it.isNotBlank() }
+                        ?: continue
 
                     val quality = qualityKey.toIntOrNull() ?: 0
+
+                    val qualityHeaders =
+                        qualityObj.optJSONObject("headers")
+
+                    val requiresProxy =
+                        qualityObj.optBoolean("requiresProxy", false)
+
+                    val finalUrl = if (requiresProxy) {
+                        proxyMp4(originalUrl, qualityHeaders)
+                    } else {
+                        originalUrl
+                    } ?: continue
 
                     callback(
                         newExtractorLink(
                             source = "VidLink",
                             name = "VidLink ${qualityKey}p",
-                            url = url,
+                            url = finalUrl,
                             type = ExtractorLinkType.VIDEO
                         ) {
                             referer = "https://vidlink.pro/"
@@ -555,15 +739,20 @@ class ExampleProvider : MainAPI() {
                             this.quality = quality
                         }
                     )
+
+                    fileLinks++
                 }
             }
 
-            return true
+            Log.d(
+                "WOOFLIX_TEST",
+                "VidLink done: delivery=$deliveryType fileLinks=$fileLinks"
+            )
 
+            return true
         } catch (e: Exception) {
             Log.e("WOOFLIX_TEST", "VidLink resolver failed", e)
             return false
         }
     }
-
 }
