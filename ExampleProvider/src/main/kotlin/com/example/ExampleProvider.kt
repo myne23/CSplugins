@@ -519,7 +519,6 @@ class ExampleProvider : MainAPI() {
             }
         }
 
-        try {
             run {
                 val tokenResponse = app.get(
                 "https://enc-dec.app/api/enc-vidlink?text=$tmdbId"
@@ -750,8 +749,10 @@ class ExampleProvider : MainAPI() {
                 "VidLink done: delivery=$deliveryType fileLinks=$fileLinks"
             )
 
+            } // fin run VidLink
+
             // ------------------------------------------------------------
-            // VidSrc / data.vidsrcme.ru
+            // VidSrc / data.vidsrcme.ru (bloque independiente)
             // ------------------------------------------------------------
             try {
                 val vidsrcApiUrl = if (kind == "tv") {
@@ -1369,7 +1370,6 @@ class ExampleProvider : MainAPI() {
                     e
                 )
             }
-            } // fin run VidLink
 
             // ------------------------------------------------------------
             // Cinezo / Flikhub
@@ -1626,9 +1626,5 @@ class ExampleProvider : MainAPI() {
             }
 
             return true
-        } catch (e: Exception) {
-            Log.e("WOOFLIX_TEST", "VidLink resolver failed", e)
-            return false
         }
     }
-}
