@@ -8,7 +8,7 @@ import org.json.JSONObject
 class ExampleProvider : MainAPI() {
 
     override var mainUrl = "https://wooflix.media/"
-    override var name = "W0Fl1X"
+    override var name = "WOOFLIX"
 
     override val supportedTypes = setOf(
         TvType.TvSeries,
