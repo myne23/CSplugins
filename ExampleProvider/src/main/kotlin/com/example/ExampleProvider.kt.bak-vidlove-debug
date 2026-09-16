@@ -1772,11 +1772,9 @@ class ExampleProvider : MainAPI() {
                         )
 
                         if (!response.isSuccessful) {
-                            Log.d("WOOFLIX_TEST", "Vidlove $source HTTP ${response.code} body=${response.text.take(300)}")
+                            Log.d("WOOFLIX_TEST", "Vidlove $source HTTP ${response.code}")
                             continue
                         }
-
-                        Log.d("WOOFLIX_TEST", "Vidlove $source RESPONSE=${response.text.take(500)}")
 
                         for (line in response.text.lines()) {
                             if (!line.startsWith("data:")) continue
