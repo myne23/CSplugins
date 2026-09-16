@@ -1777,41 +1777,34 @@ class ExampleProvider : MainAPI() {
                         }
 
                         val body = response.text
+                        Log.d("WOOFLIX_TEST", "Vidlove $source SIZE=${body.length} TAIL=${body.takeLast(800)}")
 
-                        // CloudStream ya parsea el SSE: la respuesta es el
-                        // JSON del primer evento. A veces vienen multiples
-                        // eventos separados por saltos dobles: procesamos cada uno.
-                        val events = body.split("\n\n")
-                            .flatMap { it.lines() }
-                            .map { it.trim() }
-                            .filter { it.startsWith("{") && it.endsWith("}") }
-                            .ifEmpty { listOf(body.trim()) }
+                        for (line in response.text.lines()) {
+                            if (!line.startsWith("data:")) continue
+                            val payload = line.removePrefix("data:").trim()
+                            if (payload.isBlank()) continue
 
-                        for (raw in events) {
                             try {
-                                val event = JSONObject(raw)
+                                val event = JSONObject(payload)
 
-                                // Subtitulos (vienen en el evento "meta")
-                                val subs = event.optJSONArray("subtitles")
-                                if (subs != null) {
-                                    for (i in 0 until subs.length()) {
-                                        val sub = subs.optJSONObject(i)
-                                            ?: continue
-                                        val subUrl = sub.optString("file")
-                                            .takeIf { it.isNotBlank() }
-                                            ?: continue
-                                        val label = sub.optString("label", "Unknown")
-                                        subtitleCallback(SubtitleFile("Vidlove - $label", subUrl))
+                                if (event.optString("type") == "meta") {
+                                    val subs = event.optJSONArray("subtitles")
+                                    if (subs != null) {
+                                        for (i in 0 until subs.length()) {
+                                            val sub = subs.optJSONObject(i)
+                                                ?: continue
+                                            val subUrl = sub.optString("file")
+                                                .takeIf { it.isNotBlank() }
+                                                ?: continue
+                                            val label = sub.optString("label", "Unknown")
+                                            subtitleCallback(SubtitleFile("Vidlove - $label", subUrl))
+                                        }
                                     }
                                 }
 
-                                // Source: puede venir en el nivel raiz o anidado
-                                val sourceObj =
-                                    event.optJSONObject("source")
-                                        ?: event.optJSONObject("meta")
-                                            ?.optJSONObject("source")
-
-                                if (sourceObj == null || sourceObj.length() == 0) continue
+                                val sourceObj = event.optJSONObject("source")
+                                    ?: continue
+                                if (sourceObj.length() == 0) continue
 
                                 val streamUrl = sourceObj.optString("url")
                                     .takeIf { it.isNotBlank() }
