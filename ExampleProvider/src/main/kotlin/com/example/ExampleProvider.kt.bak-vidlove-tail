@@ -1776,8 +1776,7 @@ class ExampleProvider : MainAPI() {
                             continue
                         }
 
-                        val body = response.text
-                        Log.d("WOOFLIX_TEST", "Vidlove $source SIZE=${body.length} TAIL=${body.takeLast(800)}")
+                        Log.d("WOOFLIX_TEST", "Vidlove $source RESPONSE=${response.text.take(500)}")
 
                         for (line in response.text.lines()) {
                             if (!line.startsWith("data:")) continue
