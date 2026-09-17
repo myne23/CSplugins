@@ -2258,7 +2258,7 @@ class ExampleProvider : MainAPI() {
         Log.d("WOOFLIX_TEST", "=== ARRANCANDO WyzieSubs ===")
 
         try {
-            val wyzieApiKey = "wyzie-6b141b86abf6d5fa87e5fdc5b30b59ee"
+            val wyzieApiKey = "wyzie-ptqb9uvd0e75isb1trcj4wk0muhfhb"
 
             val wyzieImdbId = resolvedImdbId
 
