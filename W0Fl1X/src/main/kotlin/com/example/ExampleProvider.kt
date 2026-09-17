@@ -1,6 +1,7 @@
 package com.example
 
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.extractors.Odnoklassniki
 import com.lagradost.cloudstream3.utils.*
 import android.util.Log
 import org.json.JSONObject
@@ -560,6 +561,48 @@ try {
                     .toList()
 
                 Log.d("LATANIME_TEST", "PLAYER_COUNT=${players.size}")
+
+                val okPlayer = players.firstOrNull { encoded ->
+                    try {
+                        val decoded = android.util.Base64.decode(
+                            encoded,
+                            android.util.Base64.DEFAULT
+                        ).toString(Charsets.UTF_8)
+
+                        decoded.contains("ok.ru", ignoreCase = true)
+                    } catch (e: Exception) {
+                        false
+                    }
+                }
+
+                Log.d("LATANIME_TEST", "OK_PLAYER_FOUND=${okPlayer != null}")
+
+                if (okPlayer != null) {
+                    try {
+                        val okUrl = android.util.Base64.decode(
+                            okPlayer,
+                            android.util.Base64.DEFAULT
+                        ).toString(Charsets.UTF_8)
+
+                        Log.d("LATANIME_TEST", "OK_URL=$okUrl")
+
+                        val extractor = Odnoklassniki()
+
+                        extractor.getUrl(
+                            okUrl,
+                            null,
+                            subtitleCallback
+                        ) { link ->
+                            Log.d(
+                                "LATANIME_TEST",
+                                "OK_EXTRACTOR_LINK name=${link.name} quality=${link.quality} url=${link.url}"
+                            )
+                        }
+
+                    } catch (e: Exception) {
+                        Log.e("LATANIME_TEST", "OK_EXTRACTOR_ERROR=${e.message}", e)
+                    }
+                }
 
                 players.forEachIndexed { index, encoded ->
                     try {
