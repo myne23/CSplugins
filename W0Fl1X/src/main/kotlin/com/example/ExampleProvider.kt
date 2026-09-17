@@ -2087,6 +2087,37 @@ class ExampleProvider : MainAPI() {
                                 "SubDL[$index]: name=${result.name} lang=${result.lang} " +
                                     "id=${result.idPrefix} data=${result.data}"
                             )
+
+                            try {
+                                Log.d(
+                                    "WOOFLIX_TEST",
+                                    "SubDL[$index]: resolviendo resource..."
+                                )
+
+                                val resource =
+                                    subDlApi.resource(authData, result)
+
+                                val subtitles = resource?.getSubtitles() ?: emptyList()
+
+                                Log.d(
+                                    "WOOFLIX_TEST",
+                                    "SubDL[$index]: resources=${subtitles.size}"
+                                )
+
+                                subtitles.forEachIndexed { subIndex, subtitle ->
+                                    Log.d(
+                                        "WOOFLIX_TEST",
+                                        "SubDL[$index][$subIndex]: " +
+                                            "name=${subtitle.name} url=${subtitle.url}"
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                Log.e(
+                                    "WOOFLIX_TEST",
+                                    "SubDL[$index]: resource failed",
+                                    e
+                                )
+                            }
                         }
                     }
                 }
