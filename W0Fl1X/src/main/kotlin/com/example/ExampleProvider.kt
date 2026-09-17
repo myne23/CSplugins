@@ -525,13 +525,20 @@ class ExampleProvider(
                     val animeUrl = animeUrls.firstOrNull { candidate ->
                         val slug = candidate.substringAfterLast("/").lowercase()
                         val normalizedSlug = slug
-                            .replace(Regex("""[-_]+"""), " ")
+                            .replace(Regex("""[-\_]+"""), " ")
                             .replace(Regex("""[^a-z0-9]+"""), " ")
                             .trim()
 
-                        normalizedSlug == normalizedTitle ||
-                            normalizedSlug.contains(normalizedTitle) ||
-                            normalizedTitle.contains(normalizedSlug)
+                        normalizedSlug == normalizedTitle
+                    } ?: animeUrls.firstOrNull { candidate ->
+                        val slug = candidate.substringAfterLast("/").lowercase()
+                        val normalizedSlug = slug
+                            .replace(Regex("""[-\_]+"""), " ")
+                            .replace(Regex("""[^a-z0-9]+"""), " ")
+                            .trim()
+
+                        normalizedSlug.contains(normalizedTitle) &&
+                            !normalizedTitle.contains(" ")
                     }
 
                     Log.d("LATANIME", "ANIME URL=$animeUrl")
