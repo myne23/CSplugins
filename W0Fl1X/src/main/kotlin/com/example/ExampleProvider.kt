@@ -707,18 +707,98 @@ try {
                             )
                         }
 
-                        val extractor = Odnoklassniki()
+                                                // === OK.RU CUSTOM EXTRACTOR TEST ===
+                        val normalizedOk = okEmbed.text
+                            .replace("&quot;", "\"")
+                            .replace("&amp;", "&")
+                            .replace("\\u0026", "&")
+                            .replace("\\u003D", "=")
+                            .replace("\\\\", "\\")
 
-                        extractor.getUrl(
-                            okUrl,
-                            null,
-                            subtitleCallback
-                        ) { link ->
+                        Log.d(
+                            "LATANIME_TEST",
+                            "OK_NORMALIZED_SIZE=${normalizedOk.length}"
+                        )
+
+                        // Direct video formats
+                        val videoRegex = Regex(
+                            """"name":"([^"]+)","url":"([^"]+)"""",
+                            RegexOption.IGNORE_CASE
+                        )
+
+                        var directCount = 0
+
+                        videoRegex.findAll(normalizedOk).forEach { match ->
+                            val qualityName = match.groupValues[1]
+                            val videoUrl = match.groupValues[2]
+
+                            val quality = when (qualityName.lowercase()) {
+                                "mobile" -> 144
+                                "lowest" -> 240
+                                "low" -> 360
+                                "sd" -> 480
+                                "hd" -> 720
+                                "full" -> 1080
+                                else -> Qualities.Unknown.value
+                            }
+
                             Log.d(
                                 "LATANIME_TEST",
-                                "OK_EXTRACTOR_LINK name=${link.name} quality=${link.quality} url=${link.url}"
+                                "OK_VIDEO name=$qualityName quality=$quality url=$videoUrl"
+                            )
+
+                            callback(
+                                newExtractorLink(
+                                    source = "OK.ru",
+                                    name = "OK.ru ES",
+                                    url = videoUrl,
+                                    type = ExtractorLinkType.VIDEO
+                                ) {
+                                    referer = okUrl
+                                    this.quality = quality
+                                }
+                            )
+
+                            directCount++
+                        }
+
+                        Log.d(
+                            "LATANIME_TEST",
+                            "OK_DIRECT_LINKS=$directCount"
+                        )
+
+                        // HLS master
+                        val okHlsMatch = Regex(
+                            """"hlsManifestUrl":"([^"]+)"""",
+                            RegexOption.IGNORE_CASE
+                        ).find(normalizedOk)
+
+                        if (okHlsMatch != null) {
+                            val hlsUrl = okHlsMatch.groupValues[1]
+
+                            Log.d(
+                                "LATANIME_TEST",
+                                "OK_HLS_FINAL=$hlsUrl"
+                            )
+
+                            callback(
+                                newExtractorLink(
+                                    source = "OK.ru",
+                                    name = "OK.ru ES",
+                                    url = hlsUrl,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    referer = okUrl
+                                    quality = Qualities.Unknown.value
+                                }
+                            )
+                        } else {
+                            Log.d(
+                                "LATANIME_TEST",
+                                "OK_HLS_FINAL_NOT_FOUND"
                             )
                         }
+                        // === END OK.RU CUSTOM EXTRACTOR TEST ===
 
                     } catch (e: Exception) {
                         Log.e("LATANIME_TEST", "OK_EXTRACTOR_ERROR=${e.message}", e)
