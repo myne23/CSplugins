@@ -494,6 +494,19 @@ class ExampleProvider(
         val season = if (kind == "tv") parts.getOrNull(2)?.toIntOrNull() else null
         val episode = if (kind == "tv") parts.getOrNull(3)?.toIntOrNull() else null
 
+        // === LATANIME TEST ===
+        try {
+            val latanimeTest = app.get("https://latanime.org/buscar?q=RWBY")
+
+            Log.d("LATANIME_TEST", "SUCCESS=${latanimeTest.isSuccessful}")
+            Log.d("LATANIME_TEST", "CODE=${latanimeTest.code}")
+            Log.d("LATANIME_TEST", "SIZE=${latanimeTest.text.length}")
+            Log.d("LATANIME_TEST", latanimeTest.text.take(500))
+        } catch (e: Exception) {
+            Log.e("LATANIME_TEST", "ERROR: ${e.message}", e)
+        }
+        // === END LATANIME TEST ===
+
         Log.d(
             "WOOFLIX_TEST",
             "loadLinks -> tmdb=$tmdbId kind=$kind season=$season episode=$episode"
