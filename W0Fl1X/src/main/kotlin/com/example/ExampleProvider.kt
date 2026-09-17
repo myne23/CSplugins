@@ -1443,7 +1443,8 @@ class ExampleProvider : MainAPI() {
 
                                             val normalizedLabel = label
                                                 .trim()
-                                                .replace(Regex("""\s+\d+$"""), "")
+                                                .replace(Regex("""\s*\d+$"""), "")
+                                                .replace(Regex("""\s+hi$""", RegexOption.IGNORE_CASE), "")
                                                 .trim()
                                                 .lowercase()
 
