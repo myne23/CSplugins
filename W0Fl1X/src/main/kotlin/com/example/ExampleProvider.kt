@@ -2188,6 +2188,23 @@ class ExampleProvider : MainAPI() {
                                             "WOOFLIX_TEST",
                                             "SubDL CALLBACK: lang=Spanish url=${subtitle.url}"
                                         )
+                                        try {
+                                            val subPath = android.net.Uri.parse(subtitle.url).path ?: ""
+                                            val subFile = java.io.File(subPath)
+                                            Log.d(
+                                                "WOOFLIX_TEST",
+                                                "SubDL FILE: exists=${subFile.exists()} size=${subFile.length()} path=${subFile.path}"
+                                            )
+                                            if (subFile.exists()) {
+                                                val preview = subFile.readText().take(150).replace("\n", " | ")
+                                                Log.d(
+                                                    "WOOFLIX_TEST",
+                                                    "SubDL FILE PREVIEW: $preview"
+                                                )
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.e("WOOFLIX_TEST", "SubDL FILE READ ERROR", e)
+                                        }
                                         subtitleCallback(
                                             SubtitleFile(
                                                 "Spanish",
