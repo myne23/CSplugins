@@ -646,23 +646,64 @@ try {
                             }
                         }
 
-                        val urlMatches = Regex(
-                            """https?[^"\\\\ ]+(?:m3u8|mp4)[^"\\\\ ]*""",
+                        val hlsMatch = Regex(
+                            """hlsManifestUrl&quot;:&quot;([^&]+)&quot;""",
                             RegexOption.IGNORE_CASE
-                        ).findAll(okEmbed.text)
-                            .map { it.value }
-                            .take(20)
-                            .toList()
+                        ).find(okEmbed.text)
 
-                        Log.d(
-                            "LATANIME_TEST",
-                            "OK_MEDIA_URL_COUNT=${urlMatches.size}"
-                        )
+                        if (hlsMatch != null) {
+                            var hlsUrl = hlsMatch.groupValues[1]
 
-                        urlMatches.forEachIndexed { index, url ->
+                            hlsUrl = hlsUrl
+                                .replace("\\u0026", "&")
+                                .replace("&amp;", "&")
+                                .replace("&quot;", "\"")
+
                             Log.d(
                                 "LATANIME_TEST",
-                                "OK_MEDIA_URL_$index=$url"
+                                "OK_HLS_URL=$hlsUrl"
+                            )
+
+                            try {
+                                val hlsTest = app.get(
+                                    hlsUrl,
+                                    headers = mapOf(
+                                        "Referer" to okUrl
+                                    )
+                                )
+
+                                Log.d(
+                                    "LATANIME_TEST",
+                                    "OK_HLS_SUCCESS=${hlsTest.isSuccessful}"
+                                )
+
+                                Log.d(
+                                    "LATANIME_TEST",
+                                    "OK_HLS_CODE=${hlsTest.code}"
+                                )
+
+                                Log.d(
+                                    "LATANIME_TEST",
+                                    "OK_HLS_SIZE=${hlsTest.text.length}"
+                                )
+
+                                Log.d(
+                                    "LATANIME_TEST",
+                                    "OK_HLS_CONTENT=${hlsTest.text.take(1000)}"
+                                )
+
+                            } catch (e: Exception) {
+                                Log.e(
+                                    "LATANIME_TEST",
+                                    "OK_HLS_ERROR=${e.message}",
+                                    e
+                                )
+                            }
+
+                        } else {
+                            Log.d(
+                                "LATANIME_TEST",
+                                "OK_HLS_URL_NOT_FOUND"
                             )
                         }
 
