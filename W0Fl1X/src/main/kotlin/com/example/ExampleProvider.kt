@@ -1407,6 +1407,7 @@ class ExampleProvider : MainAPI() {
                     var cinezoSources = 0
                     var cinezoSubtitles = 0
                     val cinezoSubtitleLanguages = mutableSetOf<String>()
+                    val cinezoSubtitleCandidates = mutableListOf<Pair<String, String>>()
 
                     for (line in cinezoResponse.text.lines()) {
                         if (!line.startsWith("data:")) continue
@@ -1423,48 +1424,106 @@ class ExampleProvider : MainAPI() {
 
                             when (eventType) {
                                 "meta" -> {
-                                    val subtitles =
-                                        event.optJSONArray("subtitles")
+                                  val subtitles = event.optJSONArray("subtitles")
 
-                                    if (subtitles != null) {
-                                        for (i in 0 until subtitles.length()) {
-                                            val subtitle =
-                                                subtitles.optJSONObject(i)
-                                                    ?: continue
+                                  if (subtitles != null) {
+                                      for (i in 0 until subtitles.length()) {
+                                          val subtitle = subtitles.optJSONObject(i) ?: continue
 
-                                            val label = subtitle
-                                                .optString("label")
-                                                .ifBlank { "Unknown" }
+                                          val label = subtitle
+                                              .optString("label")
+                                              .ifBlank { "Unknown" }
 
-                                            val file = subtitle
-                                                .optString("file")
-                                                .takeIf { it.isNotBlank() }
-                                                ?: continue
+                                          val file = subtitle
+                                              .optString("file")
+                                              .takeIf { it.isNotBlank() }
+                                              ?: continue
 
-                                            val normalizedLabel = label
-                                                .trim()
-                                                .replace(Regex("""\s*\d+$"""), "")
-                                                .replace(Regex("""\s+hi$""", RegexOption.IGNORE_CASE), "")
-                                                .trim()
-                                                .lowercase()
+                                          val normalizedLabel = label
+                                              .trim()
+                                              .replace(Regex("""\s*\d+$"""), "")
+                                              .replace(Regex("""\s+hi$""", RegexOption.IGNORE_CASE), "")
+                                              .trim()
+                                              .lowercase()
 
-                                            if (!cinezoSubtitleLanguages.add(normalizedLabel)) {
-                                                continue
-                                            }
+                                          if (!cinezoSubtitleLanguages.add(normalizedLabel)) {
+                                              continue
+                                          }
 
-                                            subtitleCallback(
-                                                SubtitleFile(
-                                                    "Cinezo - $label",
-                                                    file
-                                                )
-                                            )
+                                          cinezoSubtitleCandidates.add(label to file)
+                                      }
+                                  }
 
-                                            cinezoSubtitles++
-                                        }
-                                    }
-                                }
+                                  val selectedCinezoSubtitles = mutableListOf<Pair<String, String>>()
 
-                                "source" -> {
+                                  // Spanish primero
+                                  cinezoSubtitleCandidates
+                                      .firstOrNull {
+                                          it.first.trim()
+                                              .replace(Regex("""\s*\d+$"""), "")
+                                              .replace(Regex("""\s+hi$""", RegexOption.IGNORE_CASE), "")
+                                              .trim()
+                                              .equals("Spanish", ignoreCase = true)
+                                      }
+                                      ?.let { selectedCinezoSubtitles.add(it) }
+
+                                  // English segundo
+                                  cinezoSubtitleCandidates
+                                      .firstOrNull {
+                                          it.first.trim()
+                                              .replace(Regex("""\s*\d+$"""), "")
+                                              .replace(Regex("""\s+hi$""", RegexOption.IGNORE_CASE), "")
+                                              .trim()
+                                              .equals("English", ignoreCase = true)
+                                      }
+                                      ?.let {
+                                          if (selectedCinezoSubtitles.none {
+                                                  it.first.trim()
+                                                      .replace(Regex("""\s*\d+$"""), "")
+                                                      .replace(Regex("""\s+hi$""", RegexOption.IGNORE_CASE), "")
+                                                      .trim()
+                                                      .equals("English", ignoreCase = true)
+                                              }) {
+                                              selectedCinezoSubtitles.add(it)
+                                          }
+                                      }
+
+                                  // Hasta 3 idiomas adicionales, máximo 5 en total
+                                  for (candidate in cinezoSubtitleCandidates) {
+                                      if (selectedCinezoSubtitles.size >= 5) break
+
+                                      val language = candidate.first.trim()
+                                          .replace(Regex("""\s*\d+$"""), "")
+                                          .replace(Regex("""\s+hi$""", RegexOption.IGNORE_CASE), "")
+                                          .trim()
+
+                                      if (selectedCinezoSubtitles.none {
+                                              it.first.trim()
+                                                  .replace(Regex("""\s*\d+$"""), "")
+                                                  .replace(Regex("""\s+hi$""", RegexOption.IGNORE_CASE), "")
+                                                  .trim()
+                                                  .equals(language, ignoreCase = true)
+                                          }) {
+                                          selectedCinezoSubtitles.add(candidate)
+                                      }
+                                  }
+
+                                  for ((label, file) in selectedCinezoSubtitles) {
+                                      subtitleCallback(
+                                          SubtitleFile(
+                                              "Cinezo - $label",
+                                              file
+                                          )
+                                      )
+                                      cinezoSubtitles++
+                                  }
+
+                                  Log.d(
+                                      "WOOFLIX_TEST",
+                                      "Cinezo subtitles seleccionados: $cinezoSubtitles/${cinezoSubtitleCandidates.size}"
+                                  )
+                              }
+                              "source" -> {
                                     val source =
                                         event.optJSONObject("source")
                                             ?: continue
