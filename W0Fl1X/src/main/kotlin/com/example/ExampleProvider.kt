@@ -537,7 +537,7 @@ class ExampleProvider(
                         Log.d("LATANIME", "VOLUME PAGE HTTP=${volume.code}")
 
                         val episodeRegex = Regex(
-                            """href=["'](https://latanime\\.org/ver/[^"'#?]*episodio-$episode)["']""",
+                            """href=["'](https://latanime\.org/ver/[^"'#?]*episodio-$episode)["']""",
                             RegexOption.IGNORE_CASE
                         )
 
