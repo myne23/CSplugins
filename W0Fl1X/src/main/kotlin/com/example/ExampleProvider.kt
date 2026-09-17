@@ -586,6 +586,38 @@ try {
 
                         Log.d("LATANIME_TEST", "OK_URL=$okUrl")
 
+                        val okEmbed = app.get(
+                            okUrl.replace("/video/", "/videoembed/")
+                        )
+
+                        Log.d(
+                            "LATANIME_TEST",
+                            "OK_DIRECT_SUCCESS=${okEmbed.isSuccessful}"
+                        )
+                        Log.d(
+                            "LATANIME_TEST",
+                            "OK_DIRECT_CODE=${okEmbed.code}"
+                        )
+                        Log.d(
+                            "LATANIME_TEST",
+                            "OK_DIRECT_SIZE=${okEmbed.text.length}"
+                        )
+                        Log.d(
+                            "LATANIME_TEST",
+                            "OK_HAS_VIDEOS=${okEmbed.text.contains("\"videos\":")}"
+                        )
+
+                        val videosIndex = okEmbed.text.indexOf("\"videos\":")
+                        if (videosIndex >= 0) {
+                            val start = maxOf(0, videosIndex - 100)
+                            val end = minOf(okEmbed.text.length, videosIndex + 1500)
+
+                            Log.d(
+                                "LATANIME_TEST",
+                                "OK_VIDEOS_DATA=${okEmbed.text.substring(start, end)}"
+                            )
+                        }
+
                         val extractor = Odnoklassniki()
 
                         extractor.getUrl(
