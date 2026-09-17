@@ -2052,6 +2052,8 @@ class ExampleProvider : MainAPI() {
                 )
             }
 
+        var resolvedImdbId: String? = null
+
         // ==================== SUBDL SUBTITLE ====================
         Log.d("WOOFLIX_TEST", "=== ARRANCANDO SubDL SUBTITLE ===")
 
@@ -2082,6 +2084,8 @@ class ExampleProvider : MainAPI() {
 
                 val imdbId = externalJson.optString("imdb_id")
                     .takeIf { it.isNotBlank() }
+
+                resolvedImdbId = imdbId
 
                 if (imdbId == null) {
                     Log.d(
@@ -2250,6 +2254,78 @@ class ExampleProvider : MainAPI() {
             )
         }
 
-            return true
+            // ==================== WYZIESUBS SUBTITLE ====================
+        Log.d("WOOFLIX_TEST", "=== ARRANCANDO WyzieSubs ===")
+
+        try {
+            val wyzieApiKey = "wyzie-6b141b86abf6d5fa87e5fdc5b30b59ee"
+
+            val wyzieImdbId = resolvedImdbId
+
+            if (wyzieImdbId == null) {
+                Log.d(
+                    "WOOFLIX_TEST",
+                    "WyzieSubs: IMDb ID no disponible"
+                )
+            } else {
+                val wyzieUrl = buildString {
+                    append("https://sub.wyzie.io/search?")
+                    append("id=$wyzieImdbId")
+
+                if (kind == "tv" && season != null && episode != null) {
+                    append("&season=$season")
+                    append("&episode=$episode")
+                }
+
+                append("&source=all")
+                append("&key=$wyzieApiKey")
+            }
+
+            val wyzieResponse = app.get(
+                wyzieUrl,
+                headers = mapOf("User-Agent" to "Mozilla/5.0"),
+                timeout = 15000
+            )
+
+            Log.d("WOOFLIX_TEST", "WyzieSubs HTTP ${wyzieResponse.code}")
+
+            if (wyzieResponse.isSuccessful) {
+                val wyzieArray = org.json.JSONArray(wyzieResponse.text)
+
+                Log.d(
+                    "WOOFLIX_TEST",
+                    "WyzieSubs resultados: ${wyzieArray.length()}"
+                )
+
+                for (i in 0 until wyzieArray.length()) {
+                    val item = wyzieArray.getJSONObject(i)
+
+                    val subtitleUrl = item.optString("url")
+                    val language = item.optString("display")
+                        .ifBlank { item.optString("language") }
+
+                    if (subtitleUrl.isBlank() || language.isBlank()) continue
+
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "WyzieSubs[$i]: lang=$language url=$subtitleUrl"
+                    )
+
+                    subtitleCallback(
+                        SubtitleFile(language, subtitleUrl)
+                    )
+                }
+            } else {
+                Log.d(
+                    "WOOFLIX_TEST",
+                    "WyzieSubs error: ${wyzieResponse.text.take(500)}"
+                )
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("WOOFLIX_TEST", "WyzieSubs failed", e)
+        }
+
+        return true
         }
     }
