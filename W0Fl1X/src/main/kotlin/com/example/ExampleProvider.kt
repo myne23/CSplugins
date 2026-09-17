@@ -495,58 +495,100 @@ class ExampleProvider(
         val episode = if (kind == "tv") parts.getOrNull(3)?.toIntOrNull() else null
 
         // === LATANIME TEST ===
-        try {
-            val search = app.get("https://latanime.org/buscar?q=RWBY")
+try {
+    val title = "RWBY"
+    val season = if (kind == "tv") parts.getOrNull(2)?.toIntOrNull() else null
+    val episode = if (kind == "tv") parts.getOrNull(3)?.toIntOrNull() else null
 
-            Log.d("LATANIME_TEST", "SEARCH_SUCCESS=${search.isSuccessful}")
-            Log.d("LATANIME_TEST", "SEARCH_CODE=${search.code}")
-            Log.d("LATANIME_TEST", "SEARCH_SIZE=${search.text.length}")
+    Log.d("LATANIME_TEST", "TITLE=$title")
+    Log.d("LATANIME_TEST", "KIND=$kind")
+    Log.d("LATANIME_TEST", "SEASON=$season")
+    Log.d("LATANIME_TEST", "EPISODE=$episode")
 
-            val volume4 = Regex(
-                """href=["']([^"']*rwby-volume-4[^"']*)["']""",
+    if (kind == "tv" && season != null && episode != null) {
+
+        val search = app.get(
+            "https://latanime.org/buscar?q=${java.net.URLEncoder.encode(title, "UTF-8")}"
+        )
+
+        Log.d("LATANIME_TEST", "SEARCH_SUCCESS=${search.isSuccessful}")
+        Log.d("LATANIME_TEST", "SEARCH_CODE=${search.code}")
+
+        val volumeTitle = "$title Volume $season"
+
+        val volumeRegex = Regex(
+            """href=["']([^"']*/anime/[^"']*)["'][^>]*>[^<]*${Regex.escape(volumeTitle)}""",
+            RegexOption.IGNORE_CASE
+        )
+
+        val volumeUrl = volumeRegex.find(search.text)?.groupValues?.get(1)?.let {
+            if (it.startsWith("http")) it
+            else "https://latanime.org$it"
+        }
+
+        Log.d("LATANIME_TEST", "VOLUME_TITLE=$volumeTitle")
+        Log.d("LATANIME_TEST", "VOLUME_URL=$volumeUrl")
+
+        if (volumeUrl != null) {
+
+            val volume = app.get(volumeUrl)
+
+            Log.d("LATANIME_TEST", "VOLUME_SUCCESS=${volume.isSuccessful}")
+            Log.d("LATANIME_TEST", "VOLUME_CODE=${volume.code}")
+
+            val episodeRegex = Regex(
+                """href=["']([^"']*/ver/[^"']*episodio-$episode[^"']*)["']""",
                 RegexOption.IGNORE_CASE
-            ).findAll(search.text)
-                .map { it.groupValues[1] }
-                .distinct()
-                .toList()
+            )
 
-            Log.d("LATANIME_TEST", "VOLUME4_MATCHES=${volume4.size}")
-            volume4.forEach {
-                Log.d("LATANIME_TEST", "VOLUME4_URL=$it")
-            }
-
-            val volumeUrl = volume4.firstOrNull()?.let {
+            val episodeUrl = episodeRegex.find(volume.text)?.groupValues?.get(1)?.let {
                 if (it.startsWith("http")) it
                 else "https://latanime.org$it"
             }
 
-            if (volumeUrl != null) {
-                val volume = app.get(volumeUrl)
+            Log.d("LATANIME_TEST", "EPISODE_URL=$episodeUrl")
 
-                Log.d("LATANIME_TEST", "VOLUME_SUCCESS=${volume.isSuccessful}")
-                Log.d("LATANIME_TEST", "VOLUME_CODE=${volume.code}")
-                Log.d("LATANIME_TEST", "VOLUME_SIZE=${volume.text.length}")
+            if (episodeUrl != null) {
 
-                val episodes = Regex(
-                    """href=["']([^"']*/ver/[^"']+)["']""",
+                val episodePage = app.get(episodeUrl)
+
+                Log.d("LATANIME_TEST", "EPISODE_SUCCESS=${episodePage.isSuccessful}")
+                Log.d("LATANIME_TEST", "EPISODE_CODE=${episodePage.code}")
+
+                val players = Regex(
+                    """data-player=["']([^"']+)["']""",
                     RegexOption.IGNORE_CASE
-                ).findAll(volume.text)
+                ).findAll(episodePage.text)
                     .map { it.groupValues[1] }
-                    .distinct()
                     .toList()
 
-                Log.d("LATANIME_TEST", "EPISODE_MATCHES=${episodes.size}")
+                Log.d("LATANIME_TEST", "PLAYER_COUNT=${players.size}")
 
-                episodes.forEach {
-                    Log.d("LATANIME_TEST", "EPISODE_URL=$it")
+                players.forEachIndexed { index, encoded ->
+                    try {
+                        val decoded = android.util.Base64.decode(
+                            encoded,
+                            android.util.Base64.DEFAULT
+                        ).toString(Charsets.UTF_8)
+
+                        Log.d(
+                            "LATANIME_TEST",
+                            "PLAYER_$index=$decoded"
+                        )
+                    } catch (e: Exception) {
+                        Log.d(
+                            "LATANIME_TEST",
+                            "PLAYER_$index=DECODE_ERROR"
+                        )
+                    }
                 }
-            } else {
-                Log.d("LATANIME_TEST", "VOLUME4_NOT_FOUND")
             }
-        } catch (e: Exception) {
-            Log.e("LATANIME_TEST", "ERROR: ${e.message}", e)
         }
-        // === END LATANIME TEST ===
+    }
+} catch (e: Exception) {
+    Log.e("LATANIME_TEST", "ERROR: ${e.message}", e)
+}
+// === END LATANIME TEST ===
 
         Log.d(
             "WOOFLIX_TEST",
