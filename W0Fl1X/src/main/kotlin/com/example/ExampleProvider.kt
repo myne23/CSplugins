@@ -618,6 +618,54 @@ try {
                             )
                         }
 
+                        val patterns = listOf(
+                            "metadata",
+                            "metadataUrl",
+                            "movie",
+                            "videos",
+                            "video",
+                            "hls",
+                            "m3u8",
+                            "mp4",
+                            "manifest",
+                            "contentUrl",
+                            "download"
+                        )
+
+                        patterns.forEach { pattern ->
+                            val index = okEmbed.text.indexOf(pattern, ignoreCase = true)
+
+                            if (index >= 0) {
+                                val start = maxOf(0, index - 150)
+                                val end = minOf(okEmbed.text.length, index + 500)
+
+                                Log.d(
+                                    "LATANIME_TEST",
+                                    "OK_PATTERN=$pattern DATA=${okEmbed.text.substring(start, end)}"
+                                )
+                            }
+                        }
+
+                        val urlMatches = Regex(
+                            """https?[^"\\\\ ]+(?:m3u8|mp4)[^"\\\\ ]*""",
+                            RegexOption.IGNORE_CASE
+                        ).findAll(okEmbed.text)
+                            .map { it.value }
+                            .take(20)
+                            .toList()
+
+                        Log.d(
+                            "LATANIME_TEST",
+                            "OK_MEDIA_URL_COUNT=${urlMatches.size}"
+                        )
+
+                        urlMatches.forEachIndexed { index, url ->
+                            Log.d(
+                                "LATANIME_TEST",
+                                "OK_MEDIA_URL_$index=$url"
+                            )
+                        }
+
                         val extractor = Odnoklassniki()
 
                         extractor.getUrl(
