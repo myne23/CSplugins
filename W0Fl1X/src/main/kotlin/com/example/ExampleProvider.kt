@@ -2186,7 +2186,7 @@ class ExampleProvider : MainAPI() {
                                     if (matchesEpisode) {
                                         subtitleCallback(
                                             SubtitleFile(
-                                                "SubDL - Spanish",
+                                                "Spanish",
                                                 subtitle.url
                                             )
                                         )
