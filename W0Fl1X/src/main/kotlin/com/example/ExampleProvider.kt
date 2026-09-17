@@ -1406,6 +1406,7 @@ class ExampleProvider : MainAPI() {
 
                     var cinezoSources = 0
                     var cinezoSubtitles = 0
+                    val cinezoSubtitleLanguages = mutableSetOf<String>()
 
                     for (line in cinezoResponse.text.lines()) {
                         if (!line.startsWith("data:")) continue
@@ -1439,6 +1440,16 @@ class ExampleProvider : MainAPI() {
                                                 .optString("file")
                                                 .takeIf { it.isNotBlank() }
                                                 ?: continue
+
+                                            val normalizedLabel = label
+                                                .trim()
+                                                .replace(Regex("""\s+\d+$"""), "")
+                                                .trim()
+                                                .lowercase()
+
+                                            if (!cinezoSubtitleLanguages.add(normalizedLabel)) {
+                                                continue
+                                            }
 
                                             subtitleCallback(
                                                 SubtitleFile(
