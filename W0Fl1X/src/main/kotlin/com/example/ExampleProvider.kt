@@ -2184,6 +2184,10 @@ class ExampleProvider : MainAPI() {
                                     )
 
                                     if (matchesEpisode) {
+                                        Log.d(
+                                            "WOOFLIX_TEST",
+                                            "SubDL CALLBACK: lang=Spanish url=${subtitle.url}"
+                                        )
                                         subtitleCallback(
                                             SubtitleFile(
                                                 "Spanish",
