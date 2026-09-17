@@ -1981,6 +1981,112 @@ class ExampleProvider : MainAPI() {
                 )
             }
 
+        // ==================== SUBDL SEARCH TEST ====================
+        Log.d("WOOFLIX_TEST", "=== ARRANCANDO SubDL SEARCH TEST ===")
+
+        try {
+            val externalType = if (kind == "tv") "tv" else "movie"
+
+            val externalUrl =
+                "https" + "://" +
+                "api.themoviedb.org/3/" +
+                "$externalType/$tmdbId/external_ids" +
+                "?api_key=e1a8efff4415028c5c266b3fcd50db6e"
+
+            val externalResponse = app.get(
+                externalUrl,
+                headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0"
+                ),
+                timeout = 15000
+            )
+
+            if (!externalResponse.isSuccessful) {
+                Log.d(
+                    "WOOFLIX_TEST",
+                    "SubDL external_ids HTTP ${externalResponse.code}"
+                )
+            } else {
+                val externalJson = JSONObject(externalResponse.text)
+
+                val imdbId = externalJson.optString("imdb_id")
+                    .takeIf { it.isNotBlank() }
+
+                if (imdbId == null) {
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "SubDL: IMDb ID no encontrado"
+                    )
+                } else {
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "SubDL IMDb resolved: $imdbId"
+                    )
+
+                    val subDlApi =
+                        com.lagradost.cloudstream3.syncproviders.providers.SubDlApi()
+
+                    val subDlRepo =
+                        com.lagradost.cloudstream3.syncproviders.SubtitleRepo(subDlApi)
+
+                    val authData = subDlRepo.authData()
+
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "SubDL authData: ${authData != null}"
+                    )
+
+                    if (authData == null) {
+                        Log.d(
+                            "WOOFLIX_TEST",
+                            "SubDL: no hay sesión autenticada disponible"
+                        )
+                    } else {
+                        val search =
+                            com.lagradost.cloudstream3.subtitles
+                                .AbstractSubtitleEntities.SubtitleSearch(
+                                    "",
+                                    "es",
+                                    imdbId,
+                                    tmdbId.toIntOrNull(),
+                                    null,
+                                    null,
+                                    episode,
+                                    season,
+                                    null
+                                )
+
+                        Log.d(
+                            "WOOFLIX_TEST",
+                            "SubDL: ejecutando búsqueda ES..."
+                        )
+
+                        val results =
+                            subDlApi.search(authData, search)
+
+                        Log.d(
+                            "WOOFLIX_TEST",
+                            "SubDL resultados ES: ${results?.size ?: 0}"
+                        )
+
+                        results?.forEachIndexed { index, result ->
+                            Log.d(
+                                "WOOFLIX_TEST",
+                                "SubDL[$index]: name=${result.name} lang=${result.lang} " +
+                                    "id=${result.idPrefix} data=${result.data}"
+                            )
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(
+                "WOOFLIX_TEST",
+                "SubDL SEARCH TEST failed",
+                e
+            )
+        }
+
             return true
         }
     }
