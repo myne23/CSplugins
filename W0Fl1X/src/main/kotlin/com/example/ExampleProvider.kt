@@ -20,13 +20,13 @@ class ExampleProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         if (query.isBlank()) return emptyList()
 
-            val url =
+        val url =
             "https://api.themoviedb.org/3/search/multi" +
             "?api_key=e1a8efff4415028c5c266b3fcd50db6e" +
             "&language=en-US" +
             "&query=${query.replace(" ", "%20")}"
 
-            val response = try {
+        val response = try {
                 app.get(url)
             } catch (e: Exception) {
                 Log.d("CINEZO_TEST", "SEARCH ERROR: ${e.message}")
@@ -61,7 +61,7 @@ class ExampleProvider : MainAPI() {
                 val id = item.optInt("id", 0)
                 if (id == 0) continue
 
-                    val title = if (mediaType == "tv") {
+                val title = if (mediaType == "tv") {
                         item.optString(
                             "name",
                             item.optString("original_name")
@@ -75,18 +75,18 @@ class ExampleProvider : MainAPI() {
 
                     if (title.isBlank()) continue
 
-                        val posterPath = item.optString("poster_path")
-                        val poster = if (posterPath.isNotBlank()) {
-                            "https://image.tmdb.org/t/p/w500$posterPath"
-                        } else {
-                            null
-                        }
+                    val posterPath = item.optString("poster_path")
+                    val poster = if (posterPath.isNotBlank()) {
+                        "https://image.tmdb.org/t/p/w500$posterPath"
+                    } else {
+                        null
+                    }
 
-                        val year = if (mediaType == "tv") {
-                            item.optString("first_air_date").take(4).toIntOrNull()
-                        } else {
-                            item.optString("release_date").take(4).toIntOrNull()
-                        }
+                    val year = if (mediaType == "tv") {
+                        item.optString("first_air_date").take(4).toIntOrNull()
+                    } else {
+                        item.optString("release_date").take(4).toIntOrNull()
+                    }
 
                         val resultUrl = if (mediaType == "tv") {
                             "https://wooflix.media/play/tv/$id"
@@ -287,12 +287,12 @@ class ExampleProvider : MainAPI() {
 
                     if (seasonNumber <= 0) continue
 
-                        val seasonUrl =
+                    val seasonUrl =
                         "https://api.themoviedb.org/3/tv/$tmdbId/season/$seasonNumber" +
                         "?api_key=e1a8efff4415028c5c266b3fcd50db6e" +
                         "&language=en-US"
 
-                        val seasonResponse = try {
+                    val seasonResponse = try {
                             app.get(seasonUrl)
                         } catch (e: Exception) {
                             Log.d(
@@ -331,13 +331,13 @@ class ExampleProvider : MainAPI() {
 
                             if (episodeNumber <= 0) continue
 
-                                val episodeName =
+                            val episodeName =
                                 ep.optString(
                                     "name",
                                     "Episode $episodeNumber"
                                 )
 
-                                episodes.add(
+                            episodes.add(
                                     newEpisode(
                                         "$tmdbId|tv|$seasonNumber|$episodeNumber"
                                     ) {
@@ -1850,6 +1850,135 @@ class ExampleProvider : MainAPI() {
                 Log.d("WOOFLIX_TEST", "Vidlove done: links=$vidloveCount")
             } catch (e: Exception) {
                 Log.e("WOOFLIX_TEST", "Vidlove failed", e)
+            }
+
+
+            // ==================== VAPLAYER ====================
+            Log.d("WOOFLIX_TEST", "=== ARRANCANDO VaPlayer ===")
+
+            try {
+                val externalType = if (kind == "tv") "tv" else "movie"
+
+                val externalUrl =
+                    "https" + "://" +
+                    "api.themoviedb.org/3/" +
+                    "$externalType/$tmdbId/external_ids" +
+                    "?api_key=e1a8efff4415028c5c266b3fcd50db6e"
+
+                val externalResponse = app.get(
+                    externalUrl,
+                    headers = mapOf(
+                        "User-Agent" to "Mozilla/5.0"
+                    ),
+                    timeout = 15000
+                )
+
+                if (!externalResponse.isSuccessful) {
+                    Log.d(
+                        "WOOFLIX_TEST",
+                        "VaPlayer external_ids HTTP ${externalResponse.code}"
+                    )
+                } else {
+                    val externalJson = JSONObject(externalResponse.text)
+
+                    val imdbId = externalJson.optString("imdb_id")
+                        .takeIf { it.isNotBlank() }
+
+                    if (imdbId == null) {
+                        Log.d(
+                            "WOOFLIX_TEST",
+                            "VaPlayer: IMDb ID no encontrado para TMDB $tmdbId"
+                        )
+                    } else {
+                        Log.d(
+                            "WOOFLIX_TEST",
+                            "VaPlayer IMDb resolved: $imdbId"
+                        )
+
+                        val referer =
+                            "https" + "://" + "nextgencloudfabric.com/"
+
+                        val vaUrl = if (kind == "tv") {
+                            "https" + "://" +
+                            "streamdata.vaplayer.ru/api.php" +
+                            "?imdb=$imdbId&type=tv" +
+                            "&season=$season&episode=$episode"
+                        } else {
+                            "https" + "://" +
+                            "streamdata.vaplayer.ru/api.php" +
+                            "?imdb=$imdbId&type=movie"
+                        }
+
+                        val vaResponse = app.get(
+                            vaUrl,
+                            headers = mapOf(
+                                "Referer" to referer,
+                                "User-Agent" to "Mozilla/5.0"
+                            ),
+                            timeout = 15000
+                        )
+
+                        if (!vaResponse.isSuccessful) {
+                            Log.d(
+                                "WOOFLIX_TEST",
+                                "VaPlayer API HTTP ${vaResponse.code}"
+                            )
+                        } else {
+                            val vaJson = JSONObject(vaResponse.text)
+                            val dataObj = vaJson.optJSONObject("data")
+                            val streams = dataObj?.optJSONArray("stream_urls")
+
+                            if (streams == null || streams.length() == 0) {
+                                Log.d(
+                                    "WOOFLIX_TEST",
+                                    "VaPlayer: no stream_urls"
+                                )
+                            } else {
+                                var vaCount = 0
+
+                                for (i in 0 until streams.length()) {
+                                    val streamUrl = streams.optString(i)
+                                        .takeIf { it.isNotBlank() }
+                                        ?: continue
+
+                                    callback(
+                                        newExtractorLink(
+                                            source = "VaPlayer",
+                                            name = "VaPlayer - ${i + 1}",
+                                            url = streamUrl,
+                                            type = ExtractorLinkType.M3U8
+                                        ) {
+                                            headers = mapOf(
+                                                "Referer" to referer,
+                                                "User-Agent" to "Mozilla/5.0"
+                                            )
+
+                                            quality = Qualities.Unknown.value
+                                        }
+                                    )
+
+                                    vaCount++
+
+                                    Log.d(
+                                        "WOOFLIX_TEST",
+                                        "VaPlayer link added: ${i + 1}"
+                                    )
+                                }
+
+                                Log.d(
+                                    "WOOFLIX_TEST",
+                                    "VaPlayer done: links=$vaCount"
+                                )
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(
+                    "WOOFLIX_TEST",
+                    "VaPlayer failed",
+                    e
+                )
             }
 
             return true
