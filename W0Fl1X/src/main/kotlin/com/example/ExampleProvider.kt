@@ -2052,8 +2052,8 @@ class ExampleProvider : MainAPI() {
                 )
             }
 
-        // ==================== SUBDL SEARCH TEST ====================
-        Log.d("WOOFLIX_TEST", "=== ARRANCANDO SubDL SEARCH TEST ===")
+        // ==================== SUBDL SUBTITLE ====================
+        Log.d("WOOFLIX_TEST", "=== ARRANCANDO SubDL SUBTITLE ===")
 
         try {
             val externalType = if (kind == "tv") "tv" else "movie"
@@ -2140,23 +2140,26 @@ class ExampleProvider : MainAPI() {
                             "SubDL resultados ES: ${results?.size ?: 0}"
                         )
 
+                        val episodeTag =
+                            if (kind == "tv" && season != null && episode != null) {
+                                "S${season.toString().padStart(2, '0')}" +
+                                    "E${episode.toString().padStart(2, '0')}"
+                            } else {
+                                null
+                            }
+
                         results?.forEachIndexed { index, result ->
                             Log.d(
                                 "WOOFLIX_TEST",
-                                "SubDL[$index]: name=${result.name} lang=${result.lang} " +
-                                    "id=${result.idPrefix} data=${result.data}"
+                                "SubDL[$index]: name=${result.name} lang=${result.lang}"
                             )
 
                             try {
-                                Log.d(
-                                    "WOOFLIX_TEST",
-                                    "SubDL[$index]: resolviendo resource..."
-                                )
-
                                 val resource =
                                     subDlApi.resource(authData, result)
 
-                                val subtitles = resource?.getSubtitles() ?: emptyList()
+                                val subtitles =
+                                    resource?.getSubtitles() ?: emptyList()
 
                                 Log.d(
                                     "WOOFLIX_TEST",
@@ -2164,11 +2167,35 @@ class ExampleProvider : MainAPI() {
                                 )
 
                                 subtitles.forEachIndexed { subIndex, subtitle ->
+                                    val subtitleName = subtitle.name ?: ""
+
+                                    val matchesEpisode =
+                                        episodeTag == null ||
+                                            subtitleName.contains(
+                                                episodeTag,
+                                                ignoreCase = true
+                                            )
+
                                     Log.d(
                                         "WOOFLIX_TEST",
                                         "SubDL[$index][$subIndex]: " +
-                                            "name=${subtitle.name} url=${subtitle.url}"
+                                            "name=$subtitleName " +
+                                            "match=$matchesEpisode"
                                     )
+
+                                    if (matchesEpisode) {
+                                        subtitleCallback(
+                                            SubtitleFile(
+                                                "SubDL - Spanish",
+                                                subtitle.url
+                                            )
+                                        )
+
+                                        Log.d(
+                                            "WOOFLIX_TEST",
+                                            "SubDL subtitle added: $subtitleName"
+                                        )
+                                    }
                                 }
                             } catch (e: Exception) {
                                 Log.e(
@@ -2184,7 +2211,7 @@ class ExampleProvider : MainAPI() {
         } catch (e: Exception) {
             Log.e(
                 "WOOFLIX_TEST",
-                "SubDL SEARCH TEST failed",
+                "SubDL SUBTITLE failed",
                 e
             )
         }
