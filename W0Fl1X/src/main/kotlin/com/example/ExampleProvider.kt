@@ -495,6 +495,7 @@ class ExampleProvider(
         val episode = if (kind == "tv") parts.getOrNull(3)?.toIntOrNull() else null
 
         // === LATANIME ===
+        Log.d("LATANIME", "INICIO tmdb=$tmdbId kind=$kind season=$season episode=$episode title=${parts.getOrNull(4)}")
         try {
             // Latanime es exclusivamente una fuente de anime.
             if (kind == "tv" && season != null && episode != null) {
@@ -505,6 +506,7 @@ class ExampleProvider(
                         "https://latanime.org/buscar?q=${java.net.URLEncoder.encode(title, "UTF-8")}"
 
                     val search = app.get(searchUrl)
+                    Log.d("LATANIME", "SEARCH HTTP=${search.code} urls=${search.text.length}")
 
                     val animeUrls = Regex(
                         """href=["'](https://latanime\.org/anime/[^"'#?]+)["']""",
@@ -519,6 +521,7 @@ class ExampleProvider(
                         .replace(Regex("""[^a-z0-9]+"""), " ")
                         .trim()
 
+                    Log.d("LATANIME", "SEARCH animeUrls=${animeUrls.size}")
                     val animeUrl = animeUrls.firstOrNull { candidate ->
                         val slug = candidate.substringAfterLast("/").lowercase()
                         val normalizedSlug = slug
@@ -531,8 +534,10 @@ class ExampleProvider(
                             normalizedTitle.contains(normalizedSlug)
                     }
 
+                    Log.d("LATANIME", "ANIME URL=$animeUrl")
                     if (animeUrl != null) {
                         val animePage = app.get(animeUrl)
+                        Log.d("LATANIME", "ANIME PAGE HTTP=${animePage.code}")
 
                         val volumeRegex = Regex(
                             """href=["'](https://latanime\.org/anime/[^"'#?]*volume-$season)["']""",
@@ -542,8 +547,10 @@ class ExampleProvider(
                         val volumeUrl =
                             volumeRegex.find(animePage.text)?.groupValues?.get(1)
 
+                        Log.d("LATANIME", "VOLUME URL=$volumeUrl")
                         if (volumeUrl != null) {
                             val volume = app.get(volumeUrl)
+                            Log.d("LATANIME", "VOLUME PAGE HTTP=${volume.code}")
 
                             val episodeRegex = Regex(
                                 """href=["'](https://latanime\.org/ver/[^"'#?]*episodio-$episode)["']""",
@@ -553,8 +560,10 @@ class ExampleProvider(
                             val episodeUrl =
                                 episodeRegex.find(volume.text)?.groupValues?.get(1)
 
+                            Log.d("LATANIME", "EPISODE URL=$episodeUrl")
                             if (episodeUrl != null) {
                                 val episodePage = app.get(episodeUrl)
+                                Log.d("LATANIME", "EPISODE PAGE HTTP=${episodePage.code}")
 
                                 val players = Regex(
                                     """data-player=["']([^"']+)["']""",
@@ -563,7 +572,8 @@ class ExampleProvider(
                                     .map { it.groupValues[1] }
                                     .toList()
 
-                                val okPlayer = players.firstOrNull { encoded ->
+                                Log.d("LATANIME", "PLAYERS=${players.size}")
+                              val okPlayer = players.firstOrNull { encoded ->
                                     try {
                                         val decoded = android.util.Base64.decode(
                                             encoded,
@@ -576,7 +586,8 @@ class ExampleProvider(
                                     }
                                 }
 
-                                if (okPlayer != null) {
+                                Log.d("LATANIME", "OK PLAYER FOUND=${okPlayer != null}")
+                              if (okPlayer != null) {
                                     try {
                                         val okUrl = android.util.Base64.decode(
                                             okPlayer,
@@ -587,6 +598,7 @@ class ExampleProvider(
                                             okUrl.replace("/video/", "/videoembed/")
 
                                         val okEmbed = app.get(okEmbedUrl)
+                                      Log.d("LATANIME", "OK EMBED HTTP=${okEmbed.code} size=${okEmbed.text.length}")
 
                                         val normalizedOk = okEmbed.text
                                             .replace("&quot;", "\"")
@@ -602,7 +614,9 @@ class ExampleProvider(
                                             RegexOption.IGNORE_CASE
                                         )
 
-                                        videoRegex.findAll(normalizedOk).forEach { match ->
+                                        var videoCount = 0
+                                      videoRegex.findAll(normalizedOk).forEach { match ->
+                                          videoCount++
                                             val qualityName = match.groupValues[1]
                                             val videoUrl = match.groupValues[2]
 
@@ -635,7 +649,8 @@ class ExampleProvider(
                                             RegexOption.IGNORE_CASE
                                         ).find(normalizedOk)
 
-                                        if (hlsMatch != null) {
+                                        Log.d("LATANIME", "OK DIRECT VIDEOS=$videoCount HLS=${hlsMatch != null}")
+                                      if (hlsMatch != null) {
                                             val hlsUrl = hlsMatch.groupValues[1]
 
                                             callback(
@@ -650,7 +665,8 @@ class ExampleProvider(
                                                 }
                                             )
                                         }
-                                    } catch (_: Exception) {
+                                    } catch (e: Exception) {
+                                        Log.e("LATANIME", "OK ERROR", e)
                                     }
                                 }
                             }
@@ -658,7 +674,8 @@ class ExampleProvider(
                     }
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e("LATANIME", "GENERAL ERROR", e)
         }
         // === END LATANIME ===
 
