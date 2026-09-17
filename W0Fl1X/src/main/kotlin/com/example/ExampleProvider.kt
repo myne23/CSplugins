@@ -496,12 +496,53 @@ class ExampleProvider(
 
         // === LATANIME TEST ===
         try {
-            val latanimeTest = app.get("https://latanime.org/buscar?q=RWBY")
+            val search = app.get("https://latanime.org/buscar?q=RWBY")
 
-            Log.d("LATANIME_TEST", "SUCCESS=${latanimeTest.isSuccessful}")
-            Log.d("LATANIME_TEST", "CODE=${latanimeTest.code}")
-            Log.d("LATANIME_TEST", "SIZE=${latanimeTest.text.length}")
-            Log.d("LATANIME_TEST", latanimeTest.text.take(500))
+            Log.d("LATANIME_TEST", "SEARCH_SUCCESS=${search.isSuccessful}")
+            Log.d("LATANIME_TEST", "SEARCH_CODE=${search.code}")
+            Log.d("LATANIME_TEST", "SEARCH_SIZE=${search.text.length}")
+
+            val volume4 = Regex(
+                """href=["']([^"']*rwby-volume-4[^"']*)["']""",
+                RegexOption.IGNORE_CASE
+            ).findAll(search.text)
+                .map { it.groupValues[1] }
+                .distinct()
+                .toList()
+
+            Log.d("LATANIME_TEST", "VOLUME4_MATCHES=${volume4.size}")
+            volume4.forEach {
+                Log.d("LATANIME_TEST", "VOLUME4_URL=$it")
+            }
+
+            val volumeUrl = volume4.firstOrNull()?.let {
+                if (it.startsWith("http")) it
+                else "https://latanime.org$it"
+            }
+
+            if (volumeUrl != null) {
+                val volume = app.get(volumeUrl)
+
+                Log.d("LATANIME_TEST", "VOLUME_SUCCESS=${volume.isSuccessful}")
+                Log.d("LATANIME_TEST", "VOLUME_CODE=${volume.code}")
+                Log.d("LATANIME_TEST", "VOLUME_SIZE=${volume.text.length}")
+
+                val episodes = Regex(
+                    """href=["']([^"']*/ver/[^"']+)["']""",
+                    RegexOption.IGNORE_CASE
+                ).findAll(volume.text)
+                    .map { it.groupValues[1] }
+                    .distinct()
+                    .toList()
+
+                Log.d("LATANIME_TEST", "EPISODE_MATCHES=${episodes.size}")
+
+                episodes.forEach {
+                    Log.d("LATANIME_TEST", "EPISODE_URL=$it")
+                }
+            } else {
+                Log.d("LATANIME_TEST", "VOLUME4_NOT_FOUND")
+            }
         } catch (e: Exception) {
             Log.e("LATANIME_TEST", "ERROR: ${e.message}", e)
         }
