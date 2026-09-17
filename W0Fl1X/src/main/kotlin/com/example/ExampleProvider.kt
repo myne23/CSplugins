@@ -17,7 +17,119 @@ class ExampleProvider(
         TvType.Movie
     )
     override var lang = "es"
-    override val hasMainPage = false
+    override val hasMainPage = true
+
+
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+
+        suspend fun tmdbList(
+            path: String,
+            forcedType: String? = null
+        ): List<SearchResponse> {
+
+            val url = "https://api.themoviedb.org/3/$path" +
+                    "?api_key=e1a8efff4415028c5c266b3fcd50db6e" +
+                    "&language=en-US&page=$page"
+
+            val response = try {
+                app.get(url)
+            } catch (e: Exception) {
+                return emptyList()
+            }
+
+            if (!response.isSuccessful) return emptyList()
+
+            val results = try {
+                JSONObject(response.text).optJSONArray("results")
+            } catch (e: Exception) {
+                return emptyList()
+            } ?: return emptyList()
+
+            return (0 until results.length()).mapNotNull { i ->
+                val item = results.optJSONObject(i)
+                    ?: return@mapNotNull null
+
+                val type = forcedType ?: item.optString("media_type")
+
+                if (type != "movie" && type != "tv") {
+                    return@mapNotNull null
+                }
+
+                val id = item.optInt("id", 0)
+                if (id == 0) return@mapNotNull null
+
+                val title = if (type == "tv") {
+                    item.optString("name")
+                } else {
+                    item.optString("title")
+                }
+
+                if (title.isBlank()) return@mapNotNull null
+
+                val posterPath = item.optString("poster_path")
+
+                val poster = if (posterPath.isNotBlank()) {
+                    "https://image.tmdb.org/t/p/w500$posterPath"
+                } else {
+                    null
+                }
+
+                val year = if (type == "tv") {
+                    item.optString("first_air_date")
+                        .take(4)
+                        .toIntOrNull()
+                } else {
+                    item.optString("release_date")
+                        .take(4)
+                        .toIntOrNull()
+                }
+
+                val resultUrl = if (type == "tv") {
+                    "https://wooflix.media/play/tv/$id"
+                } else {
+                    "https://wooflix.media/play/movie/$id"
+                }
+
+                if (type == "tv") {
+                    newTvSeriesSearchResponse(
+                        title,
+                        resultUrl,
+                        TvType.TvSeries,
+                        false
+                    ) {
+                        posterUrl = poster
+                        this.year = year
+                    }
+                } else {
+                    newMovieSearchResponse(
+                        title,
+                        resultUrl,
+                        TvType.Movie,
+                        false
+                    ) {
+                        posterUrl = poster
+                        this.year = year
+                    }
+                }
+            }
+        }
+
+        val home = tmdbList("trending/all/week")
+        val movies = tmdbList("movie/popular", "movie")
+        val tv = tmdbList("tv/popular", "tv")
+
+        return newHomePageResponse(
+            listOf(
+                HomePageList("Home", home),
+                HomePageList("Movies", movies),
+                HomePageList("TV Shows", tv)
+            ),
+            hasNext = page < 5
+        )
+    }
 
     override suspend fun search(query: String): List<SearchResponse> {
         if (query.isBlank()) return emptyList()
