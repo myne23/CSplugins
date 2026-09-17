@@ -1,7 +1,6 @@
 package com.example
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.extractors.Odnoklassniki
 import com.lagradost.cloudstream3.utils.*
 import android.util.Log
 import org.json.JSONObject
@@ -501,18 +500,11 @@ try {
     val season = if (kind == "tv") parts.getOrNull(2)?.toIntOrNull() else null
     val episode = if (kind == "tv") parts.getOrNull(3)?.toIntOrNull() else null
 
-    Log.d("LATANIME_TEST", "TITLE=$title")
-    Log.d("LATANIME_TEST", "KIND=$kind")
-    Log.d("LATANIME_TEST", "SEASON=$season")
-    Log.d("LATANIME_TEST", "EPISODE=$episode")
 
     val search = app.get(
         "https://latanime.org/buscar?q=${java.net.URLEncoder.encode(title, "UTF-8")}"
     )
 
-    Log.d("LATANIME_TEST", "SEARCH_SUCCESS=${search.isSuccessful}")
-    Log.d("LATANIME_TEST", "SEARCH_CODE=${search.code}")
-    Log.d("LATANIME_TEST", "SEARCH_SIZE=${search.text.length}")
 
     if (kind == "tv" && season != null && episode != null) {
 
@@ -525,16 +517,11 @@ try {
 
         val volumeUrl = volumeRegex.find(search.text)?.groupValues?.get(1)
 
-        Log.d("LATANIME_TEST", "VOLUME_SLUG=$volumeSlug")
-        Log.d("LATANIME_TEST", "VOLUME_URL=$volumeUrl")
 
         if (volumeUrl != null) {
 
             val volume = app.get(volumeUrl)
 
-            Log.d("LATANIME_TEST", "VOLUME_SUCCESS=${volume.isSuccessful}")
-            Log.d("LATANIME_TEST", "VOLUME_CODE=${volume.code}")
-            Log.d("LATANIME_TEST", "VOLUME_SIZE=${volume.text.length}")
 
             val episodeRegex = Regex(
                 """href=["'](https://latanime\.org/ver/rwby-volume-$season-episodio-$episode)["']""",
@@ -543,15 +530,11 @@ try {
 
             val episodeUrl = episodeRegex.find(volume.text)?.groupValues?.get(1)
 
-            Log.d("LATANIME_TEST", "EPISODE_URL=$episodeUrl")
 
             if (episodeUrl != null) {
 
                 val episodePage = app.get(episodeUrl)
 
-                Log.d("LATANIME_TEST", "EPISODE_SUCCESS=${episodePage.isSuccessful}")
-                Log.d("LATANIME_TEST", "EPISODE_CODE=${episodePage.code}")
-                Log.d("LATANIME_TEST", "EPISODE_SIZE=${episodePage.text.length}")
 
                 val players = Regex(
                     """data-player=["']([^"']+)["']""",
@@ -560,7 +543,6 @@ try {
                     .map { it.groupValues[1] }
                     .toList()
 
-                Log.d("LATANIME_TEST", "PLAYER_COUNT=${players.size}")
 
                 val okPlayer = players.firstOrNull { encoded ->
                     try {
@@ -575,7 +557,6 @@ try {
                     }
                 }
 
-                Log.d("LATANIME_TEST", "OK_PLAYER_FOUND=${okPlayer != null}")
 
                 if (okPlayer != null) {
                     try {
@@ -584,7 +565,6 @@ try {
                             android.util.Base64.DEFAULT
                         ).toString(Charsets.UTF_8)
 
-                        Log.d("LATANIME_TEST", "OK_URL=$okUrl")
 
                         val okEmbed = app.get(
                             okUrl.replace("/video/", "/videoembed/")
@@ -707,8 +687,7 @@ try {
                             )
                         }
 
-                                                // === OK.RU CUSTOM EXTRACTOR TEST ===
-                        val normalizedOk = okEmbed.text
+                                                                        val normalizedOk = okEmbed.text
                             .replace("&quot;", "\"")
                             .replace("&amp;", "&")
                             .replace("\\u0026", "&")
@@ -798,10 +777,8 @@ try {
                                 "OK_HLS_FINAL_NOT_FOUND"
                             )
                         }
-                        // === END OK.RU CUSTOM EXTRACTOR TEST ===
-
+                        
                     } catch (e: Exception) {
-                        Log.e("LATANIME_TEST", "OK_EXTRACTOR_ERROR=${e.message}", e)
                     }
                 }
 
@@ -812,9 +789,7 @@ try {
                             android.util.Base64.DEFAULT
                         ).toString(Charsets.UTF_8)
 
-                        Log.d("LATANIME_TEST", "PLAYER_$index=$decoded")
                     } catch (e: Exception) {
-                        Log.d("LATANIME_TEST", "PLAYER_$index=DECODE_ERROR")
                     }
                 }
             }
@@ -822,7 +797,6 @@ try {
     }
 
 } catch (e: Exception) {
-    Log.e("LATANIME_TEST", "ERROR: ${e.message}", e)
 }
 // === END LATANIME TEST ===
 
