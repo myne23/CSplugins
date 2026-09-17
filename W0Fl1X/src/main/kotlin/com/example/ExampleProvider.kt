@@ -5,7 +5,9 @@ import com.lagradost.cloudstream3.utils.*
 import android.util.Log
 import org.json.JSONObject
 
-class ExampleProvider : MainAPI() {
+class ExampleProvider(
+    private val plugin: ExamplePlugin
+) : MainAPI() {
 
     override var mainUrl = "https://wooflix.media/"
     override var name = "W0Fl1X"
@@ -1862,21 +1864,7 @@ class ExampleProvider : MainAPI() {
                             try {
                                 val event = JSONObject(raw)
 
-                                // Subtitulos (vienen en el evento "meta")
-                                val subs = event.optJSONArray("subtitles")
-                                if (subs != null) {
-                                    for (i in 0 until subs.length()) {
-                                        val sub = subs.optJSONObject(i)
-                                            ?: continue
-                                        val subUrl = sub.optString("file")
-                                            .takeIf { it.isNotBlank() }
-                                            ?: continue
-                                        val label = sub.optString("label", "Unknown")
-                                        subtitleCallback(SubtitleFile("Vidlove - $label", subUrl))
-                                    }
-                                }
-
-                                // Source: puede venir en el nivel raiz o anidado
+// Source: puede venir en el nivel raiz o anidado
                                 val sourceObj =
                                     event.optJSONObject("source")
                                         ?: event.optJSONObject("meta")
@@ -2258,11 +2246,16 @@ class ExampleProvider : MainAPI() {
         Log.d("WOOFLIX_TEST", "=== ARRANCANDO WyzieSubs ===")
 
         try {
-            val wyzieApiKey = "wyzie-ptqb9uvd0e75isb1trcj4wk0muhfhbts"
+            val wyzieApiKey = plugin.getWyzieApiKey()
 
             val wyzieImdbId = resolvedImdbId
 
-            if (wyzieImdbId == null) {
+            if (wyzieApiKey.isBlank()) {
+                Log.d(
+                    "WOOFLIX_TEST",
+                    "WyzieSubs: API key no configurada"
+                )
+            } else if (wyzieImdbId == null) {
                 Log.d(
                     "WOOFLIX_TEST",
                     "WyzieSubs: IMDb ID no disponible"
@@ -2306,13 +2299,31 @@ class ExampleProvider : MainAPI() {
 
                     if (subtitleUrl.isBlank() || language.isBlank()) continue
 
+                    val normalizedLanguage = language.trim().lowercase()
+
+                    val isSpanish =
+                        normalizedLanguage == "spanish" ||
+                        normalizedLanguage == "es" ||
+                        normalizedLanguage == "spa" ||
+                        normalizedLanguage.startsWith("spanish ")
+
+                    val isEnglish =
+                        normalizedLanguage == "english" ||
+                        normalizedLanguage == "en" ||
+                        normalizedLanguage == "eng" ||
+                        normalizedLanguage.startsWith("english ")
+
+                    if (!isSpanish && !isEnglish) continue
+
+                    val outputLanguage = if (isSpanish) "Spanish" else "English"
+
                     Log.d(
                         "WOOFLIX_TEST",
-                        "WyzieSubs[$i]: lang=$language url=$subtitleUrl"
+                        "WyzieSubs[$i]: lang=$outputLanguage url=$subtitleUrl"
                     )
 
                     subtitleCallback(
-                        SubtitleFile(language, subtitleUrl)
+                        SubtitleFile(outputLanguage, subtitleUrl)
                     )
                 }
             } else {
