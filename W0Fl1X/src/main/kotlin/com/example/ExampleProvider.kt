@@ -2201,17 +2201,30 @@ class ExampleProvider : MainAPI() {
                                                     "WOOFLIX_TEST",
                                                     "SubDL FILE PREVIEW: $preview"
                                                 )
+
+                                                val srtFile = java.io.File.createTempFile(
+                                                    "subdl-",
+                                                    ".srt",
+                                                    subFile.parentFile
+                                                )
+
+                                                subFile.copyTo(srtFile, overwrite = true)
+
+                                                Log.d(
+                                                    "WOOFLIX_TEST",
+                                                    "SubDL SRT COPY: exists=${srtFile.exists()} size=${srtFile.length()} url=${srtFile.toURI()}"
+                                                )
+
+                                                subtitleCallback(
+                                                    SubtitleFile(
+                                                        "Spanish",
+                                                        srtFile.toURI().toString()
+                                                    )
+                                                )
                                             }
                                         } catch (e: Exception) {
                                             Log.e("WOOFLIX_TEST", "SubDL FILE READ ERROR", e)
                                         }
-                                        subtitleCallback(
-                                            SubtitleFile(
-                                                "Spanish",
-                                                subtitle.url
-                                            )
-                                        )
-
                                         Log.d(
                                             "WOOFLIX_TEST",
                                             "SubDL subtitle added: $subtitleName"
