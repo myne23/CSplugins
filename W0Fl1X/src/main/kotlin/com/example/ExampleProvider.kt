@@ -522,6 +522,9 @@ class ExampleProvider(
                         .trim()
 
                     Log.d("LATANIME", "SEARCH animeUrls=${animeUrls.size}")
+                    animeUrls.forEachIndexed { i, url ->
+                        Log.d("LATANIME", "RESULT[$i]=$url")
+                    }
                     val animeUrl = animeUrls.firstOrNull { candidate ->
                         val slug = candidate.substringAfterLast("/").lowercase()
                         val normalizedSlug = slug
