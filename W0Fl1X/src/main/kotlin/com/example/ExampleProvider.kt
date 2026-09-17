@@ -522,162 +522,146 @@ class ExampleProvider(
                         .trim()
 
                     Log.d("LATANIME", "SEARCH animeUrls=${animeUrls.size}")
-                    animeUrls.forEachIndexed { i, url ->
-                        Log.d("LATANIME", "RESULT[$i]=$url")
-                    }
-                    val animeUrl = animeUrls.firstOrNull { candidate ->
-                        val slug = candidate.substringAfterLast("/").lowercase()
-                        val normalizedSlug = slug
-                            .replace(Regex("""[-\_]+"""), " ")
-                            .replace(Regex("""[^a-z0-9]+"""), " ")
-                            .trim()
 
-                        normalizedSlug == normalizedTitle
-                    } ?: animeUrls.firstOrNull { candidate ->
+                    val volumeUrl = animeUrls.firstOrNull { candidate ->
                         val slug = candidate.substringAfterLast("/").lowercase()
-                        val normalizedSlug = slug
-                            .replace(Regex("""[-\_]+"""), " ")
-                            .replace(Regex("""[^a-z0-9]+"""), " ")
-                            .trim()
+                        val expected = "${normalizedTitle.replace(" ", "-")}-volume-$season"
 
-                        normalizedSlug.contains(normalizedTitle) &&
-                            !normalizedTitle.contains(" ")
+                        slug == expected
                     }
 
-                    Log.d("LATANIME", "ANIME URL=$animeUrl")
-                    if (animeUrl != null) {
-                        val animePage = app.get(animeUrl)
-                        Log.d("LATANIME", "ANIME PAGE HTTP=${animePage.code}")
+                    Log.d("LATANIME", "VOLUME URL=$volumeUrl")
 
-                        val volumeRegex = Regex(
-                            """href=["'](https://latanime\.org/anime/[^"'#?]*volume-$season)["']""",
+                    if (volumeUrl != null) {
+                        val volume = app.get(volumeUrl)
+                        Log.d("LATANIME", "VOLUME PAGE HTTP=${volume.code}")
+
+                        val episodeRegex = Regex(
+                            """href=["'](https://latanime\\.org/ver/[^"'#?]*episodio-$episode)["']""",
                             RegexOption.IGNORE_CASE
                         )
 
-                        val volumeUrl =
-                            volumeRegex.find(animePage.text)?.groupValues?.get(1)
+                        val episodeUrl =
+                            episodeRegex.find(volume.text)?.groupValues?.get(1)
 
-                        Log.d("LATANIME", "VOLUME URL=$volumeUrl")
-                        if (volumeUrl != null) {
-                            val volume = app.get(volumeUrl)
-                            Log.d("LATANIME", "VOLUME PAGE HTTP=${volume.code}")
+                        Log.d("LATANIME", "EPISODE URL=$episodeUrl")
 
-                            val episodeRegex = Regex(
-                                """href=["'](https://latanime\.org/ver/[^"'#?]*episodio-$episode)["']""",
+                        if (episodeUrl != null) {
+                            val episodePage = app.get(episodeUrl)
+                            Log.d("LATANIME", "EPISODE PAGE HTTP=${episodePage.code}")
+
+                            val players = Regex(
+                                """data-player=["']([^"']+)["']""",
                                 RegexOption.IGNORE_CASE
-                            )
+                            ).findAll(episodePage.text)
+                                .map { it.groupValues[1] }
+                                .toList()
 
-                            val episodeUrl =
-                                episodeRegex.find(volume.text)?.groupValues?.get(1)
+                            Log.d("LATANIME", "PLAYERS=${players.size}")
 
-                            Log.d("LATANIME", "EPISODE URL=$episodeUrl")
-                            if (episodeUrl != null) {
-                                val episodePage = app.get(episodeUrl)
-                                Log.d("LATANIME", "EPISODE PAGE HTTP=${episodePage.code}")
+                            val okPlayer = players.firstOrNull { encoded ->
+                                try {
+                                    val decoded = android.util.Base64.decode(
+                                        encoded,
+                                        android.util.Base64.DEFAULT
+                                    ).toString(Charsets.UTF_8)
 
-                                val players = Regex(
-                                    """data-player=["']([^"']+)["']""",
-                                    RegexOption.IGNORE_CASE
-                                ).findAll(episodePage.text)
-                                    .map { it.groupValues[1] }
-                                    .toList()
-
-                                Log.d("LATANIME", "PLAYERS=${players.size}")
-                              val okPlayer = players.firstOrNull { encoded ->
-                                    try {
-                                        val decoded = android.util.Base64.decode(
-                                            encoded,
-                                            android.util.Base64.DEFAULT
-                                        ).toString(Charsets.UTF_8)
-
-                                        decoded.contains("ok.ru", ignoreCase = true)
-                                    } catch (_: Exception) {
-                                        false
-                                    }
+                                    decoded.contains("ok.ru", ignoreCase = true)
+                                } catch (_: Exception) {
+                                    false
                                 }
+                            }
 
-                                Log.d("LATANIME", "OK PLAYER FOUND=${okPlayer != null}")
-                              if (okPlayer != null) {
-                                    try {
-                                        val okUrl = android.util.Base64.decode(
-                                            okPlayer,
-                                            android.util.Base64.DEFAULT
-                                        ).toString(Charsets.UTF_8)
+                            Log.d("LATANIME", "OK PLAYER FOUND=${okPlayer != null}")
 
-                                        val okEmbedUrl =
-                                            okUrl.replace("/video/", "/videoembed/")
+                            if (okPlayer != null) {
+                                try {
+                                    val okUrl = android.util.Base64.decode(
+                                        okPlayer,
+                                        android.util.Base64.DEFAULT
+                                    ).toString(Charsets.UTF_8)
 
-                                        val okEmbed = app.get(okEmbedUrl)
-                                      Log.d("LATANIME", "OK EMBED HTTP=${okEmbed.code} size=${okEmbed.text.length}")
+                                    val okEmbedUrl =
+                                        okUrl.replace("/video/", "/videoembed/")
 
-                                        val normalizedOk = okEmbed.text
-                                            .replace("&quot;", "\"")
-                                            .replace("&amp;", "&")
-                                            .replace("\\u0026", "&")
-                                            .replace("\\u003D", "=")
-                                            .replace("\\/", "/")
-                                            .replace("\\\\", "\\")
+                                    val okEmbed = app.get(okEmbedUrl)
 
-                                        // Direct video formats
-                                        val videoRegex = Regex(
-                                            """"name":"([^"]+)","url":"([^"]+)"""",
-                                            RegexOption.IGNORE_CASE
-                                        )
+                                    Log.d(
+                                        "LATANIME",
+                                        "OK EMBED HTTP=${okEmbed.code} size=${okEmbed.text.length}"
+                                    )
 
-                                        var videoCount = 0
-                                      videoRegex.findAll(normalizedOk).forEach { match ->
-                                          videoCount++
-                                            val qualityName = match.groupValues[1]
-                                            val videoUrl = match.groupValues[2]
+                                    val normalizedOk = okEmbed.text
+                                        .replace("&quot;", "\"")
+                                        .replace("&amp;", "&")
+                                        .replace("\\u0026", "&")
+                                        .replace("\\u003D", "=")
+                                        .replace("\\/", "/")
+                                        .replace("\\\\", "\\")
 
-                                            val quality = when (qualityName.lowercase()) {
-                                                "mobile" -> 144
-                                                "lowest" -> 240
-                                                "low" -> 360
-                                                "sd" -> 480
-                                                "hd" -> 720
-                                                "full" -> 1080
-                                                else -> Qualities.Unknown.value
+                                    val videoRegex = Regex(
+                                        """"name":"([^"]+)","url":"([^"]+)"""",
+                                        RegexOption.IGNORE_CASE
+                                    )
+
+                                    var videoCount = 0
+
+                                    videoRegex.findAll(normalizedOk).forEach { match ->
+                                        videoCount++
+
+                                        val qualityName = match.groupValues[1]
+                                        val videoUrl = match.groupValues[2]
+
+                                        val quality = when (qualityName.lowercase()) {
+                                            "mobile" -> 144
+                                            "lowest" -> 240
+                                            "low" -> 360
+                                            "sd" -> 480
+                                            "hd" -> 720
+                                            "full" -> 1080
+                                            else -> Qualities.Unknown.value
+                                        }
+
+                                        callback(
+                                            newExtractorLink(
+                                                source = "OK.ru",
+                                                name = "OK.ru ES",
+                                                url = videoUrl,
+                                                type = ExtractorLinkType.VIDEO
+                                            ) {
+                                                referer = okEmbedUrl
+                                                this.quality = quality
                                             }
-
-                                            callback(
-                                                newExtractorLink(
-                                                    source = "OK.ru",
-                                                    name = "OK.ru ES",
-                                                    url = videoUrl,
-                                                    type = ExtractorLinkType.VIDEO
-                                                ) {
-                                                    referer = okEmbedUrl
-                                                    this.quality = quality
-                                                }
-                                            )
-                                        }
-
-                                        // HLS master
-                                        val hlsMatch = Regex(
-                                            """"hlsManifestUrl":"([^"]+)"""",
-                                            RegexOption.IGNORE_CASE
-                                        ).find(normalizedOk)
-
-                                        Log.d("LATANIME", "OK DIRECT VIDEOS=$videoCount HLS=${hlsMatch != null}")
-                                      if (hlsMatch != null) {
-                                            val hlsUrl = hlsMatch.groupValues[1]
-
-                                            callback(
-                                                newExtractorLink(
-                                                    source = "OK.ru",
-                                                    name = "OK.ru ES",
-                                                    url = hlsUrl,
-                                                    type = ExtractorLinkType.M3U8
-                                                ) {
-                                                    referer = okEmbedUrl
-                                                    quality = Qualities.Unknown.value
-                                                }
-                                            )
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.e("LATANIME", "OK ERROR", e)
+                                        )
                                     }
+
+                                    val hlsMatch = Regex(
+                                        """"hlsManifestUrl":"([^"]+)"""",
+                                        RegexOption.IGNORE_CASE
+                                    ).find(normalizedOk)
+
+                                    Log.d(
+                                        "LATANIME",
+                                        "OK DIRECT VIDEOS=$videoCount HLS=${hlsMatch != null}"
+                                    )
+
+                                    if (hlsMatch != null) {
+                                        val hlsUrl = hlsMatch.groupValues[1]
+
+                                        callback(
+                                            newExtractorLink(
+                                                source = "OK.ru",
+                                                name = "OK.ru ES",
+                                                url = hlsUrl,
+                                                type = ExtractorLinkType.M3U8
+                                            ) {
+                                                referer = okEmbedUrl
+                                                quality = Qualities.Unknown.value
+                                            }
+                                        )
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("LATANIME", "OK ERROR", e)
                                 }
                             }
                         }
@@ -685,8 +669,9 @@ class ExampleProvider(
                 }
             }
         } catch (e: Exception) {
-            Log.e("LATANIME", "GENERAL ERROR", e)
+            Log.e("LATANIME", "Latanime failed", e)
         }
+
         // === END LATANIME ===
 
         Log.d(
@@ -2645,5 +2630,5 @@ class ExampleProvider(
         }
 
         return true
-        }
     }
+}
