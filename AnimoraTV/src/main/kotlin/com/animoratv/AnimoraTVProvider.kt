@@ -49,7 +49,8 @@ class AnimoraTVProvider : MainAPI() {
                 TvType.TvSeries
             )
 
-            response.posterUrl = anime.optString("portada").ifBlank { null }
+            response.posterUrl = anime.optString("portada")
+                .ifBlank { null }
 
             results.add(response)
         }
@@ -90,7 +91,70 @@ class AnimoraTVProvider : MainAPI() {
     override suspend fun load(
         url: String
     ): LoadResponse? {
-        return null
+
+        val slug = url
+            .substringAfterLast("/anime/")
+            .substringBefore("?")
+            .trim()
+
+        if (slug.isBlank()) return null
+
+        val animeJson = getJson(
+            "$mainUrl/api/animes/$slug"
+        )
+
+        val anime = animeJson
+            .getJSONObject("data")
+            .getJSONObject("anime")
+
+        val title = anime.optString("titulo")
+            .ifBlank { anime.optString("tituloIngles") }
+
+        if (title.isBlank()) return null
+
+        val episodesJson = getJson(
+            "$mainUrl/api/animes/$slug/episodios"
+        )
+
+        val episodes = episodesJson
+            .getJSONObject("data")
+            .getJSONArray("episodios")
+
+        val episodeList = ArrayList<Episode>()
+
+        for (i in 0 until episodes.length()) {
+            val episode = episodes.getJSONObject(i)
+
+            val number = episode.optInt("numero", i + 1)
+
+            val episodeTitle = episode.optString("titulo")
+                .ifBlank { "Episodio $number" }
+
+            val episodeId = episode.optString("_id")
+
+            if (episodeId.isBlank()) continue
+
+            episodeList.add(
+                newEpisode(episodeId) {
+                    name = episodeTitle
+                    this.episode = number
+                    this.season = 1
+                    description = episode.optString("descripcion")
+                    posterUrl = episode.optString("miniatura").ifBlank { null }
+                }
+            )
+        }
+
+        return newTvSeriesLoadResponse(
+            title,
+            url,
+            TvType.TvSeries,
+            episodeList
+        ) {
+            posterUrl = anime.optString("portada").ifBlank { null }
+            plot = anime.optString("sinopsis").ifBlank { null }
+            year = anime.optInt("anio").takeIf { it > 0 }
+        }
     }
 
     override suspend fun loadLinks(
