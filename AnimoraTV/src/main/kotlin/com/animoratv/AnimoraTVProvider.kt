@@ -258,6 +258,7 @@ class AnimoraTVProvider : MainAPI() {
             var found = false
             var totalServers = 0
             var totalExtractedLinks = 0
+            val processedMega = mutableSetOf<String>()
 
             for (i in 0 until fuentes.length()) {
 
@@ -325,31 +326,52 @@ class AnimoraTVProvider : MainAPI() {
                                 "AnimoraTV: MEGA detectado -> $urlVideo"
                             )
 
-                            val megaMatch =
+                            var handle = ""
+                            var key = ""
+
+                            // Formato moderno:
+                            // https://mega.nz/embed/HANDLE#KEY
+                            val modernMatch =
                                 Regex(
-                                    """mega\.nz/(?:embed/)?([^#]+)#(.+)""",
+                                    """mega\.nz/embed/([^#!?]+)#(.+)""",
                                     RegexOption.IGNORE_CASE
                                 ).find(urlVideo)
 
-                            if (megaMatch == null) {
+                            if (modernMatch != null) {
 
-                                println(
-                                    "AnimoraTV: MEGA URL inválida"
-                                )
+                                handle =
+                                    modernMatch
+                                        .groupValues[1]
+                                        .trim()
 
-                                continue
+                                key =
+                                    modernMatch
+                                        .groupValues[2]
+                                        .trim()
+
+                            } else {
+
+                                // Formato viejo:
+                                // https://mega.nz/embed/#!HANDLE!KEY
+                                val oldMatch =
+                                    Regex(
+                                        """mega\.nz/embed/#!([^!]+)!(.+)""",
+                                        RegexOption.IGNORE_CASE
+                                    ).find(urlVideo)
+
+                                if (oldMatch != null) {
+
+                                    handle =
+                                        oldMatch
+                                            .groupValues[1]
+                                            .trim()
+
+                                    key =
+                                        oldMatch
+                                            .groupValues[2]
+                                            .trim()
+                                }
                             }
-
-                            val handle =
-                                megaMatch
-                                    .groupValues[1]
-                                    .substringBefore("?")
-                                    .trim()
-
-                            val key =
-                                megaMatch
-                                    .groupValues[2]
-                                    .trim()
 
                             if (
                                 handle.isBlank() ||
@@ -358,6 +380,19 @@ class AnimoraTVProvider : MainAPI() {
 
                                 println(
                                     "AnimoraTV: MEGA handle/key vacío"
+                                )
+
+                                continue
+                            }
+
+                            val megaId =
+                                "$handle#$key"
+
+                            if (!processedMega.add(megaId)) {
+
+                                println(
+                                    "AnimoraTV: MEGA duplicado -> " +
+                                        "handle=$handle"
                                 )
 
                                 continue
@@ -414,10 +449,11 @@ class AnimoraTVProvider : MainAPI() {
                             "hls",
                             ignoreCase = true
                         ) ||
-                        urlVideo.endsWith(
-                            ".m3u8",
-                            ignoreCase = true
-                        )
+                        urlVideo.substringBefore("?")
+                            .endsWith(
+                                ".m3u8",
+                                ignoreCase = true
+                            )
 
                     println(
                         "AnimoraTV: servidor " +
