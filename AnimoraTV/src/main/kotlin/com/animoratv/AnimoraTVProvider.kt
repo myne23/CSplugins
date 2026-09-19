@@ -237,6 +237,7 @@ class AnimoraTVProvider : MainAPI() {
 
         var found = false
         var totalServers = 0
+        var extractorCalls = 0
 
         for (i in 0 until fuentes.length()) {
 
@@ -299,35 +300,71 @@ class AnimoraTVProvider : MainAPI() {
                         .endsWith(".m3u8")
 
                 println(
-                    "AnimoraTV: link provider=$provider " +
-                    "quality=$quality " +
-                    "hls=$isHls " +
-                    "url=$urlVideo"
+                    "AnimoraTV: servidor provider=$provider " +
+                    "quality=$quality hls=$isHls"
                 )
 
-                callback(
-                    newExtractorLink(
-                        source = "AnimoraTV",
-                        name = "AnimoraTV - $provider",
-                        url = urlVideo,
-                        type = if (isHls) {
-                            ExtractorLinkType.M3U8
-                        } else {
-                            ExtractorLinkType.VIDEO
+                if (isHls) {
+
+                    println(
+                        "AnimoraTV: HLS directo -> $urlVideo"
+                    )
+
+                    callback(
+                        newExtractorLink(
+                            source = "AnimoraTV",
+                            name = "AnimoraTV - $provider",
+                            url = urlVideo,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            referer = "$mainUrl/"
+                            this.quality = quality
                         }
-                    ) {
-                        referer = "$mainUrl/"
-                        this.quality = quality
-                    }
-                )
+                    )
 
-                found = true
-                totalServers++
+                    found = true
+                    totalServers++
+
+                } else {
+
+                    println(
+                        "AnimoraTV: intentando loadExtractor " +
+                        "provider=$provider url=$urlVideo"
+                    )
+
+                    try {
+                        loadExtractor(
+                            urlVideo,
+                            "$mainUrl/",
+                            subtitleCallback,
+                            callback
+                        )
+
+                        extractorCalls++
+
+                        println(
+                            "AnimoraTV: loadExtractor OK " +
+                            "provider=$provider"
+                        )
+
+                        found = true
+                        totalServers++
+
+                    } catch (e: Exception) {
+
+                        println(
+                            "AnimoraTV: loadExtractor ERROR " +
+                            "provider=$provider error=${e.message}"
+                        )
+                    }
+                }
             }
         }
 
         println(
-            "AnimoraTV: FINAL found=$found totalServers=$totalServers"
+            "AnimoraTV: FINAL found=$found " +
+            "totalServers=$totalServers " +
+            "extractorCalls=$extractorCalls"
         )
 
         return found
