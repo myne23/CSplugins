@@ -19,7 +19,7 @@ class AnimoraTVProvider : MainAPI() {
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
-        "$mainUrl/api/animes/tendencias" to "Tendencias",
+        "$mainUrl/api/episodios/recientes?limite=12" to "Últimos episodios",
         "$mainUrl/api/animes/populares" to "Populares"
     )
 
@@ -56,11 +56,80 @@ class AnimoraTVProvider : MainAPI() {
         return results
     }
 
+    private fun parseRecentEpisodes(json: JSONObject): List<SearchResponse> {
+        val results = ArrayList<SearchResponse>()
+
+        val episodes =
+            json.optJSONArray("data")
+                ?: return results
+
+        for (i in 0 until episodes.length()) {
+
+            val episode =
+                episodes.optJSONObject(i)
+                    ?: continue
+
+            val anime =
+                episode.optJSONObject("anime")
+                    ?: continue
+
+            val title =
+                anime.optString("titulo")
+                    .ifBlank {
+                        anime.optString("tituloIngles")
+                    }
+
+            val slug =
+                anime.optString("slug")
+
+            val number =
+                episode.optInt("numero", 0)
+
+            if (
+                title.isBlank() ||
+                slug.isBlank() ||
+                number <= 0
+            ) {
+                continue
+            }
+
+            val response =
+                newAnimeSearchResponse(
+                    "$title - Episodio $number",
+                    "$mainUrl/anime/$slug/episodio/$number",
+                    TvType.Anime
+                )
+
+            response.posterUrl =
+                episode
+                    .optString("miniatura")
+                    .ifBlank {
+                        anime.optString("portada")
+                    }
+                    .ifBlank { null }
+
+            results.add(response)
+        }
+
+        return results
+    }
+
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val results = parseAnimeList(getJson(request.data))
+
+        val results =
+            if (request.name == "Últimos episodios") {
+                parseRecentEpisodes(
+                    getJson(request.data)
+                )
+            } else {
+                parseAnimeList(
+                    getJson(request.data)
+                )
+            }
+
         return newHomePageResponse(
             request.name,
             results,
@@ -73,11 +142,17 @@ class AnimoraTVProvider : MainAPI() {
     ): List<SearchResponse>? {
 
         val encodedQuery =
-            java.net.URLEncoder.encode(query, "UTF-8")
+            java.net.URLEncoder.encode(
+                query,
+                "UTF-8"
+            )
 
-        val json = getJson(
-            "$mainUrl/api/busqueda?termino=$encodedQuery&pagina=1&limite=30"
-        )
+        val json =
+            getJson(
+                "$mainUrl/api/busqueda" +
+                    "?termino=$encodedQuery" +
+                    "&pagina=1&limite=30"
+            )
 
         return parseAnimeList(json)
     }
@@ -86,17 +161,34 @@ class AnimoraTVProvider : MainAPI() {
         url: String
     ): LoadResponse? {
 
-        val slug = url
-            .substringAfterLast("/anime/")
-            .substringBefore("?")
-            .trim()
+        val animePart =
+            url
+                .substringAfter("/anime/", "")
+                .substringBefore("/episodio/")
+                .substringBefore("?")
+                .trim()
+                .removeSuffix("/")
+
+        val slug =
+            if (animePart.isNotBlank()) {
+                animePart
+            } else {
+                url
+                    .substringAfterLast("/anime/")
+                    .substringBefore("?")
+                    .trim()
+            }
 
         if (slug.isBlank()) return null
 
-        println("AnimoraTV: load slug=$slug")
+        println(
+            "AnimoraTV: load slug=$slug"
+        )
 
         val animeJson =
-            getJson("$mainUrl/api/animes/$slug")
+            getJson(
+                "$mainUrl/api/animes/$slug"
+            )
 
         val anime =
             animeJson
@@ -105,12 +197,16 @@ class AnimoraTVProvider : MainAPI() {
 
         val title =
             anime.optString("titulo")
-                .ifBlank { anime.optString("tituloIngles") }
+                .ifBlank {
+                    anime.optString("tituloIngles")
+                }
 
         if (title.isBlank()) return null
 
         val episodesJson =
-            getJson("$mainUrl/api/animes/$slug/episodios")
+            getJson(
+                "$mainUrl/api/animes/$slug/episodios"
+            )
 
         val episodes =
             episodesJson
@@ -126,11 +222,17 @@ class AnimoraTVProvider : MainAPI() {
                 episodes.getJSONObject(i)
 
             val number =
-                episode.optInt("numero", i + 1)
+                episode.optInt(
+                    "numero",
+                    i + 1
+                )
 
             val episodeTitle =
-                episode.optString("titulo")
-                    .ifBlank { "Episodio $number" }
+                episode
+                    .optString("titulo")
+                    .ifBlank {
+                        "Episodio $number"
+                    }
 
             if (number <= 0) continue
 
@@ -142,7 +244,9 @@ class AnimoraTVProvider : MainAPI() {
                     season = 1
 
                     description =
-                        episode.optString("descripcion")
+                        episode.optString(
+                            "descripcion"
+                        )
 
                     posterUrl =
                         episode
@@ -160,11 +264,13 @@ class AnimoraTVProvider : MainAPI() {
         ) {
 
             posterUrl =
-                anime.optString("portada")
+                anime
+                    .optString("portada")
                     .ifBlank { null }
 
             plot =
-                anime.optString("sinopsis")
+                anime
+                    .optString("sinopsis")
                     .ifBlank { null }
 
             year =
@@ -181,15 +287,19 @@ class AnimoraTVProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        println("AnimoraTV: loadLinks data=$data")
+        println(
+            "AnimoraTV: loadLinks data=$data"
+        )
 
         val parts =
             data.split("|")
 
         if (parts.size < 2) {
+
             println(
                 "AnimoraTV: ERROR formato data inválido"
             )
+
             return false
         }
 
@@ -200,9 +310,11 @@ class AnimoraTVProvider : MainAPI() {
             parts[1].toIntOrNull()
 
         if (episodeNumber == null) {
+
             println(
                 "AnimoraTV: ERROR episodio inválido=${parts[1]}"
             )
+
             return false
         }
 
@@ -234,9 +346,11 @@ class AnimoraTVProvider : MainAPI() {
             )
 
             if (!response.isSuccessful) {
+
                 println(
                     "AnimoraTV: ERROR HTTP ${response.code}"
                 )
+
                 return false
             }
 
@@ -332,8 +446,6 @@ class AnimoraTVProvider : MainAPI() {
                             var handle = ""
                             var key = ""
 
-                            // Formato moderno:
-                            // https://mega.nz/embed/HANDLE#KEY
                             val modernMatch =
                                 Regex(
                                     """mega\.nz/embed/([^#!?]+)#(.+)""",
@@ -354,8 +466,6 @@ class AnimoraTVProvider : MainAPI() {
 
                             } else {
 
-                                // Formato viejo:
-                                // https://mega.nz/embed/#!HANDLE!KEY
                                 val oldMatch =
                                     Regex(
                                         """mega\.nz/embed/#!([^!]+)!(.+)""",
@@ -450,7 +560,8 @@ class AnimoraTVProvider : MainAPI() {
                             "hls",
                             ignoreCase = true
                         ) ||
-                        urlVideo.substringBefore("?")
+                        urlVideo
+                            .substringBefore("?")
                             .endsWith(
                                 ".m3u8",
                                 ignoreCase = true
@@ -473,21 +584,31 @@ class AnimoraTVProvider : MainAPI() {
 
                             val hlsReferer =
                                 try {
+
                                     val refValue =
                                         urlVideo
-                                            .substringAfter("ref=", "")
+                                            .substringAfter(
+                                                "ref=",
+                                                ""
+                                            )
                                             .substringBefore("&")
 
-                                    if (refValue.isNotBlank()) {
+                                    if (
+                                        refValue.isNotBlank()
+                                    ) {
+
                                         java.net.URLDecoder.decode(
                                             refValue,
                                             "UTF-8"
                                         )
+
                                     } else {
+
                                         "$mainUrl/"
                                     }
 
                                 } catch (_: Exception) {
+
                                     "$mainUrl/"
                                 }
 
@@ -541,8 +662,11 @@ class AnimoraTVProvider : MainAPI() {
                                 uri.host ?: ""
 
                             if (host.isBlank()) {
+
                                 "$mainUrl/"
+
                             } else {
+
                                 "${uri.scheme ?: "https"}://$host/"
                             }
 
@@ -577,7 +701,11 @@ class AnimoraTVProvider : MainAPI() {
                     val extractorCallback:
                         (ExtractorLink) -> Unit = { link ->
 
-                        if (emittedUrls.contains(link.url)) {
+                        if (
+                            emittedUrls.contains(
+                                link.url
+                            )
+                        ) {
 
                             println(
                                 "AnimoraTV: LINK DUPLICADO " +
@@ -589,7 +717,9 @@ class AnimoraTVProvider : MainAPI() {
 
                         } else {
 
-                            emittedUrls.add(link.url)
+                            emittedUrls.add(
+                                link.url
+                            )
 
                             emitted++
                             totalExtractedLinks++
@@ -612,7 +742,9 @@ class AnimoraTVProvider : MainAPI() {
                         in referers.withIndex()
                     ) {
 
-                        if (successfulReferer != null) {
+                        if (
+                            successfulReferer != null
+                        ) {
                             break
                         }
 
@@ -636,7 +768,9 @@ class AnimoraTVProvider : MainAPI() {
                                 extractorCallback
                             )
 
-                            if (emitted > before) {
+                            if (
+                                emitted > before
+                            ) {
 
                                 successfulReferer =
                                     referer
@@ -669,7 +803,9 @@ class AnimoraTVProvider : MainAPI() {
                         }
                     }
 
-                    if (successfulReferer == null) {
+                    if (
+                        successfulReferer == null
+                    ) {
 
                         println(
                             "AnimoraTV: EXTRACTOR FALLÓ " +
