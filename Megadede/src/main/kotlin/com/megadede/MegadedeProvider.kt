@@ -1333,6 +1333,9 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
             var solvedKey = ""
 
             val saltBytes = hexToBytes(salt)
+            val nonceBytes = hexToBytes(nonce)
+
+            val powStart = System.nanoTime()
 
             for (counter in 0 until 1_000_000) {
                 val counterBytes = byteArrayOf(
@@ -1343,7 +1346,7 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                 )
 
                 val passwordBytes =
-                    nonce.toByteArray(Charsets.UTF_8) + counterBytes
+                    nonceBytes + counterBytes
 
                 val derived = pbkdf2Sha256(
                     passwordBytes,
@@ -1371,16 +1374,19 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                 return null
             }
 
+            val powElapsedMs =
+                (System.nanoTime() - powStart) / 1_000_000.0
+
             Log.d(
                 "MegadedeProvider",
-                "Voe ALTCHA resuelto: counter=$solvedCounter key=$solvedKey"
+                "Voe ALTCHA resuelto: counter=$solvedCounter key=$solvedKey time=${powElapsedMs}ms"
             )
 
             // ALTCHA v2 espera el challenge como objeto JSON,
             // no como string. Conservamos exactamente el JSON
             // devuelto por el endpoint de challenge.
             val altchaPayload = """
-                {"challenge":$challengeJson,"solution":{"counter":$solvedCounter,"derivedKey":"$solvedKey","time":0}}
+                {"challenge":$challengeJson,"solution":{"counter":$solvedCounter,"derivedKey":"$solvedKey","time":$powElapsedMs}}
             """.trimIndent()
 
             Log.d(
