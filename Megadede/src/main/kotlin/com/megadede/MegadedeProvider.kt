@@ -14,7 +14,7 @@ import javax.crypto.spec.SecretKeySpec
 
 class MegadedeProvider : MainAPI() {
 
-    override var mainUrl = "https://megadede.mobi/"
+    override var mainUrl = "https://megadede.mobi"
     override var name = "Megadede"
 
     override val supportedTypes = setOf(
