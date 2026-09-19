@@ -831,10 +831,12 @@ class MegadedeProvider : MainAPI() {
             """changeServer\(\s*['"]([^'"]+)['"]""",
             RegexOption.IGNORE_CASE
         ).findAll(html).forEach {
-            val server = it.groupValues[1]
+            val rawServer = it.groupValues[1]
+            val server = absoluteUrl(rawServer)
 
             if (!servers.contains(server)) {
                 servers.add(server)
+
                 Log.d(
                     "MegadedeProvider",
                     "LINKS servidor encontrado: $server"
@@ -854,6 +856,11 @@ class MegadedeProvider : MainAPI() {
             !servers.contains(iframeUrl)
         ) {
             servers.add(iframeUrl)
+
+            Log.d(
+                "MegadedeProvider",
+                "LINKS iframe agregado: $iframeUrl"
+            )
         }
 
         Log.d(
