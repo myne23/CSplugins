@@ -260,7 +260,7 @@ class AnimoraTVProvider : MainAPI() {
             var totalExtractedLinks = 0
             var megaEmitted = false
 
-            val emittedProviders =
+            val emittedUrls =
                 mutableSetOf<String>()
 
             for (i in 0 until fuentes.length()) {
@@ -577,26 +577,19 @@ class AnimoraTVProvider : MainAPI() {
                     val extractorCallback:
                         (ExtractorLink) -> Unit = { link ->
 
-                        val normalizedProvider =
-                            link.name
-                                .trim()
-                                .lowercase()
+                        if (emittedUrls.contains(link.url)) {
 
-                        if (
-                            emittedProviders.contains(
-                                normalizedProvider
-                            )
-                        ) {
                             println(
                                 "AnimoraTV: LINK DUPLICADO " +
                                     "ignorado " +
                                     "name=${link.name} " +
-                                    "provider=$provider"
+                                    "provider=$provider " +
+                                    "url=${link.url}"
                             )
+
                         } else {
-                            emittedProviders.add(
-                                normalizedProvider
-                            )
+
+                            emittedUrls.add(link.url)
 
                             emitted++
                             totalExtractedLinks++
