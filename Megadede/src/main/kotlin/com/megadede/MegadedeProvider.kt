@@ -535,6 +535,53 @@ class MegadedeProvider : MainAPI() {
 
                         Log.d(
                             "MegadedeProvider",
+                            "LINKS Embed69 resultado: server=$serverName language=$language url=$realUrl"
+                        )
+
+                        // Vidhide: extracción directa del HLS.
+                        if (serverName.equals("vidhide", true)) {
+                            Log.d(
+                                "MegadedeProvider",
+                                "LINKS Vidhide directo: $realUrl"
+                            )
+
+                            val hlsUrl = extractVidhideLink(realUrl)
+
+                            if (!hlsUrl.isNullOrBlank()) {
+                                Log.d(
+                                    "MegadedeProvider",
+                                    "LINKS Vidhide HLS encontrado: $hlsUrl"
+                                )
+
+                                callback(
+                                    newExtractorLink(
+                                        "Vidhide",
+                                        "Vidhide",
+                                        hlsUrl,
+                                        ExtractorLinkType.M3U8
+                                    ) {
+                                        referer = realUrl
+                                    }
+                                )
+
+                                found = true
+
+                                Log.d(
+                                    "MegadedeProvider",
+                                    "LINK EMITIDO: source=Vidhide name=Vidhide url=$hlsUrl quality=0"
+                                )
+                            } else {
+                                Log.d(
+                                    "MegadedeProvider",
+                                    "LINKS Vidhide directo: no se obtuvo HLS"
+                                )
+                            }
+
+                            continue
+                        }
+
+                        Log.d(
+                            "MegadedeProvider",
                             "LINKS llamando loadExtractor: name=$displayName url=$realUrl"
                         )
 
@@ -647,6 +694,121 @@ class MegadedeProvider : MainAPI() {
             ?.getOrNull(1)
 
         return iframe?.let { absoluteUrl(it) }
+    }
+
+
+    private suspend fun extractVidhideLink(embedUrl: String): String? {
+        return try {
+            Log.d(
+                "MegadedeProvider",
+                "Vidhide directo: GET $embedUrl"
+            )
+
+            val response = app.get(
+                embedUrl,
+                headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+                )
+            )
+
+            if (!response.isSuccessful) {
+                Log.d(
+                    "MegadedeProvider",
+                    "Vidhide directo: HTTP ${response.code}"
+                )
+                return null
+            }
+
+            val html = response.text
+
+            val packedRegex = Regex(
+                """eval\(function\(p,a,c,k,e,d\)\{.*?\}\('([\s\S]*?)',(\d+),(\d+),'([\s\S]*?)'\)\)"""
+            )
+
+            val match = packedRegex.find(html)
+
+            if (match == null) {
+                Log.d(
+                    "MegadedeProvider",
+                    "Vidhide directo: Packer no encontrado"
+                )
+                return null
+            }
+
+            var packed = match.groupValues[1]
+            val base = match.groupValues[2].toInt()
+            var count = match.groupValues[3].toInt()
+            val dictionary = match.groupValues[4].split("|")
+
+            fun toBase36(value: Int): String {
+                val chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+                if (value == 0) {
+                    return "0"
+                }
+
+                var n = value
+                val result = StringBuilder()
+
+                while (n > 0) {
+                    result.append(chars[n % 36])
+                    n /= 36
+                }
+
+                return result.reverse().toString()
+            }
+
+            while (count-- > 0) {
+                if (count >= dictionary.size) {
+                    continue
+                }
+
+                val word = dictionary[count]
+
+                if (word.isEmpty()) {
+                    continue
+                }
+
+                val token = toBase36(count)
+
+                packed = packed.replace(
+                    Regex("""\b${Regex.escape(token)}\b"""),
+                    word
+                )
+            }
+
+            val hls4 = Regex(
+                """["']hls4["']\s*:\s*["']([^"']+)["']"""
+            ).find(packed)?.groupValues?.getOrNull(1)
+
+            if (hls4.isNullOrBlank()) {
+                Log.d(
+                    "MegadedeProvider",
+                    "Vidhide directo: hls4 no encontrado"
+                )
+                return null
+            }
+
+            val result = if (hls4.startsWith("http")) {
+                hls4
+            } else {
+                "https://morencius.com$hls4"
+            }
+
+            Log.d(
+                "MegadedeProvider",
+                "Vidhide directo: HLS=$result"
+            )
+
+            result
+        } catch (e: Exception) {
+            Log.e(
+                "MegadedeProvider",
+                "Vidhide directo ERROR",
+                e
+            )
+            null
+        }
     }
 
     private suspend fun extractEmbed69Links(
