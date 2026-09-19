@@ -8,6 +8,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -19,6 +20,9 @@ object MegaLocalServer {
 
     private var server: ServerSocket? = null
 
+    private val megaKeys =
+        ConcurrentHashMap<String, String>()
+
     private data class MegaFile(
         val storageUrl: String,
         val size: Long
@@ -28,6 +32,13 @@ object MegaLocalServer {
         handle: String,
         keyB64: String
     ): String {
+
+        megaKeys[handle] = keyB64
+
+        println(
+            "AnimoraTV: Mega registrado " +
+                "handle=$handle"
+        )
 
         if (server == null || server!!.isClosed) {
 
@@ -50,11 +61,7 @@ object MegaLocalServer {
 
                         Thread {
 
-                            handleClient(
-                                socket,
-                                handle,
-                                keyB64
-                            )
+                            handleClient(socket)
 
                         }.start()
 
@@ -86,9 +93,7 @@ object MegaLocalServer {
     }
 
     private fun handleClient(
-        socket: Socket,
-        handle: String,
-        keyB64: String
+        socket: Socket
     ) {
 
         socket.use { s ->
@@ -114,6 +119,65 @@ object MegaLocalServer {
                     "AnimoraTV: Mega request:\n$request"
                 )
 
+                val pathMatch =
+                    Regex(
+                        """(?m)^GET\s+/mega/([^\s?]+)"""
+                    ).find(request)
+
+                val requestHandle =
+                    pathMatch
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.trim()
+                        ?.substringBefore("?")
+                        ?: ""
+
+                if (requestHandle.isBlank()) {
+                    println(
+                        "AnimoraTV: Mega ERROR -> " +
+                            "handle vacío en request"
+                    )
+
+                    writeResponse(
+                        output,
+                        "HTTP/1.1 400 Bad Request",
+                        mapOf(
+                            "Content-Length" to "0",
+                            "Connection" to "close"
+                        ),
+                        ByteArray(0)
+                    )
+
+                    return
+                }
+
+                val requestKey =
+                    megaKeys[requestHandle]
+
+                if (requestKey.isNullOrBlank()) {
+                    println(
+                        "AnimoraTV: Mega ERROR -> " +
+                            "handle no registrado=$requestHandle"
+                    )
+
+                    writeResponse(
+                        output,
+                        "HTTP/1.1 404 Not Found",
+                        mapOf(
+                            "Content-Length" to "0",
+                            "Connection" to "close"
+                        ),
+                        ByteArray(0)
+                    )
+
+                    return
+                }
+
+                println(
+                    "AnimoraTV: Mega request handle=" +
+                        requestHandle
+                )
+
                 val range =
                     Regex(
                         "(?im)^Range:\\s*bytes=(\\d+)-(\\d*)"
@@ -136,7 +200,7 @@ object MegaLocalServer {
                         }
 
                 val megaFile =
-                    resolveMegaFile(handle)
+                    resolveMegaFile(requestHandle)
 
                 val start =
                     range?.first ?: 0L
@@ -193,7 +257,7 @@ object MegaLocalServer {
                 val decrypted =
                     decryptRange(
                         encrypted,
-                        keyB64,
+                        requestKey,
                         alignedStart
                     )
 
