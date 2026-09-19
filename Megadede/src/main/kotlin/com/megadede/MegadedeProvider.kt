@@ -25,8 +25,25 @@ class MegadedeProvider : MainAPI() {
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
-        "https://megadede.mobi/search?s=vikingos" to "Megadede"
+        "megadede" to "Megadede"
     )
+
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+        val results = search("vikingos")
+
+        return newHomePageResponse(
+            listOf(
+                HomePageList(
+                    "Megadede",
+                    results,
+                    isHorizontalImages = true
+                )
+            )
+        )
+    }
 
     private fun absoluteUrl(url: String): String {
         return when {
