@@ -471,6 +471,30 @@ class AnimoraTVProvider : MainAPI() {
                                 "AnimoraTV: HLS directo -> $urlVideo"
                             )
 
+                            val hlsReferer =
+                                try {
+                                    val refValue =
+                                        urlVideo
+                                            .substringAfter("ref=", "")
+                                            .substringBefore("&")
+
+                                    if (refValue.isNotBlank()) {
+                                        java.net.URLDecoder.decode(
+                                            refValue,
+                                            "UTF-8"
+                                        )
+                                    } else {
+                                        "$mainUrl/"
+                                    }
+
+                                } catch (_: Exception) {
+                                    "$mainUrl/"
+                                }
+
+                            println(
+                                "AnimoraTV: HLS referer -> $hlsReferer"
+                            )
+
                             callback(
                                 newExtractorLink(
                                     name = provider,
@@ -480,7 +504,7 @@ class AnimoraTVProvider : MainAPI() {
                                 ) {
 
                                     referer =
-                                        "$mainUrl/"
+                                        hlsReferer
 
                                     quality =
                                         qualityValue
