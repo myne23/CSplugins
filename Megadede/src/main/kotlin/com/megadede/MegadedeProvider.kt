@@ -124,10 +124,16 @@ class MegadedeProvider : MainAPI() {
                 "SEARCH response: success=${response.isSuccessful} code=${response.code} size=${response.text.length}"
             )
 
+            if (!response.isSuccessful) {
+                return emptyList()
+            }
+
             val html = response.text
+            val results = mutableListOf<SearchResponse>()
+            val seen = HashSet<String>()
 
             val articleRegex = Regex(
-                """<article[^>]*class=["'][^"']*\\bmv\\b[^"']*["'][^>]*>([\\s\\S]*?)</article>""",
+                """<article[^>]*class=["'][^"']*mv[^"']*["'][^>]*>(.*?)</article>""",
                 setOf(
                     RegexOption.IGNORE_CASE,
                     RegexOption.DOT_MATCHES_ALL
@@ -141,33 +147,18 @@ class MegadedeProvider : MainAPI() {
                 "SEARCH articles encontrados: ${articles.size}"
             )
 
-            val results = mutableListOf<SearchResponse>()
-            val seen = HashSet<String>()
-
             for (match in articles) {
                 val article = match.groupValues[1]
 
                 val href = Regex(
-                    """<a[^>]+href=["']([^"']+)["'][^>]*class=["'][^"']*lnk-blk[^"']*["']""",
+                    """href=["'](/(?:pelicula|serie)/[^"']+)["']""",
                     RegexOption.IGNORE_CASE
                 ).find(article)?.groupValues?.getOrNull(1)
-                    ?: Regex(
-                        """<a[^>]+class=["'][^"']*lnk-blk[^"']*["'][^>]+href=["']([^"']+)["']""",
-                        RegexOption.IGNORE_CASE
-                    ).find(article)?.groupValues?.getOrNull(1)
+                    ?: continue
 
-                Log.d(
-                    "MegadedeProvider",
-                    "SEARCH href encontrado: $href"
-                )
-
-                if (href == null) continue
-
-                if (!href.startsWith("/pelicula/") &&
-                    !href.startsWith("/serie/")
-                ) continue
-
-                if (!seen.add(href)) continue
+                if (!seen.add(href)) {
+                    continue
+                }
 
                 val image = Regex(
                     """<img[^>]+src=["']([^"']+)["'][^>]*>""",
@@ -177,47 +168,60 @@ class MegadedeProvider : MainAPI() {
                 val poster = image
                     ?.groupValues
                     ?.getOrNull(1)
+                    ?.takeIf { it.isNotBlank() }
 
-                val title = image
+                val alt = image
+                    ?.value
                     ?.let {
                         Regex(
-                            """(?:alt|title)=["']([^"']+)["']""",
+                            """alt=["']([^"']+)["']""",
                             RegexOption.IGNORE_CASE
-                        ).find(it.value)
-                            ?.groupValues
-                            ?.getOrNull(1)
+                        ).find(it)?.groupValues?.getOrNull(1)
                     }
-                    ?.let(::cleanHtml)
-                    ?.replace(
+
+                val titleAttr = image
+                    ?.value
+                    ?.let {
+                        Regex(
+                            """title=["']([^"']+)["']""",
+                            RegexOption.IGNORE_CASE
+                        ).find(it)?.groupValues?.getOrNull(1)
+                    }
+
+                var title = titleAttr ?: alt ?: ""
+
+                title = cleanHtml(title)
+                    .replace(
                         Regex(
                             """^Ver\s+""",
                             RegexOption.IGNORE_CASE
                         ),
                         ""
                     )
-                    ?.replace(
+                    .replace(
                         Regex(
                             """\s+-\s+Ver online.*$""",
                             RegexOption.IGNORE_CASE
                         ),
                         ""
                     )
-                    ?.replace(
+                    .replace(
                         Regex(
                             """\s+\(\d{4}\)\s+online.*$""",
                             RegexOption.IGNORE_CASE
                         ),
                         ""
                     )
-                    ?.trim()
-                    .orEmpty()
+                    .trim()
+
+                if (title.isBlank()) {
+                    continue
+                }
 
                 Log.d(
                     "MegadedeProvider",
                     "SEARCH resultado: title='$title' href='$href' poster='$poster'"
                 )
-
-                if (title.isBlank()) continue
 
                 val absolute = absoluteUrl(href)
 
@@ -261,7 +265,6 @@ class MegadedeProvider : MainAPI() {
             emptyList()
         }
     }
-
     override suspend fun load(url: String): LoadResponse {
         val isMovie = "/pelicula/" in url
         val response = app.get(url)
