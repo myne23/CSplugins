@@ -104,57 +104,122 @@ class MegadedeProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val encoded = URLEncoder.encode(query, "UTF-8")
-        val response = app.get("$mainUrl/search?s=$encoded")
 
-        if (!response.isSuccessful) return emptyList()
+        val response = app.get(
+            "$mainUrl/search?s=$encoded",
+            headers = mapOf(
+                "Referer" to mainUrl
+            )
+        )
+
+        if (!response.isSuccessful) {
+            return emptyList()
+        }
 
         val html = response.text
         val results = mutableListOf<SearchResponse>()
-
-        val regex = Regex(
-            """<a[^>]+href="(/(?:pelicula|serie)/[^"]+)"[^>]*>[\s\S]*?<img[^>]+(?:alt|title)="([^"]+)"""",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        )
-
         val seen = HashSet<String>()
 
-        for (match in regex.findAll(html)) {
-            val href = match.groupValues[1]
-            val title = cleanHtml(match.groupValues[2])
+        val articleRegex = Regex(
+            """<article[^>]*class=["'][^"']*\\bmv\\b[^"']*["'][^>]*>([\\s\\S]*?)</article>""",
+            setOf(
+                RegexOption.IGNORE_CASE,
+                RegexOption.DOT_MATCHES_ALL
+            )
+        )
 
-            if (!seen.add(href)) continue
-            if (title.isBlank()) continue
+        for (articleMatch in articleRegex.findAll(html)) {
+            val article = articleMatch.groupValues[1]
 
-            val type = if (href.startsWith("/serie/")) {
-                TvType.TvSeries
-            } else {
-                TvType.Movie
+            val href = Regex(
+                """<a[^>]+href=["']([^"']+)["'][^>]*class=["'][^"']*lnk-blk[^"']*["']""",
+                RegexOption.IGNORE_CASE
+            ).find(article)?.groupValues?.getOrNull(1)
+                ?: Regex(
+                    """<a[^>]+class=["'][^"']*lnk-blk[^"']*["'][^>]+href=["']([^"']+)["']""",
+                    RegexOption.IGNORE_CASE
+                ).find(article)?.groupValues?.getOrNull(1)
+                ?: continue
+
+            if (!href.startsWith("/pelicula/") && !href.startsWith("/serie/")) {
+                continue
             }
 
-            val poster = Regex(
-                """<a[^>]+href="${Regex.escape(href)}"[\s\S]*?<img[^>]+src="([^"]+)""",
-                setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-            ).find(html)?.groupValues?.getOrNull(1)
+            if (!seen.add(href)) {
+                continue
+            }
 
-            results.add(
-                if (type == TvType.Movie) {
-                    newMovieSearchResponse(
-                        title,
-                        absoluteUrl(href),
-                        TvType.Movie
-                    ) {
-                        this.posterUrl = poster
-                    }
-                } else {
+            val image = Regex(
+                """<img[^>]+src=["']([^"']+)["'][^>]*>""",
+                RegexOption.IGNORE_CASE
+            ).find(article)
+
+            val poster = image
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.takeIf { it.isNotBlank() }
+
+            val title = image
+                ?.let {
+                    Regex(
+                        """(?:alt|title)=["']([^"']+)["']""",
+                        RegexOption.IGNORE_CASE
+                    ).find(it.value)?.groupValues?.getOrNull(1)
+                }
+                ?.let(::cleanHtml)
+                ?.replace(
+                    Regex(
+                        """\s*-\s*Ver online.*$""",
+                        RegexOption.IGNORE_CASE
+                    ),
+                    ""
+                )
+                ?.replace(
+                    Regex(
+                        """^Ver\s+""",
+                        RegexOption.IGNORE_CASE
+                    ),
+                    ""
+                )
+                ?.replace(
+                    Regex(
+                        """\s+\(\d{4}\)\s+online.*$""",
+                        RegexOption.IGNORE_CASE
+                    ),
+                    ""
+                )
+                ?.trim()
+                .orEmpty()
+
+            if (title.isBlank()) {
+                continue
+            }
+
+            val absolute = absoluteUrl(href)
+
+            if (href.startsWith("/serie/")) {
+                results.add(
                     newTvSeriesSearchResponse(
                         title,
-                        absoluteUrl(href),
-                        TvType.TvSeries
+                        absolute,
+                        TvType.TvSeries,
+                        false
                     ) {
                         this.posterUrl = poster
                     }
-                }
-            )
+                )
+            } else {
+                results.add(
+                    newMovieSearchResponse(
+                        title,
+                        absolute,
+                        TvType.Movie,
+                        false
+                    ) {
+                        this.posterUrl = poster
+                    }
+                )
+            }
         }
 
         return results
