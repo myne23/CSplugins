@@ -260,6 +260,9 @@ class AnimoraTVProvider : MainAPI() {
             var totalExtractedLinks = 0
             var megaEmitted = false
 
+            val emittedProviders =
+                mutableSetOf<String>()
+
             for (i in 0 until fuentes.length()) {
 
                 val fuente =
@@ -550,19 +553,41 @@ class AnimoraTVProvider : MainAPI() {
                     val extractorCallback:
                         (ExtractorLink) -> Unit = { link ->
 
-                        emitted++
-                        totalExtractedLinks++
+                        val normalizedProvider =
+                            link.name
+                                .trim()
+                                .lowercase()
 
-                        println(
-                            "AnimoraTV: EXTRACTED LINK " +
-                                "provider=$provider " +
-                                "name=${link.name} " +
-                                "quality=${link.quality} " +
-                                "type=${link.type} " +
-                                "url=${link.url}"
-                        )
+                        if (
+                            emittedProviders.contains(
+                                normalizedProvider
+                            )
+                        ) {
+                            println(
+                                "AnimoraTV: LINK DUPLICADO " +
+                                    "ignorado " +
+                                    "name=${link.name} " +
+                                    "provider=$provider"
+                            )
+                        } else {
+                            emittedProviders.add(
+                                normalizedProvider
+                            )
 
-                        callback(link)
+                            emitted++
+                            totalExtractedLinks++
+
+                            println(
+                                "AnimoraTV: EXTRACTED LINK " +
+                                    "provider=$provider " +
+                                    "name=${link.name} " +
+                                    "quality=${link.quality} " +
+                                    "type=${link.type} " +
+                                    "url=${link.url}"
+                            )
+
+                            callback(link)
+                        }
                     }
 
                     for (
