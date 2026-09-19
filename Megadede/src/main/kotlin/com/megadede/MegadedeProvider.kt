@@ -511,37 +511,40 @@ class MegadedeProvider : MainAPI() {
 
                     val episodeUrl = absoluteUrl(href)
 
-                    var episodePoster: String? = null
+                    var episodePoster: String? = poster
                     var episodeDescription: String? = null
 
-                    try {
-                        val episodeHtml = app.get(episodeUrl).text
+                    if (matches.size <= 30) {
+                        try {
+                            val episodeHtml = app.get(episodeUrl).text
 
-                        episodePoster = Regex(
-                            """<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']""",
-                            RegexOption.IGNORE_CASE
-                        )
-                            .find(episodeHtml)
-                            ?.groupValues
-                            ?.getOrNull(1)
+                            episodePoster = Regex(
+                                """<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']""",
+                                RegexOption.IGNORE_CASE
+                            )
+                                .find(episodeHtml)
+                                ?.groupValues
+                                ?.getOrNull(1)
+                                ?: poster
 
-                        episodeDescription = Regex(
-                            """<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["']""",
-                            RegexOption.IGNORE_CASE
-                        )
-                            .find(episodeHtml)
-                            ?.groupValues
-                            ?.getOrNull(1)
-                            ?.let { cleanHtml(it).trim() }
-                            ?.takeIf {
-                                it.isNotBlank() &&
-                                !it.startsWith("No se encontró una sinopsis", ignoreCase = true)
-                            }
-                    } catch (e: Exception) {
-                        Log.d(
-                            "MegadedeProvider",
-                            "LOAD error metadata episodio S$season E$episode: ${e.message}"
-                        )
+                            episodeDescription = Regex(
+                                """<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["']""",
+                                RegexOption.IGNORE_CASE
+                            )
+                                .find(episodeHtml)
+                                ?.groupValues
+                                ?.getOrNull(1)
+                                ?.let { cleanHtml(it).trim() }
+                                ?.takeIf {
+                                    it.isNotBlank() &&
+                                    !it.startsWith("No se encontró una sinopsis", ignoreCase = true)
+                                }
+                        } catch (e: Exception) {
+                            Log.d(
+                                "MegadedeProvider",
+                                "LOAD error metadata episodio S$season E$episode: ${e.message}"
+                            )
+                        }
                     }
 
                     Log.d(
