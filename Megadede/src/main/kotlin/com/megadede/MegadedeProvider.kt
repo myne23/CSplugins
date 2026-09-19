@@ -1225,6 +1225,16 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
 
         html = pageResponse.text
 
+        Log.d(
+            "MegadedeProvider",
+            "Voe página headers: ${pageResponse.headers}"
+        )
+
+        Log.d(
+            "MegadedeProvider",
+            "Voe página cookies: ${pageResponse.cookies}"
+        )
+
         // Si ya tenemos el JSON real, no hace falta ALTCHA.
         var encodedConfig = Regex(
             """<script[^>]+type=["']application/json["'][^>]*>\s*(?:\[\s*)?["']([^"']+)["']"""
