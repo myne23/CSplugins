@@ -215,9 +215,12 @@ class MegadedeProvider : MainAPI() {
                 val article = match.groupValues[1]
 
                 val href = Regex(
-                    """href=["'](/(?:pelicula|serie)/[^"']+)["']""",
+                    """href=["'](/(?:pelicula|serie|anime)/[^"']+)["']""",
                     RegexOption.IGNORE_CASE
-                ).find(article)?.groupValues?.getOrNull(1)
+                )
+                    .find(article)
+                    ?.groupValues
+                    ?.getOrNull(1)
                     ?: continue
 
                 if (!seen.add(href)) {
@@ -240,7 +243,10 @@ class MegadedeProvider : MainAPI() {
                         Regex(
                             """alt=["']([^"']+)["']""",
                             RegexOption.IGNORE_CASE
-                        ).find(it)?.groupValues?.getOrNull(1)
+                        )
+                            .find(it)
+                            ?.groupValues
+                            ?.getOrNull(1)
                     }
 
                 val titleAttr = image
@@ -249,7 +255,10 @@ class MegadedeProvider : MainAPI() {
                         Regex(
                             """title=["']([^"']+)["']""",
                             RegexOption.IGNORE_CASE
-                        ).find(it)?.groupValues?.getOrNull(1)
+                        )
+                            .find(it)
+                            ?.groupValues
+                            ?.getOrNull(1)
                     }
 
                 var title = titleAttr ?: alt ?: ""
@@ -289,28 +298,45 @@ class MegadedeProvider : MainAPI() {
 
                 val absolute = absoluteUrl(href)
 
-                if (href.startsWith("/serie/")) {
-                    results.add(
-                        newTvSeriesSearchResponse(
-                            title,
-                            absolute,
-                            TvType.TvSeries,
-                            false
-                        ) {
-                            this.posterUrl = poster
-                        }
-                    )
-                } else {
-                    results.add(
-                        newMovieSearchResponse(
-                            title,
-                            absolute,
-                            TvType.Movie,
-                            false
-                        ) {
-                            this.posterUrl = poster
-                        }
-                    )
+                when {
+                    href.startsWith("/anime/") -> {
+                        results.add(
+                            newAnimeSearchResponse(
+                                title,
+                                absolute,
+                                TvType.Anime,
+                                false
+                            ) {
+                                this.posterUrl = poster
+                            }
+                        )
+                    }
+
+                    href.startsWith("/serie/") -> {
+                        results.add(
+                            newTvSeriesSearchResponse(
+                                title,
+                                absolute,
+                                TvType.TvSeries,
+                                false
+                            ) {
+                                this.posterUrl = poster
+                            }
+                        )
+                    }
+
+                    href.startsWith("/pelicula/") -> {
+                        results.add(
+                            newMovieSearchResponse(
+                                title,
+                                absolute,
+                                TvType.Movie,
+                                false
+                            ) {
+                                this.posterUrl = poster
+                            }
+                        )
+                    }
                 }
             }
 
@@ -356,11 +382,11 @@ class MegadedeProvider : MainAPI() {
             val year = extractYear(html)
             val description = extractDescription(html)
 
-            if (pageUrl.contains("/serie/")) {
+            if (pageUrl.contains("/serie/") || pageUrl.contains("/anime/")) {
                 val episodes = mutableListOf<Episode>()
 
                 val episodeRegex = Regex(
-                    """href=["']([^"']*/temporada/(\d+)/capitulo/(\d+)[^"']*)["']""",
+                    """href=["']([^"']*/temporada/(\\d+)/capitulo/(\\d+)[^"']*)["']""",
                     RegexOption.IGNORE_CASE
                 )
 
@@ -387,25 +413,10 @@ class MegadedeProvider : MainAPI() {
                         }
                     )
 
-                val seasonMap = sortedEpisodes
-                    .groupBy { it.season ?: 1 }
-
-                val seasonData = seasonMap
-                    .toSortedMap()
-                    .map { (season, eps) ->
-                        newEpisode(
-                            data = eps.firstOrNull()?.data ?: pageUrl
-                        ) {
-                            this.name = "Temporada $season"
-                            this.season = season
-                            this.episode = 0
-                        }
-                    }
-
                 return newTvSeriesLoadResponse(
                     title,
                     pageUrl,
-                    TvType.TvSeries,
+                    if (pageUrl.contains("/anime/")) TvType.Anime else TvType.TvSeries,
                     sortedEpisodes
                 ) {
                     this.posterUrl = poster
