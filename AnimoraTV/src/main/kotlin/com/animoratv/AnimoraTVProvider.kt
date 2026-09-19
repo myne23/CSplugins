@@ -168,48 +168,97 @@ class AnimoraTVProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
+        println("AnimoraTV: loadLinks() data=$data")
+
         val parts = data.split("|", limit = 2)
 
-        if (parts.size != 2) return false
+        if (parts.size != 2) {
+            println("AnimoraTV: ERROR data invalido")
+            return false
+        }
 
         val slug = parts[0]
         val episodeNumber = parts[1].toIntOrNull()
-            ?: return false
 
-        val json = getJson(
+        if (episodeNumber == null) {
+            println("AnimoraTV: ERROR numero episodio invalido")
+            return false
+        }
+
+        val apiUrl =
             "$mainUrl/api/video/$slug/$episodeNumber/fuentes"
-        )
+
+        println("AnimoraTV: consultando $apiUrl")
+
+        val response = try {
+            app.get(apiUrl)
+        } catch (e: Exception) {
+            println("AnimoraTV: ERROR request=${e.message}")
+            return false
+        }
+
+        println("AnimoraTV: HTTP ${response.code}")
+
+        val json = try {
+            JSONObject(response.text)
+        } catch (e: Exception) {
+            println("AnimoraTV: ERROR JSON=${e.message}")
+            return false
+        }
 
         val dataObject = json.optJSONObject("data")
-            ?: return false
+
+        if (dataObject == null) {
+            println("AnimoraTV: ERROR no existe data")
+            return false
+        }
 
         val fuentes = dataObject.optJSONArray("fuentes")
-            ?: return false
+
+        if (fuentes == null) {
+            println("AnimoraTV: ERROR no existe fuentes")
+            return false
+        }
+
+        println("AnimoraTV: fuentes=${fuentes.length()}")
 
         var found = false
+        var totalServers = 0
 
         for (i in 0 until fuentes.length()) {
 
             val fuente = fuentes.optJSONObject(i)
                 ?: continue
 
+            val indiceFuente = fuente.optInt(
+                "indiceFuente",
+                i + 1
+            )
+
             val servidores = fuente.optJSONArray("servidores")
                 ?: continue
+
+            println(
+                "AnimoraTV: fuente=$indiceFuente servidores=${servidores.length()}"
+            )
 
             for (j in 0 until servidores.length()) {
 
                 val servidor = servidores.optJSONObject(j)
                     ?: continue
 
-                val urlVideo = servidor.optString("urlVideo")
+                val urlVideo = servidor
+                    .optString("urlVideo")
                     .trim()
 
                 if (urlVideo.isBlank()) continue
 
-                val provider = servidor.optString("proveedor")
+                val provider = servidor
+                    .optString("proveedor")
                     .ifBlank { "Servidor" }
 
-                val qualityName = servidor.optString("calidad")
+                val qualityName = servidor
+                    .optString("calidad")
                     .lowercase()
 
                 val quality = when {
@@ -217,25 +266,31 @@ class AnimoraTVProvider : MainAPI() {
                     qualityName.contains("4k") -> 2160
 
                     qualityName.contains("1440") -> 1440
-
                     qualityName.contains("1080") -> 1080
-
                     qualityName.contains("720") -> 720
-
                     qualityName.contains("480") -> 480
-
                     qualityName.contains("360") -> 360
-
                     qualityName.contains("240") -> 240
 
                     else -> Qualities.Unknown.value
                 }
 
                 val isHls =
-                    provider.equals("hls", ignoreCase = true) ||
-                    urlVideo.substringBefore("?")
+                    provider.equals(
+                        "hls",
+                        ignoreCase = true
+                    ) ||
+                    urlVideo
+                        .substringBefore("?")
                         .lowercase()
                         .endsWith(".m3u8")
+
+                println(
+                    "AnimoraTV: link provider=$provider " +
+                    "quality=$quality " +
+                    "hls=$isHls " +
+                    "url=$urlVideo"
+                )
 
                 callback(
                     newExtractorLink(
@@ -254,8 +309,13 @@ class AnimoraTVProvider : MainAPI() {
                 )
 
                 found = true
+                totalServers++
             }
         }
+
+        println(
+            "AnimoraTV: FINAL found=$found totalServers=$totalServers"
+        )
 
         return found
     }
