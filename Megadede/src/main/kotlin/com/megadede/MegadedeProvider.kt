@@ -19,7 +19,8 @@ class MegadedeProvider : MainAPI() {
 
     override val supportedTypes = setOf(
         TvType.TvSeries,
-        TvType.Movie
+        TvType.Movie,
+        TvType.Anime
     )
 
     override var lang = "es"
