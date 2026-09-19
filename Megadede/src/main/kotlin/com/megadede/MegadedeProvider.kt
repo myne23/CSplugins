@@ -33,76 +33,194 @@ class MegadedeProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val results = search("vikingos")
+        Log.d("MegadedeProvider", "HOME llamado: page=$page")
 
-        return newHomePageResponse(
-            listOf(
-                HomePageList(
-                    "Megadede",
-                    results,
-                    isHorizontalImages = true
+        return try {
+            val response = app.get(
+                mainUrl,
+                headers = mapOf(
+                    "Referer" to mainUrl
                 )
             )
-        )
-    }
 
-    private fun absoluteUrl(url: String): String {
-        return when {
-            url.startsWith("http://") || url.startsWith("https://") -> url
-            url.startsWith("/") -> mainUrl.removeSuffix("/") + url
-            else -> "$mainUrl$url"
+            Log.d(
+                "MegadedeProvider",
+                "HOME response: success=${response.isSuccessful} code=${response.code} size=${response.text.length}"
+            )
+
+            if (!response.isSuccessful) {
+                return newHomePageResponse(emptyList())
+            }
+
+            val html = response.text
+            val homeLists = mutableListOf<HomePageList>()
+
+            val sections = listOf(
+                "Últimos Episodios",
+                "Últimas Películas",
+                "Últimas Series"
+            )
+
+            for (sectionTitle in sections) {
+                val headingRegex = Regex(
+                    """<h3[^>]*>\s*${Regex.escape(sectionTitle)}\s*</h3>""",
+                    RegexOption.IGNORE_CASE
+                )
+
+                val heading = headingRegex.find(html) ?: continue
+
+                val sectionStart = html.lastIndexOf(
+                    "<section",
+                    heading.range.first,
+                    ignoreCase = true
+                )
+
+                val sectionEnd = html.indexOf(
+                    "</section>",
+                    heading.range.last + 1,
+                    ignoreCase = true
+                )
+
+                if (sectionStart < 0 || sectionEnd < 0) {
+                    continue
+                }
+
+                val sectionHtml = html.substring(
+                    sectionStart,
+                    sectionEnd + "</section>".length
+                )
+
+                val articleRegex = Regex(
+                    """<article[^>]*class=["'][^"']*mv[^"']*["'][^>]*>(.*?)</article>""",
+                    setOf(
+                        RegexOption.IGNORE_CASE,
+                        RegexOption.DOT_MATCHES_ALL
+                    )
+                )
+
+                val items = mutableListOf<SearchResponse>()
+                val seen = HashSet<String>()
+
+                for (articleMatch in articleRegex.findAll(sectionHtml)) {
+                    val article = articleMatch.groupValues[1]
+
+                    val href = Regex(
+                        """href=["']([^"']*(?:/serie/|/pelicula/|/anime/)[^"']*)["']""",
+                        RegexOption.IGNORE_CASE
+                    ).find(article)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?: continue
+
+                    val cleanHref = href
+                        .replace("&amp;", "&")
+                        .trim()
+
+                    if (cleanHref.isBlank() || !seen.add(cleanHref)) {
+                        continue
+                    }
+
+                    val image = Regex(
+                        """<img[^>]+src=["']([^"']+)["'][^>]*>""",
+                        RegexOption.IGNORE_CASE
+                    ).find(article)
+
+                    val poster = image
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.takeIf { it.isNotBlank() }
+
+                    val title = Regex(
+                        """<h4[^>]*>(.*?)</h4>""",
+                        setOf(
+                            RegexOption.IGNORE_CASE,
+                            RegexOption.DOT_MATCHES_ALL
+                        )
+                    )
+                        .find(article)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.let { cleanHtml(it).trim() }
+                        ?: continue
+
+                    if (title.isBlank()) {
+                        continue
+                    }
+
+                    val absolute = absoluteUrl(cleanHref)
+
+                    when {
+                        cleanHref.contains("/pelicula/") -> {
+                            items.add(
+                                newMovieSearchResponse(
+                                    title,
+                                    absolute,
+                                    TvType.Movie,
+                                    false
+                                ) {
+                                    this.posterUrl = poster
+                                }
+                            )
+                        }
+
+                        cleanHref.contains("/serie/") -> {
+                            val seriesUrl = cleanHref.substringBefore("/temporada/")
+
+                            if (seen.add("SERIES:$seriesUrl")) {
+                                items.add(
+                                    newTvSeriesSearchResponse(
+                                        title,
+                                        absoluteUrl(seriesUrl),
+                                        TvType.TvSeries,
+                                        false
+                                    ) {
+                                        this.posterUrl = poster
+                                    }
+                                )
+                            }
+                        }
+
+                        cleanHref.contains("/anime/") -> {
+                            Log.d(
+                                "MegadedeProvider",
+                                "HOME anime omitido por ahora: $title -> $cleanHref"
+                            )
+                        }
+                    }
+                }
+
+                if (items.isNotEmpty()) {
+                    Log.d(
+                        "MegadedeProvider",
+                        "HOME sección '$sectionTitle': ${items.size} resultados"
+                    )
+
+                    homeLists.add(
+                        HomePageList(
+                            sectionTitle,
+                            items,
+                            isHorizontalImages = true
+                        )
+                    )
+                }
+            }
+
+            Log.d(
+                "MegadedeProvider",
+                "HOME listas finales: ${homeLists.size}"
+            )
+
+            newHomePageResponse(homeLists)
+        } catch (e: Exception) {
+            Log.e(
+                "MegadedeProvider",
+                "HOME ERROR",
+                e
+            )
+
+            newHomePageResponse(emptyList())
         }
     }
-
-    private fun cleanHtml(text: String): String {
-        return text
-            .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
-            .replace(Regex("<[^>]+>"), "")
-            .replace("&amp;", "&")
-            .replace("&quot;", "\"")
-            .replace("&#39;", "'")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace(Regex("\\s+"), " ")
-            .trim()
-    }
-
-    private fun extractTitle(html: String): String {
-        return Regex(
-            """<h1[^>]*>(.*?)</h1>""",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        ).find(html)?.groupValues?.getOrNull(1)
-            ?.let(::cleanHtml)
-            ?.takeIf { it.isNotBlank() }
-            ?: "Megadede"
-    }
-
-    private fun extractPoster(html: String): String? {
-        return Regex(
-            """<div class="movie-poster"[^>]*>\s*<img[^>]+src="([^"]+)"""",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        ).find(html)?.groupValues?.getOrNull(1)
-            ?.takeIf { it.isNotBlank() }
-    }
-
-    private fun extractYear(html: String): Int? {
-        return Regex(
-            """<div class="movie-meta"[\s\S]*?<span[^>]*>\s*<i[^>]*>\s*</i>\s*(\d{4})\s*</span>""",
-            RegexOption.IGNORE_CASE
-        ).find(html)?.groupValues?.getOrNull(1)?.toIntOrNull()
-            ?: Regex("""\b(19\d{2}|20\d{2})\b""")
-                .find(html)?.groupValues?.getOrNull(1)?.toIntOrNull()
-    }
-
-    private fun extractDescription(html: String): String? {
-        return Regex(
-            """<h2 class="description"[^>]*>(.*?)</h2>""",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        ).find(html)?.groupValues?.getOrNull(1)
-            ?.let(::cleanHtml)
-            ?.takeIf { it.isNotBlank() }
-    }
-
     override suspend fun search(query: String): List<SearchResponse> {
         Log.d("MegadedeProvider", "SEARCH llamado: $query")
 
@@ -361,6 +479,111 @@ class MegadedeProvider : MainAPI() {
             plot = description
             showStatus = ShowStatus.Completed
         }
+    }
+
+    private fun absoluteUrl(url: String): String {
+        val value = url.trim()
+
+        if (value.startsWith("http://") || value.startsWith("https://")) {
+            return value
+        }
+
+        return if (value.startsWith("/")) {
+            "$mainUrl$value"
+        } else {
+            "$mainUrl/$value"
+        }
+    }
+
+    private fun cleanHtml(value: String): String {
+        return value
+            .replace(Regex("""<[^>]*>"""), " ")
+            .replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+    }
+
+    private fun extractTitle(html: String): String {
+        return Regex(
+            """<h1[^>]*>(.*?)</h1>""",
+            setOf(
+                RegexOption.IGNORE_CASE,
+                RegexOption.DOT_MATCHES_ALL
+            )
+        )
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { cleanHtml(it) }
+            ?.takeIf { it.isNotBlank() }
+            ?: "Sin título"
+    }
+
+    private fun extractPoster(html: String): String? {
+        val poster = Regex(
+            """<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']""",
+            RegexOption.IGNORE_CASE
+        )
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+
+        if (!poster.isNullOrBlank()) {
+            return poster
+        }
+
+        return Regex(
+            """<img[^>]+src=["']([^"']+)["'][^>]*>""",
+            RegexOption.IGNORE_CASE
+        )
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun extractYear(html: String): Int? {
+        val year = Regex(
+            """(?:movie-meta|year)[^>]*>.*?(\d{4})""",
+            setOf(
+                RegexOption.IGNORE_CASE,
+                RegexOption.DOT_MATCHES_ALL
+            )
+        )
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+
+        if (year != null) {
+            return year
+        }
+
+        return Regex("""\b(19\d{2}|20\d{2})\b""")
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+    }
+
+    private fun extractDescription(html: String): String? {
+        return Regex(
+            """<h2[^>]*class=["'][^"']*description[^"']*["'][^>]*>(.*?)</h2>""",
+            setOf(
+                RegexOption.IGNORE_CASE,
+                RegexOption.DOT_MATCHES_ALL
+            )
+        )
+            .find(html)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { cleanHtml(it) }
+            ?.takeIf { it.isNotBlank() }
     }
 
     private fun findVidUrl(html: String): String? {
