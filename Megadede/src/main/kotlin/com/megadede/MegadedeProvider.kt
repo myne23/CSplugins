@@ -1394,16 +1394,20 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                     altchaPayload.toByteArray(Charsets.UTF_8)
                 )
 
-            // Conservamos explícitamente las cookies de la sesión
-            // que Voe creó al entregar la página ALTCHA.
-            val voeCookies = pageResponse.cookies.entries
+            // Conservamos las cookies de la página ALTCHA y también
+            // cualquier cookie que haya generado/refrescado el challenge.
+            val voeCookieMap = linkedMapOf<String, String>()
+            voeCookieMap.putAll(pageResponse.cookies)
+            voeCookieMap.putAll(challengeResponse.cookies)
+
+            val voeCookies = voeCookieMap.entries
                 .joinToString("; ") { (name, value) ->
                     "$name=$value"
                 }
 
             Log.d(
                 "MegadedeProvider",
-                "Voe ALTCHA cookies presentes: ${pageResponse.cookies.keys}"
+                "Voe ALTCHA cookies presentes: ${voeCookieMap.keys}"
             )
 
             val postResponse = app.post(
@@ -1413,6 +1417,7 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                     "Referer" to realUrl,
                     "Origin" to "https://katherineschoolphone.com",
                     "Cookie" to voeCookies,
+                    "X-CSRF-TOKEN" to csrf,
                     "Content-Type" to "application/x-www-form-urlencoded"
                 ),
                 data = mapOf(
