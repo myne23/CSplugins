@@ -422,7 +422,7 @@ class MegadedeProvider : MainAPI() {
             )
 
             val poster = Regex(
-                """<img[^>]+src=["']([^"']+)["'][^>]*>""",
+                """<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']""",
                 RegexOption.IGNORE_CASE
             )
                 .find(html)
@@ -436,17 +436,27 @@ class MegadedeProvider : MainAPI() {
                 ?.value
                 ?.toIntOrNull()
 
-            val description = Regex(
-                """<(?:p|div)[^>]*(?:description|plot|sinopsis)[^>]*>(.*?)</(?:p|div)>""",
-                setOf(
-                    RegexOption.IGNORE_CASE,
-                    RegexOption.DOT_MATCHES_ALL
+            val description =
+                Regex(
+                    """<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["']""",
+                    RegexOption.IGNORE_CASE
                 )
-            )
-                .find(html)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.let { cleanHtml(it).trim() }
+                    .find(html)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.let { cleanHtml(it).trim() }
+                    ?.takeIf { it.isNotBlank() }
+                    ?: Regex(
+                        """<h2[^>]*class=["'][^"']*description[^"']*["'][^>]*>(.*?)</h2>""",
+                        setOf(
+                            RegexOption.IGNORE_CASE,
+                            RegexOption.DOT_MATCHES_ALL
+                        )
+                    )
+                        .find(html)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.let { cleanHtml(it).trim() }
 
             val pageUrl = url
 
@@ -465,8 +475,11 @@ class MegadedeProvider : MainAPI() {
                 val episodes = mutableListOf<Episode>()
 
                 val episodeRegex = Regex(
-                    """href=["']([^"']*/temporada/(\d+)/capitulo/(\d+)[^"']*)["']""",
-                    RegexOption.IGNORE_CASE
+                    """<a[^>]+href=["']([^"']*/temporada/(\d+)/capitulo/(\d+)[^"']*)["'][^>]*>(.*?)</a>""",
+                    setOf(
+                        RegexOption.IGNORE_CASE,
+                        RegexOption.DOT_MATCHES_ALL
+                    )
                 )
 
                 val matches = episodeRegex.findAll(html).toList()
@@ -480,17 +493,69 @@ class MegadedeProvider : MainAPI() {
                     val href = match.groupValues[1]
                     val season = match.groupValues[2].toIntOrNull() ?: continue
                     val episode = match.groupValues[3].toIntOrNull() ?: continue
+                    val cardHtml = match.groupValues[4]
+
+                    val episodeTitle = Regex(
+                        """<p[^>]*>(.*?)</p>""",
+                        setOf(
+                            RegexOption.IGNORE_CASE,
+                            RegexOption.DOT_MATCHES_ALL
+                        )
+                    )
+                        .find(cardHtml)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.let { cleanHtml(it).trim() }
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "Episodio $episode"
+
+                    val episodeUrl = absoluteUrl(href)
+
+                    var episodePoster: String? = null
+                    var episodeDescription: String? = null
+
+                    try {
+                        val episodeHtml = app.get(episodeUrl).text
+
+                        episodePoster = Regex(
+                            """<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']""",
+                            RegexOption.IGNORE_CASE
+                        )
+                            .find(episodeHtml)
+                            ?.groupValues
+                            ?.getOrNull(1)
+
+                        episodeDescription = Regex(
+                            """<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["']""",
+                            RegexOption.IGNORE_CASE
+                        )
+                            .find(episodeHtml)
+                            ?.groupValues
+                            ?.getOrNull(1)
+                            ?.let { cleanHtml(it).trim() }
+                            ?.takeIf {
+                                it.isNotBlank() &&
+                                !it.startsWith("No se encontró una sinopsis", ignoreCase = true)
+                            }
+                    } catch (e: Exception) {
+                        Log.d(
+                            "MegadedeProvider",
+                            "LOAD error metadata episodio S$season E$episode: ${e.message}"
+                        )
+                    }
 
                     Log.d(
                         "MegadedeProvider",
-                        "LOAD episodio encontrado: S$season E$episode href=$href"
+                        "LOAD episodio S$season E$episode '$episodeTitle' poster=${episodePoster != null}"
                     )
 
                     episodes.add(
-                        newEpisode(absoluteUrl(href)) {
-                            this.name = "Episodio $episode"
+                        newEpisode(episodeUrl) {
+                            this.name = episodeTitle
                             this.season = season
                             this.episode = episode
+                            this.posterUrl = episodePoster ?: poster
+                            this.description = episodeDescription
                         }
                     )
                 }
