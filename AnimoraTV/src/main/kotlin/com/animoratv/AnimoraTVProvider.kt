@@ -177,13 +177,26 @@ class AnimoraTVProvider : MainAPI() {
             return false
         }
 
-        val slug = parts[0]
+        val rawSlug = parts[0]
         val episodeNumber = parts[1].toIntOrNull()
 
         if (episodeNumber == null) {
             println("AnimoraTV: ERROR numero episodio invalido")
             return false
         }
+
+        val slug = rawSlug
+            .substringAfterLast("/anime/")
+            .substringAfterLast("/")
+            .trim()
+            .removeSuffix("/")
+
+        if (slug.isBlank()) {
+            println("AnimoraTV: ERROR slug invalido")
+            return false
+        }
+
+        println("AnimoraTV: slug=$slug episodio=$episodeNumber")
 
         val apiUrl =
             "$mainUrl/api/video/$slug/$episodeNumber/fuentes"
