@@ -1394,20 +1394,17 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                     altchaPayload.toByteArray(Charsets.UTF_8)
                 )
 
-            // Conservamos las cookies de la página ALTCHA y también
-            // cualquier cookie que haya generado/refrescado el challenge.
-            val voeCookieMap = linkedMapOf<String, String>()
-            voeCookieMap.putAll(pageResponse.cookies)
-            voeCookieMap.putAll(challengeResponse.cookies)
-
-            val voeCookies = voeCookieMap.entries
+            // Usamos únicamente las cookies de la página que contiene
+            // el formulario ALTCHA. El challenge no debe reemplazar
+            // la sesión asociada al CSRF de esa página.
+            val voeCookies = pageResponse.cookies.entries
                 .joinToString("; ") { (name, value) ->
                     "$name=$value"
                 }
 
             Log.d(
                 "MegadedeProvider",
-                "Voe ALTCHA cookies presentes: ${voeCookieMap.keys}"
+                "Voe ALTCHA cookies de sesión: ${pageResponse.cookies.keys}"
             )
 
             val postResponse = app.post(
