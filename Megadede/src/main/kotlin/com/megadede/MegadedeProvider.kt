@@ -797,17 +797,26 @@ class MegadedeProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
+        Log.d("MegadedeProvider", "LINKS llamado: data=$data")
+
         var pageUrl = data
 
         if (!pageUrl.startsWith("http")) {
             pageUrl = absoluteUrl(pageUrl)
         }
 
+        Log.d("MegadedeProvider", "LINKS pageUrl=$pageUrl")
+
         val pageResponse = app.get(
             pageUrl,
             headers = mapOf(
                 "Referer" to mainUrl
             )
+        )
+
+        Log.d(
+            "MegadedeProvider",
+            "LINKS page response: success=${pageResponse.isSuccessful} code=${pageResponse.code} size=${pageResponse.text.length}"
         )
 
         if (!pageResponse.isSuccessful) {
@@ -826,10 +835,19 @@ class MegadedeProvider : MainAPI() {
 
             if (!servers.contains(server)) {
                 servers.add(server)
+                Log.d(
+                    "MegadedeProvider",
+                    "LINKS servidor encontrado: $server"
+                )
             }
         }
 
         val iframeUrl = findVidUrl(html)
+
+        Log.d(
+            "MegadedeProvider",
+            "LINKS iframe/vidurl: $iframeUrl"
+        )
 
         if (
             iframeUrl != null &&
@@ -838,11 +856,21 @@ class MegadedeProvider : MainAPI() {
             servers.add(iframeUrl)
         }
 
+        Log.d(
+            "MegadedeProvider",
+            "LINKS total servidores: ${servers.size}"
+        )
+
         var found = false
 
         for (server in servers) {
 
             val serverUrl = absoluteUrl(server)
+
+            Log.d(
+                "MegadedeProvider",
+                "LINKS procesando servidor: $serverUrl"
+            )
 
             if (
                 serverUrl.contains(
@@ -850,8 +878,17 @@ class MegadedeProvider : MainAPI() {
                     ignoreCase = true
                 )
             ) {
-                val links = extractEmbed69Links(
-                    serverUrl
+
+                Log.d(
+                    "MegadedeProvider",
+                    "LINKS detectado Embed69 vidurl"
+                )
+
+                val links = extractEmbed69Links(serverUrl)
+
+                Log.d(
+                    "MegadedeProvider",
+                    "LINKS Embed69 devolvio ${links.size} links"
                 )
 
                 for ((serverName, encoded) in links) {
@@ -869,7 +906,14 @@ class MegadedeProvider : MainAPI() {
                         .getOrNull(1)
                         .orEmpty()
 
-                    if (realUrl.isBlank()) continue
+                    Log.d(
+                        "MegadedeProvider",
+                        "LINKS Embed69 resultado: server=$serverName language=$language url=$realUrl"
+                    )
+
+                    if (realUrl.isBlank()) {
+                        continue
+                    }
 
                     val displayName = when {
                         serverName.equals(
@@ -887,23 +931,17 @@ class MegadedeProvider : MainAPI() {
                             true
                         ) -> "Voe"
 
-                        serverName.equals(
-                            "rapidvideo",
-                            true
-                        ) -> "Rapidvideo"
-
                         else -> serverName
                     }
 
-                    val label = if (
-                        language.isNotBlank()
-                    ) {
-                        "$displayName $language"
-                    } else {
-                        displayName
-                    }
+                    Log.d(
+                        "MegadedeProvider",
+                        "LINKS llamando loadExtractor: name=$displayName url=$realUrl"
+                    )
 
                     try {
+                        val before = found
+
                         loadExtractor(
                             realUrl,
                             serverUrl,
@@ -912,56 +950,50 @@ class MegadedeProvider : MainAPI() {
                         )
 
                         found = true
-                    } catch (_: Exception) {
+
+                        Log.d(
+                            "MegadedeProvider",
+                            "LINKS loadExtractor terminado: name=$displayName found=$found previous=$before"
+                        )
+
+                    } catch (e: Exception) {
+
+                        Log.e(
+                            "MegadedeProvider",
+                            "LINKS loadExtractor ERROR: name=$displayName url=$realUrl",
+                            e
+                        )
+
                         callback(
                             newExtractorLink(
-                                source = "Embed69",
-                                name = label,
-                                url = realUrl,
-                                type = ExtractorLinkType.VIDEO
-                            ) {
-                                referer = serverUrl
-                                quality = Qualities.Unknown.value
-                            }
+                                displayName,
+                                displayName,
+                                realUrl
+                            )
                         )
 
                         found = true
+
+                        Log.d(
+                            "MegadedeProvider",
+                            "LINKS fallback directo agregado: $displayName"
+                        )
                     }
                 }
 
-            } else if (
-                serverUrl.contains(
-                    "uqlink.php",
-                    ignoreCase = true
+            } else {
+
+                Log.d(
+                    "MegadedeProvider",
+                    "LINKS servidor no es /vidurl/: $serverUrl"
                 )
-            ) {
-
-                try {
-                    loadExtractor(
-                        serverUrl,
-                        pageUrl,
-                        subtitleCallback,
-                        callback
-                    )
-
-                    found = true
-                } catch (_: Exception) {
-                    callback(
-                        newExtractorLink(
-                            source = "Uqload",
-                            name = "Uqload",
-                            url = serverUrl,
-                            type = ExtractorLinkType.VIDEO
-                        ) {
-                            referer = pageUrl
-                            quality = Qualities.Unknown.value
-                        }
-                    )
-
-                    found = true
-                }
             }
         }
+
+        Log.d(
+            "MegadedeProvider",
+            "LINKS resultado final: found=$found"
+        )
 
         return found
     }
