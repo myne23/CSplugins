@@ -20,7 +20,8 @@ class AnimoraTVProvider : MainAPI() {
 
     override val mainPage = mainPageOf(
         "$mainUrl/api/episodios/recientes?limite=36" to "Últimos episodios",
-        "$mainUrl/api/animes/populares" to "Populares"
+        "$mainUrl/api/animes/populares" to "Populares",
+        "$mainUrl/api/animes?limite=24&pagina=1&sort=recientes" to "Explorar"
     )
 
     private suspend fun getJson(url: String): JSONObject {
@@ -119,21 +120,29 @@ class AnimoraTVProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
 
+        val requestUrl =
+            if (request.name == "Explorar") {
+                "$mainUrl/api/animes?limite=24&pagina=$page&sort=recientes"
+            } else {
+                request.data
+            }
+
         val results =
             if (request.name == "Últimos episodios") {
                 parseRecentEpisodes(
-                    getJson(request.data)
+                    getJson(requestUrl)
                 )
             } else {
                 parseAnimeList(
-                    getJson(request.data)
+                    getJson(requestUrl)
                 )
             }
 
         return newHomePageResponse(
             request.name,
             results,
-            hasNext = false
+            hasNext = request.name == "Explorar" &&
+                results.size >= 24
         )
     }
 
