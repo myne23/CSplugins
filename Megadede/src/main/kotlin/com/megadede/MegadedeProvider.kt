@@ -27,15 +27,22 @@ class MegadedeProvider : MainAPI() {
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
-        "megadede" to "Megadede"
+        "megadede" to "Megadede",
+        "animes" to "Animes"
     )
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        val url = if (request.name == "Animes") {
+            "$mainUrl/animes"
+        } else {
+            mainUrl
+        }
+
         val response = app.get(
-            mainUrl,
+            url,
             headers = mapOf(
                 "Referer" to mainUrl
             )
@@ -74,9 +81,11 @@ class MegadedeProvider : MainAPI() {
 
             val absolute = absoluteUrl(href)
 
-            if (!absolute.contains("/pelicula/") &&
-                !absolute.contains("/serie/")
-            ) {
+            val isAnime = absolute.contains("/anime/")
+            val isSeries = absolute.contains("/serie/")
+            val isMovie = absolute.contains("/pelicula/")
+
+            if (!isAnime && !isSeries && !isMovie) {
                 continue
             }
 
@@ -108,28 +117,45 @@ class MegadedeProvider : MainAPI() {
                 ?.takeIf { it.isNotBlank() }
                 ?: continue
 
-            if (absolute.contains("/serie/")) {
-                results.add(
-                    newTvSeriesSearchResponse(
-                        title,
-                        absolute,
-                        TvType.TvSeries,
-                        false
-                    ) {
-                        this.posterUrl = poster
-                    }
-                )
-            } else {
-                results.add(
-                    newMovieSearchResponse(
-                        title,
-                        absolute,
-                        TvType.Movie,
-                        false
-                    ) {
-                        this.posterUrl = poster
-                    }
-                )
+            when {
+                isAnime -> {
+                    results.add(
+                        newAnimeSearchResponse(
+                            title,
+                            absolute,
+                            TvType.Anime,
+                            false
+                        ) {
+                            this.posterUrl = poster
+                        }
+                    )
+                }
+
+                isSeries -> {
+                    results.add(
+                        newTvSeriesSearchResponse(
+                            title,
+                            absolute,
+                            TvType.TvSeries,
+                            false
+                        ) {
+                            this.posterUrl = poster
+                        }
+                    )
+                }
+
+                isMovie -> {
+                    results.add(
+                        newMovieSearchResponse(
+                            title,
+                            absolute,
+                            TvType.Movie,
+                            false
+                        ) {
+                            this.posterUrl = poster
+                        }
+                    )
+                }
             }
         }
 
