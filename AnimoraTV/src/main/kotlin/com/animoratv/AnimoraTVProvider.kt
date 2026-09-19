@@ -258,7 +258,7 @@ class AnimoraTVProvider : MainAPI() {
             var found = false
             var totalServers = 0
             var totalExtractedLinks = 0
-            val processedMega = mutableSetOf<String>()
+            var megaEmitted = false
 
             for (i in 0 until fuentes.length()) {
 
@@ -385,18 +385,16 @@ class AnimoraTVProvider : MainAPI() {
                                 continue
                             }
 
-                            val megaId =
-                                "$handle#$key"
-
-                            if (!processedMega.add(megaId)) {
+                            if (megaEmitted) {
 
                                 println(
-                                    "AnimoraTV: MEGA duplicado -> " +
-                                        "handle=$handle"
+                                    "AnimoraTV: MEGA duplicado -> ignorado"
                                 )
 
                                 continue
                             }
+
+                            megaEmitted = true
 
                             println(
                                 "AnimoraTV: MEGA handle=$handle"
