@@ -27,7 +27,8 @@ class MegadedeProvider : MainAPI() {
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
-        "megadede" to "Megadede",
+        "peliculas" to "Películas",
+        "series" to "Series",
         "animes" to "Animes"
     )
 
@@ -35,10 +36,11 @@ class MegadedeProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = if (request.name == "Animes") {
-            "$mainUrl/animes"
-        } else {
-            mainUrl
+        val url = when (request.name) {
+            "Películas" -> "$mainUrl/peliculas"
+            "Series" -> "$mainUrl/series"
+            "Animes" -> "$mainUrl/animes"
+            else -> mainUrl
         }
 
         val response = app.get(
