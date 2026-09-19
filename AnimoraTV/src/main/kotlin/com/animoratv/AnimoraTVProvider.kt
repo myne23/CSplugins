@@ -1,7 +1,7 @@
 package com.animoratv
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.*
 import org.json.JSONObject
 
 class AnimoraTVProvider : MainAPI() {
@@ -130,17 +130,16 @@ class AnimoraTVProvider : MainAPI() {
             val episodeTitle = episode.optString("titulo")
                 .ifBlank { "Episodio $number" }
 
-            val episodeId = episode.optString("_id")
-
-            if (episodeId.isBlank()) continue
+            if (number <= 0) continue
 
             episodeList.add(
-                newEpisode(episodeId) {
+                newEpisode("$slug|$number") {
                     name = episodeTitle
                     this.episode = number
-                    this.season = 1
+                    season = 1
                     description = episode.optString("descripcion")
-                    posterUrl = episode.optString("miniatura").ifBlank { null }
+                    posterUrl = episode.optString("miniatura")
+                        .ifBlank { null }
                 }
             )
         }
@@ -151,9 +150,14 @@ class AnimoraTVProvider : MainAPI() {
             TvType.TvSeries,
             episodeList
         ) {
-            posterUrl = anime.optString("portada").ifBlank { null }
-            plot = anime.optString("sinopsis").ifBlank { null }
-            year = anime.optInt("anio").takeIf { it > 0 }
+            posterUrl = anime.optString("portada")
+                .ifBlank { null }
+
+            plot = anime.optString("sinopsis")
+                .ifBlank { null }
+
+            year = anime.optInt("anio")
+                .takeIf { it > 0 }
         }
     }
 
@@ -163,6 +167,96 @@ class AnimoraTVProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        return false
+
+        val parts = data.split("|", limit = 2)
+
+        if (parts.size != 2) return false
+
+        val slug = parts[0]
+        val episodeNumber = parts[1].toIntOrNull()
+            ?: return false
+
+        val json = getJson(
+            "$mainUrl/api/video/$slug/$episodeNumber/fuentes"
+        )
+
+        val dataObject = json.optJSONObject("data")
+            ?: return false
+
+        val fuentes = dataObject.optJSONArray("fuentes")
+            ?: return false
+
+        var found = false
+
+        for (i in 0 until fuentes.length()) {
+
+            val fuente = fuentes.optJSONObject(i)
+                ?: continue
+
+            val servidores = fuente.optJSONArray("servidores")
+                ?: continue
+
+            for (j in 0 until servidores.length()) {
+
+                val servidor = servidores.optJSONObject(j)
+                    ?: continue
+
+                val urlVideo = servidor.optString("urlVideo")
+                    .trim()
+
+                if (urlVideo.isBlank()) continue
+
+                val provider = servidor.optString("proveedor")
+                    .ifBlank { "Servidor" }
+
+                val qualityName = servidor.optString("calidad")
+                    .lowercase()
+
+                val quality = when {
+                    qualityName.contains("2160") ||
+                    qualityName.contains("4k") -> 2160
+
+                    qualityName.contains("1440") -> 1440
+
+                    qualityName.contains("1080") -> 1080
+
+                    qualityName.contains("720") -> 720
+
+                    qualityName.contains("480") -> 480
+
+                    qualityName.contains("360") -> 360
+
+                    qualityName.contains("240") -> 240
+
+                    else -> Qualities.Unknown.value
+                }
+
+                val isHls =
+                    provider.equals("hls", ignoreCase = true) ||
+                    urlVideo.substringBefore("?")
+                        .lowercase()
+                        .endsWith(".m3u8")
+
+                callback(
+                    newExtractorLink(
+                        source = "AnimoraTV",
+                        name = "AnimoraTV - $provider",
+                        url = urlVideo,
+                        type = if (isHls) {
+                            ExtractorLinkType.M3U8
+                        } else {
+                            ExtractorLinkType.VIDEO
+                        }
+                    ) {
+                        referer = "$mainUrl/"
+                        this.quality = quality
+                    }
+                )
+
+                found = true
+            }
+        }
+
+        return found
     }
 }
