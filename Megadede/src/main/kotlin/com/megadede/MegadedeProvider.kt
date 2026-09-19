@@ -368,43 +368,123 @@ class MegadedeProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val pageUrl = absoluteUrl(url)
-
-        Log.d(
-            "MegadedeProvider",
-            "LOAD llamado: $pageUrl"
-        )
+        Log.d("MegadedeProvider", "LOAD llamado: $url")
 
         return try {
             val response = app.get(
-                pageUrl,
+                url,
                 headers = mapOf(
                     "Referer" to mainUrl
                 )
             )
 
+            Log.d(
+                "MegadedeProvider",
+                "LOAD response: success=${response.isSuccessful} code=${response.code} size=${response.text.length}"
+            )
+
             if (!response.isSuccessful) {
+                Log.e(
+                    "MegadedeProvider",
+                    "LOAD HTTP ERROR: ${response.code}"
+                )
                 return null
             }
 
             val html = response.text
-            val title = extractTitle(html)
-            val poster = extractPoster(html)
-            val year = extractYear(html)
-            val description = extractDescription(html)
+
+            Log.d(
+                "MegadedeProvider",
+                "LOAD HTML temporada=${html.contains("/temporada/")}"
+            )
+
+            Log.d(
+                "MegadedeProvider",
+                "LOAD HTML capitulo=${html.contains("/capitulo/")}"
+            )
+
+            val title = Regex(
+                """<h1[^>]*>(.*?)</h1>""",
+                setOf(
+                    RegexOption.IGNORE_CASE,
+                    RegexOption.DOT_MATCHES_ALL
+                )
+            )
+                .find(html)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.let { cleanHtml(it).trim() }
+                ?: "Megadede"
+
+            Log.d(
+                "MegadedeProvider",
+                "LOAD title='$title'"
+            )
+
+            val poster = Regex(
+                """<img[^>]+src=["']([^"']+)["'][^>]*>""",
+                RegexOption.IGNORE_CASE
+            )
+                .find(html)
+                ?.groupValues
+                ?.getOrNull(1)
+
+            val year = Regex(
+                """\b(19|20)\d{2}\b"""
+            )
+                .find(html)
+                ?.value
+                ?.toIntOrNull()
+
+            val description = Regex(
+                """<(?:p|div)[^>]*(?:description|plot|sinopsis)[^>]*>(.*?)</(?:p|div)>""",
+                setOf(
+                    RegexOption.IGNORE_CASE,
+                    RegexOption.DOT_MATCHES_ALL
+                )
+            )
+                .find(html)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.let { cleanHtml(it).trim() }
+
+            val pageUrl = url
+
+            Log.d(
+                "MegadedeProvider",
+                "LOAD tipo: anime=${pageUrl.contains("/anime/")} serie=${pageUrl.contains("/serie/")}"
+            )
 
             if (pageUrl.contains("/serie/") || pageUrl.contains("/anime/")) {
+
+                Log.d(
+                    "MegadedeProvider",
+                    "LOAD entrando parser de episodios"
+                )
+
                 val episodes = mutableListOf<Episode>()
 
                 val episodeRegex = Regex(
-                    """href=["']([^"']*/temporada/(\\d+)/capitulo/(\\d+)[^"']*)["']""",
+                    """href=["']([^"']*/temporada/(\d+)/capitulo/(\d+)[^"']*)["']""",
                     RegexOption.IGNORE_CASE
                 )
 
-                for (match in episodeRegex.findAll(html)) {
+                val matches = episodeRegex.findAll(html).toList()
+
+                Log.d(
+                    "MegadedeProvider",
+                    "LOAD matches episodios=${matches.size}"
+                )
+
+                for (match in matches) {
                     val href = match.groupValues[1]
                     val season = match.groupValues[2].toIntOrNull() ?: continue
                     val episode = match.groupValues[3].toIntOrNull() ?: continue
+
+                    Log.d(
+                        "MegadedeProvider",
+                        "LOAD episodio encontrado: S$season E$episode href=$href"
+                    )
 
                     episodes.add(
                         newEpisode(absoluteUrl(href)) {
@@ -415,14 +495,17 @@ class MegadedeProvider : MainAPI() {
                     )
                 }
 
-                val sortedEpisodes = episodes.distinctBy { it.data }
+                val sortedEpisodes = episodes
+                    .distinctBy { it.data }
                     .sortedWith(
-                        compareBy<Episode> {
-                            it.season ?: 0
-                        }.thenBy {
-                            it.episode ?: 0
-                        }
+                        compareBy<Episode> { it.season ?: 0 }
+                            .thenBy { it.episode ?: 0 }
                     )
+
+                Log.d(
+                    "MegadedeProvider",
+                    "LOAD episodios finales=${sortedEpisodes.size}"
+                )
 
                 return newTvSeriesLoadResponse(
                     title,
@@ -436,16 +519,22 @@ class MegadedeProvider : MainAPI() {
                 }
             }
 
+            Log.d(
+                "MegadedeProvider",
+                "LOAD entrando parser pelicula"
+            )
+
             return newMovieLoadResponse(
                 title,
                 pageUrl,
                 TvType.Movie,
-                pageUrl
+                url
             ) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
             }
+
         } catch (e: Exception) {
             Log.e(
                 "MegadedeProvider",
