@@ -1414,7 +1414,6 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                     "Referer" to realUrl,
                     "Origin" to "https://katherineschoolphone.com",
                     "Cookie" to voeCookies,
-                    "X-CSRF-TOKEN" to csrf,
                     "Content-Type" to "application/x-www-form-urlencoded"
                 ),
                 data = mapOf(
