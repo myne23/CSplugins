@@ -586,6 +586,8 @@ class MegadedeProvider : MainAPI() {
                         )
 
                         try {
+                            var extractorFound = false
+
                             val extractorCallback: (ExtractorLink) -> Unit = { link ->
                                 Log.d(
                                     "MegadedeProvider",
@@ -593,6 +595,7 @@ class MegadedeProvider : MainAPI() {
                                 )
 
                                 callback(link)
+                                extractorFound = true
                                 found = true
                             }
 
@@ -605,7 +608,7 @@ class MegadedeProvider : MainAPI() {
 
                             Log.d(
                                 "MegadedeProvider",
-                                "LINKS loadExtractor terminado: name=$displayName found=$found"
+                                "LINKS loadExtractor terminado: name=$displayName extractorFound=$extractorFound found=$found"
                             )
                         } catch (e: Exception) {
                             Log.e(
