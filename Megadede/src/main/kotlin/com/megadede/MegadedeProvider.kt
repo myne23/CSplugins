@@ -1,6 +1,7 @@
 package com.megadede
 
 import android.util.Base64
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.json.JSONArray
@@ -103,126 +104,162 @@ class MegadedeProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        Log.d("MegadedeProvider", "SEARCH llamado: $query")
+
         val encoded = URLEncoder.encode(query, "UTF-8")
+        val url = "$mainUrl/search?s=$encoded"
 
-        val response = app.get(
-            "$mainUrl/search?s=$encoded",
-            headers = mapOf(
-                "Referer" to mainUrl
+        Log.d("MegadedeProvider", "SEARCH URL: $url")
+
+        return try {
+            val response = app.get(
+                url,
+                headers = mapOf(
+                    "Referer" to mainUrl
+                )
             )
-        )
 
-        if (!response.isSuccessful) {
-            return emptyList()
-        }
-
-        val html = response.text
-        val results = mutableListOf<SearchResponse>()
-        val seen = HashSet<String>()
-
-        val articleRegex = Regex(
-            """<article[^>]*class=["'][^"']*\\bmv\\b[^"']*["'][^>]*>([\\s\\S]*?)</article>""",
-            setOf(
-                RegexOption.IGNORE_CASE,
-                RegexOption.DOT_MATCHES_ALL
+            Log.d(
+                "MegadedeProvider",
+                "SEARCH response: success=${response.isSuccessful} code=${response.code} size=${response.text.length}"
             )
-        )
 
-        for (articleMatch in articleRegex.findAll(html)) {
-            val article = articleMatch.groupValues[1]
+            val html = response.text
 
-            val href = Regex(
-                """<a[^>]+href=["']([^"']+)["'][^>]*class=["'][^"']*lnk-blk[^"']*["']""",
-                RegexOption.IGNORE_CASE
-            ).find(article)?.groupValues?.getOrNull(1)
-                ?: Regex(
-                    """<a[^>]+class=["'][^"']*lnk-blk[^"']*["'][^>]+href=["']([^"']+)["']""",
+            val articleRegex = Regex(
+                """<article[^>]*class=["'][^"']*\\bmv\\b[^"']*["'][^>]*>([\\s\\S]*?)</article>""",
+                setOf(
+                    RegexOption.IGNORE_CASE,
+                    RegexOption.DOT_MATCHES_ALL
+                )
+            )
+
+            val articles = articleRegex.findAll(html).toList()
+
+            Log.d(
+                "MegadedeProvider",
+                "SEARCH articles encontrados: ${articles.size}"
+            )
+
+            val results = mutableListOf<SearchResponse>()
+            val seen = HashSet<String>()
+
+            for (match in articles) {
+                val article = match.groupValues[1]
+
+                val href = Regex(
+                    """<a[^>]+href=["']([^"']+)["'][^>]*class=["'][^"']*lnk-blk[^"']*["']""",
                     RegexOption.IGNORE_CASE
                 ).find(article)?.groupValues?.getOrNull(1)
-                ?: continue
-
-            if (!href.startsWith("/pelicula/") && !href.startsWith("/serie/")) {
-                continue
-            }
-
-            if (!seen.add(href)) {
-                continue
-            }
-
-            val image = Regex(
-                """<img[^>]+src=["']([^"']+)["'][^>]*>""",
-                RegexOption.IGNORE_CASE
-            ).find(article)
-
-            val poster = image
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.takeIf { it.isNotBlank() }
-
-            val title = image
-                ?.let {
-                    Regex(
-                        """(?:alt|title)=["']([^"']+)["']""",
+                    ?: Regex(
+                        """<a[^>]+class=["'][^"']*lnk-blk[^"']*["'][^>]+href=["']([^"']+)["']""",
                         RegexOption.IGNORE_CASE
-                    ).find(it.value)?.groupValues?.getOrNull(1)
+                    ).find(article)?.groupValues?.getOrNull(1)
+
+                Log.d(
+                    "MegadedeProvider",
+                    "SEARCH href encontrado: $href"
+                )
+
+                if (href == null) continue
+
+                if (!href.startsWith("/pelicula/") &&
+                    !href.startsWith("/serie/")
+                ) continue
+
+                if (!seen.add(href)) continue
+
+                val image = Regex(
+                    """<img[^>]+src=["']([^"']+)["'][^>]*>""",
+                    RegexOption.IGNORE_CASE
+                ).find(article)
+
+                val poster = image
+                    ?.groupValues
+                    ?.getOrNull(1)
+
+                val title = image
+                    ?.let {
+                        Regex(
+                            """(?:alt|title)=["']([^"']+)["']""",
+                            RegexOption.IGNORE_CASE
+                        ).find(it.value)
+                            ?.groupValues
+                            ?.getOrNull(1)
+                    }
+                    ?.let(::cleanHtml)
+                    ?.replace(
+                        Regex(
+                            """^Ver\s+""",
+                            RegexOption.IGNORE_CASE
+                        ),
+                        ""
+                    )
+                    ?.replace(
+                        Regex(
+                            """\s+-\s+Ver online.*$""",
+                            RegexOption.IGNORE_CASE
+                        ),
+                        ""
+                    )
+                    ?.replace(
+                        Regex(
+                            """\s+\(\d{4}\)\s+online.*$""",
+                            RegexOption.IGNORE_CASE
+                        ),
+                        ""
+                    )
+                    ?.trim()
+                    .orEmpty()
+
+                Log.d(
+                    "MegadedeProvider",
+                    "SEARCH resultado: title='$title' href='$href' poster='$poster'"
+                )
+
+                if (title.isBlank()) continue
+
+                val absolute = absoluteUrl(href)
+
+                if (href.startsWith("/serie/")) {
+                    results.add(
+                        newTvSeriesSearchResponse(
+                            title,
+                            absolute,
+                            TvType.TvSeries,
+                            false
+                        ) {
+                            this.posterUrl = poster
+                        }
+                    )
+                } else {
+                    results.add(
+                        newMovieSearchResponse(
+                            title,
+                            absolute,
+                            TvType.Movie,
+                            false
+                        ) {
+                            this.posterUrl = poster
+                        }
+                    )
                 }
-                ?.let(::cleanHtml)
-                ?.replace(
-                    Regex(
-                        """\s*-\s*Ver online.*$""",
-                        RegexOption.IGNORE_CASE
-                    ),
-                    ""
-                )
-                ?.replace(
-                    Regex(
-                        """^Ver\s+""",
-                        RegexOption.IGNORE_CASE
-                    ),
-                    ""
-                )
-                ?.replace(
-                    Regex(
-                        """\s+\(\d{4}\)\s+online.*$""",
-                        RegexOption.IGNORE_CASE
-                    ),
-                    ""
-                )
-                ?.trim()
-                .orEmpty()
-
-            if (title.isBlank()) {
-                continue
             }
 
-            val absolute = absoluteUrl(href)
+            Log.d(
+                "MegadedeProvider",
+                "SEARCH resultados finales: ${results.size}"
+            )
 
-            if (href.startsWith("/serie/")) {
-                results.add(
-                    newTvSeriesSearchResponse(
-                        title,
-                        absolute,
-                        TvType.TvSeries,
-                        false
-                    ) {
-                        this.posterUrl = poster
-                    }
-                )
-            } else {
-                results.add(
-                    newMovieSearchResponse(
-                        title,
-                        absolute,
-                        TvType.Movie,
-                        false
-                    ) {
-                        this.posterUrl = poster
-                    }
-                )
-            }
+            results
+        } catch (e: Exception) {
+            Log.e(
+                "MegadedeProvider",
+                "SEARCH ERROR",
+                e
+            )
+            emptyList()
         }
-
-        return results
     }
 
     override suspend fun load(url: String): LoadResponse {
