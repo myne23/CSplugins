@@ -22,7 +22,11 @@ class MegadedeProvider : MainAPI() {
     )
 
     override var lang = "es"
-    override val hasMainPage = false
+    override val hasMainPage = true
+
+    override val mainPage = mainPageOf(
+        "https://megadede.mobi/search?s=vikingos" to "Megadede"
+    )
 
     private fun absoluteUrl(url: String): String {
         return when {
