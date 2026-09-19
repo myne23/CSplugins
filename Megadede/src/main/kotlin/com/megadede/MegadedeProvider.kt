@@ -1436,7 +1436,10 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                 "MegadedeProvider",
                 "Voe página después de ALTCHA: ${html.length} bytes"
             )
-
+            Log.d(
+                "MegadedeProvider",
+                "Voe HTML después de ALTCHA:\n${html.take(4000)}"
+            )
             encodedConfig = Regex(
                 """<script[^>]+type=["']application/json["'][^>]*>\s*\[\s*["']([^"']+)["']\s*\]\s*</script>"""
             ).find(html)?.groupValues?.getOrNull(1)
