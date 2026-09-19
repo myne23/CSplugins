@@ -29,10 +29,7 @@ class AnimoraTVProvider : MainAPI() {
 
     private fun parseAnimeList(json: JSONObject): List<SearchResponse> {
         val results = ArrayList<SearchResponse>()
-
-        val animes = json
-            .getJSONObject("data")
-            .getJSONArray("animes")
+        val animes = json.getJSONObject("data").getJSONArray("animes")
 
         for (i in 0 until animes.length()) {
             val anime = animes.getJSONObject(i)
@@ -50,8 +47,8 @@ class AnimoraTVProvider : MainAPI() {
                 TvType.Anime
             )
 
-            response.posterUrl = anime.optString("portada")
-                .ifBlank { null }
+            response.posterUrl =
+                anime.optString("portada").ifBlank { null }
 
             results.add(response)
         }
@@ -63,11 +60,7 @@ class AnimoraTVProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-
-        val results = parseAnimeList(
-            getJson(request.data)
-        )
-
+        val results = parseAnimeList(getJson(request.data))
         return newHomePageResponse(
             request.name,
             results,
@@ -79,10 +72,8 @@ class AnimoraTVProvider : MainAPI() {
         query: String
     ): List<SearchResponse>? {
 
-        val encodedQuery = java.net.URLEncoder.encode(
-            query,
-            "UTF-8"
-        )
+        val encodedQuery =
+            java.net.URLEncoder.encode(query, "UTF-8")
 
         val json = getJson(
             "$mainUrl/api/busqueda?termino=$encodedQuery&pagina=1&limite=30"
@@ -102,59 +93,61 @@ class AnimoraTVProvider : MainAPI() {
 
         if (slug.isBlank()) return null
 
-        println(
-            "AnimoraTV: load slug=$slug"
-        )
+        println("AnimoraTV: load slug=$slug")
 
-        val animeJson = getJson(
-            "$mainUrl/api/animes/$slug"
-        )
+        val animeJson =
+            getJson("$mainUrl/api/animes/$slug")
 
-        val anime = animeJson
-            .getJSONObject("data")
-            .getJSONObject("anime")
+        val anime =
+            animeJson
+                .getJSONObject("data")
+                .getJSONObject("anime")
 
-        val title = anime.optString("titulo")
-            .ifBlank { anime.optString("tituloIngles") }
+        val title =
+            anime.optString("titulo")
+                .ifBlank { anime.optString("tituloIngles") }
 
         if (title.isBlank()) return null
 
-        val episodesJson = getJson(
-            "$mainUrl/api/animes/$slug/episodios"
-        )
+        val episodesJson =
+            getJson("$mainUrl/api/animes/$slug/episodios")
 
-        val episodes = episodesJson
-            .getJSONObject("data")
-            .getJSONArray("episodios")
+        val episodes =
+            episodesJson
+                .getJSONObject("data")
+                .getJSONArray("episodios")
 
-        val episodeList = ArrayList<Episode>()
+        val episodeList =
+            ArrayList<Episode>()
 
         for (i in 0 until episodes.length()) {
-            val episode = episodes.getJSONObject(i)
 
-            val number = episode.optInt(
-                "numero",
-                i + 1
-            )
+            val episode =
+                episodes.getJSONObject(i)
 
-            val episodeTitle = episode.optString("titulo")
-                .ifBlank { "Episodio $number" }
+            val number =
+                episode.optInt("numero", i + 1)
+
+            val episodeTitle =
+                episode.optString("titulo")
+                    .ifBlank { "Episodio $number" }
 
             if (number <= 0) continue
 
             episodeList.add(
                 newEpisode("$slug|$number") {
+
                     name = episodeTitle
                     this.episode = number
                     season = 1
 
-                    description = episode.optString(
-                        "descripcion"
-                    )
+                    description =
+                        episode.optString("descripcion")
 
-                    posterUrl = episode.optString(
-                        "miniatura"
-                    ).ifBlank { null }
+                    posterUrl =
+                        episode
+                            .optString("miniatura")
+                            .ifBlank { null }
                 }
             )
         }
@@ -165,14 +158,19 @@ class AnimoraTVProvider : MainAPI() {
             TvType.Anime,
             episodeList
         ) {
-            posterUrl = anime.optString("portada")
-                .ifBlank { null }
 
-            plot = anime.optString("sinopsis")
-                .ifBlank { null }
+            posterUrl =
+                anime.optString("portada")
+                    .ifBlank { null }
 
-            year = anime.optInt("anio")
-                .takeIf { it > 0 }
+            plot =
+                anime.optString("sinopsis")
+                    .ifBlank { null }
+
+            year =
+                anime
+                    .optInt("anio")
+                    .takeIf { it > 0 }
         }
     }
 
@@ -183,22 +181,16 @@ class AnimoraTVProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        println(
-            "AnimoraTV: loadLinks data=$data"
-        )
+        println("AnimoraTV: loadLinks data=$data")
 
-        val parts =
-            data.split("|")
+        val parts = data.split("|")
 
         if (parts.size < 2) {
-            println(
-                "AnimoraTV: ERROR formato data inválido"
-            )
+            println("AnimoraTV: ERROR formato data inválido")
             return false
         }
 
-        val rawSlug =
-            parts[0]
+        val rawSlug = parts[0]
 
         val episodeNumber =
             parts[1].toIntOrNull()
@@ -224,9 +216,7 @@ class AnimoraTVProvider : MainAPI() {
         val apiUrl =
             "$mainUrl/api/video/$slug/$episodeNumber/fuentes"
 
-        println(
-            "AnimoraTV: API $apiUrl"
-        )
+        println("AnimoraTV: API $apiUrl")
 
         return try {
 
@@ -294,9 +284,12 @@ class AnimoraTVProvider : MainAPI() {
                         servidor.optString("proveedor")
 
                     if (urlVideo.isBlank()) {
+
                         println(
-                            "AnimoraTV: SKIP provider=$provider URL vacía"
+                            "AnimoraTV: SKIP " +
+                                "provider=$provider URL vacía"
                         )
+
                         continue
                     }
 
@@ -340,8 +333,12 @@ class AnimoraTVProvider : MainAPI() {
                                     url = urlVideo,
                                     type = ExtractorLinkType.M3U8
                                 ) {
-                                    referer = "$mainUrl/"
-                                    quality = qualityValue
+
+                                    referer =
+                                        "$mainUrl/"
+
+                                    quality =
+                                        qualityValue
                                 }
                             )
 
@@ -365,7 +362,46 @@ class AnimoraTVProvider : MainAPI() {
                         continue
                     }
 
+                    val hostReferer =
+                        try {
+
+                            val uri =
+                                java.net.URI(urlVideo)
+
+                            val host =
+                                uri.host ?: ""
+
+                            if (host.isBlank()) {
+                                "$mainUrl/"
+                            } else {
+                                "${uri.scheme ?: "https"}://$host/"
+                            }
+
+                        } catch (_: Exception) {
+
+                            "$mainUrl/"
+                        }
+
+                    val referers =
+                        if (
+                            hostReferer.equals(
+                                "$mainUrl/",
+                                ignoreCase = true
+                            )
+                        ) {
+
+                            listOf("$mainUrl/")
+
+                        } else {
+
+                            listOf(
+                                hostReferer,
+                                "$mainUrl/"
+                            )
+                        }
+
                     var emitted = 0
+                    var successfulReferer: String? = null
 
                     val extractorCallback:
                         (ExtractorLink) -> Unit = { link ->
@@ -385,43 +421,74 @@ class AnimoraTVProvider : MainAPI() {
                         callback(link)
                     }
 
-                    try {
+                    for (
+                        (attempt, referer)
+                        in referers.withIndex()
+                    ) {
 
-                        println(
-                            "AnimoraTV: intentando loadExtractor " +
-                                "provider=$provider"
-                        )
-
-                        loadExtractor(
-                            urlVideo,
-                            "$mainUrl/",
-                            subtitleCallback,
-                            extractorCallback
-                        )
-
-                        if (emitted > 0) {
-
-                            found = true
-
-                            println(
-                                "AnimoraTV: loadExtractor DONE " +
-                                    "provider=$provider " +
-                                    "links=$emitted"
-                            )
-
-                        } else {
-
-                            println(
-                                "AnimoraTV: loadExtractor SIN LINKS " +
-                                    "provider=$provider"
-                            )
+                        if (successfulReferer != null) {
+                            break
                         }
 
-                    } catch (e: Exception) {
+                        val before =
+                            emitted
+
+                        try {
+
+                            println(
+                                "AnimoraTV: loadExtractor " +
+                                    "intento=${attempt + 1} " +
+                                    "provider=$provider " +
+                                    "referer=$referer " +
+                                    "url=$urlVideo"
+                            )
+
+                            loadExtractor(
+                                urlVideo,
+                                referer,
+                                subtitleCallback,
+                                extractorCallback
+                            )
+
+                            if (emitted > before) {
+
+                                successfulReferer =
+                                    referer
+
+                                found = true
+
+                                println(
+                                    "AnimoraTV: loadExtractor OK " +
+                                        "provider=$provider " +
+                                        "referer=$referer " +
+                                        "links=${emitted - before}"
+                                )
+
+                            } else {
+
+                                println(
+                                    "AnimoraTV: loadExtractor SIN LINKS " +
+                                        "provider=$provider " +
+                                        "referer=$referer"
+                                )
+                            }
+
+                        } catch (e: Exception) {
+
+                            println(
+                                "AnimoraTV: loadExtractor ERROR " +
+                                    "provider=$provider " +
+                                    "referer=$referer -> ${e.message}"
+                            )
+                        }
+                    }
+
+                    if (successfulReferer == null) {
 
                         println(
-                            "AnimoraTV: loadExtractor ERROR " +
-                                "provider=$provider -> ${e.message}"
+                            "AnimoraTV: EXTRACTOR FALLÓ " +
+                                "provider=$provider " +
+                                "hostReferer=$hostReferer"
                         )
                     }
                 }
