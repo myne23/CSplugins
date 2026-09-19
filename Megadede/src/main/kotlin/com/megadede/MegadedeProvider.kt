@@ -580,6 +580,47 @@ class MegadedeProvider : MainAPI() {
                             continue
                         }
 
+                        if (serverName.equals("voe", true)) {
+                            Log.d(
+                                "MegadedeProvider",
+                                "LINKS Voe directo: $realUrl"
+                            )
+
+                            val hlsUrl = extractVoeLink(realUrl)
+
+                            if (!hlsUrl.isNullOrBlank()) {
+                                Log.d(
+                                    "MegadedeProvider",
+                                    "LINKS Voe HLS encontrado: $hlsUrl"
+                                )
+
+                                callback(
+                                    newExtractorLink(
+                                        "Voe",
+                                        "Voe",
+                                        hlsUrl,
+                                        ExtractorLinkType.M3U8
+                                    ) {
+                                        referer = realUrl
+                                    }
+                                )
+
+                                found = true
+
+                                Log.d(
+                                    "MegadedeProvider",
+                                    "LINK EMITIDO: source=Voe name=Voe url=$hlsUrl quality=0"
+                                )
+                            } else {
+                                Log.d(
+                                    "MegadedeProvider",
+                                    "LINKS Voe: no se obtuvo HLS"
+                                )
+                            }
+
+                            continue
+                        }
+
                         Log.d(
                             "MegadedeProvider",
                             "LINKS llamando loadExtractor: name=$displayName url=$realUrl"
@@ -1134,4 +1175,438 @@ class MegadedeProvider : MainAPI() {
             ?.let { cleanHtml(it) }
             ?.takeIf { it.isNotBlank() }
     }
+
+private suspend fun extractVoeLink(embedUrl: String): String? {
+    return try {
+        Log.d(
+            "MegadedeProvider",
+            "Voe directo: GET $embedUrl"
+        )
+
+        val firstResponse = app.get(
+            embedUrl,
+            headers = mapOf(
+                "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+            )
+        )
+
+        if (!firstResponse.isSuccessful) {
+            Log.d(
+                "MegadedeProvider",
+                "Voe directo: HTTP inicial ${firstResponse.code}"
+            )
+            return null
+        }
+
+        var html = firstResponse.text
+
+        // Voe redirige a uno de sus dominios CDN.
+        val redirectUrl = Regex(
+            """window\.location\.href\s*=\s*['"]([^'"]+/e/[^'"]+)['"]"""
+        ).find(html)?.groupValues?.getOrNull(1)
+
+        val realUrl = redirectUrl ?: embedUrl
+
+        Log.d(
+            "MegadedeProvider",
+            "Voe URL real: $realUrl"
+        )
+
+        val pageResponse = if (realUrl != embedUrl) {
+            app.get(
+                realUrl,
+                headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+                )
+            )
+        } else {
+            firstResponse
+        }
+
+        html = pageResponse.text
+
+        // Si ya tenemos el JSON real, no hace falta ALTCHA.
+        var encodedConfig = Regex(
+            """<script[^>]+type=["']application/json["'][^>]*>\s*(?:\[\s*)?["']([^"']+)["']"""
+        ).find(html)?.groupValues?.getOrNull(1)
+
+        if (encodedConfig.isNullOrBlank()) {
+            Log.d(
+                "MegadedeProvider",
+                "Voe: ALTCHA requerido"
+            )
+
+            val csrf = Regex(
+                """name=["']_token["'][^>]+value=["']([^"']+)["']"""
+            ).find(html)?.groupValues?.getOrNull(1)
+
+            val challengeUrl = Regex(
+                """<altcha-widget[^>]+challenge=["']([^"']+)["']"""
+            ).find(html)?.groupValues?.getOrNull(1)
+
+            if (csrf.isNullOrBlank() || challengeUrl.isNullOrBlank()) {
+                Log.d(
+                    "MegadedeProvider",
+                    "Voe: no se encontró CSRF o challenge"
+                )
+                return null
+            }
+
+            Log.d(
+                "MegadedeProvider",
+                "Voe ALTCHA challenge: $challengeUrl"
+            )
+
+            val challengeResponse = app.get(
+                challengeUrl,
+                headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                    "Referer" to realUrl
+                )
+            )
+
+            if (!challengeResponse.isSuccessful) {
+                Log.d(
+                    "MegadedeProvider",
+                    "Voe ALTCHA challenge HTTP ${challengeResponse.code}"
+                )
+                return null
+            }
+
+            val challengeJson = challengeResponse.text
+
+            val algorithm = Regex(
+                """"algorithm"\s*:\s*"([^"]+)""""
+            ).find(challengeJson)?.groupValues?.getOrNull(1)
+
+            val cost = Regex(
+                """"cost"\s*:\s*(\d+)"""
+            ).find(challengeJson)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+            val keyLength = Regex(
+                """"keyLength"\s*:\s*(\d+)"""
+            ).find(challengeJson)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+            val keyPrefix = Regex(
+                """"keyPrefix"\s*:\s*"([^"]+)""""
+            ).find(challengeJson)?.groupValues?.getOrNull(1)
+
+            val nonce = Regex(
+                """"nonce"\s*:\s*"([^"]+)""""
+            ).find(challengeJson)?.groupValues?.getOrNull(1)
+
+            val salt = Regex(
+                """"salt"\s*:\s*"([^"]+)""""
+            ).find(challengeJson)?.groupValues?.getOrNull(1)
+
+            if (
+                algorithm.isNullOrBlank() ||
+                cost == null ||
+                keyLength == null ||
+                keyPrefix.isNullOrBlank() ||
+                nonce.isNullOrBlank() ||
+                salt.isNullOrBlank()
+            ) {
+                Log.d(
+                    "MegadedeProvider",
+                    "Voe ALTCHA: parámetros incompletos"
+                )
+                return null
+            }
+
+            Log.d(
+                "MegadedeProvider",
+                "Voe ALTCHA: algorithm=$algorithm cost=$cost keyLength=$keyLength prefix=$keyPrefix"
+            )
+
+            var solvedCounter = -1
+            var solvedKey = ""
+
+            val saltBytes = hexToBytes(salt)
+
+            for (counter in 0 until 1_000_000) {
+                val counterBytes = byteArrayOf(
+                    ((counter ushr 24) and 0xff).toByte(),
+                    ((counter ushr 16) and 0xff).toByte(),
+                    ((counter ushr 8) and 0xff).toByte(),
+                    (counter and 0xff).toByte()
+                )
+
+                val passwordBytes =
+                    nonce.toByteArray(Charsets.UTF_8) + counterBytes
+
+                val derived = pbkdf2Sha256(
+                    passwordBytes,
+                    saltBytes,
+                    cost,
+                    keyLength
+                )
+
+                val hex = derived.joinToString("") {
+                    "%02x".format(it.toInt() and 0xff)
+                }
+
+                if (hex.startsWith(keyPrefix)) {
+                    solvedCounter = counter
+                    solvedKey = hex
+                    break
+                }
+            }
+
+            if (solvedCounter < 0) {
+                Log.d(
+                    "MegadedeProvider",
+                    "Voe ALTCHA: PoW no resuelto"
+                )
+                return null
+            }
+
+            Log.d(
+                "MegadedeProvider",
+                "Voe ALTCHA resuelto: counter=$solvedCounter key=$solvedKey"
+            )
+
+            val challenge = challengeJson
+
+            val challengeValue = challenge
+                .trim()
+                .removePrefix("{")
+                .let { challengeJson }
+
+            val altchaPayload = """
+                {"challenge":${jsonString(challengeValue)},"solution":{"counter":$solvedCounter,"derivedKey":"$solvedKey","time":0}}
+            """.trimIndent()
+
+            val payloadB64 = java.util.Base64
+                .getEncoder()
+                .encodeToString(
+                    altchaPayload.toByteArray(Charsets.UTF_8)
+                )
+
+            val postResponse = app.post(
+                realUrl,
+                headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                    "Referer" to realUrl,
+                    "Content-Type" to "application/x-www-form-urlencoded"
+                ),
+                data = mapOf(
+                    "_token" to csrf,
+                    "access" to "0",
+                    "altcha" to payloadB64
+                )
+            )
+
+            if (!postResponse.isSuccessful) {
+                Log.d(
+                    "MegadedeProvider",
+                    "Voe ALTCHA POST HTTP ${postResponse.code}"
+                )
+                return null
+            }
+
+            html = postResponse.text
+
+            Log.d(
+                "MegadedeProvider",
+                "Voe página después de ALTCHA: ${html.length} bytes"
+            )
+
+            encodedConfig = Regex(
+                """<script[^>]+type=["']application/json["'][^>]*>\s*\[\s*["']([^"']+)["']\s*\]\s*</script>"""
+            ).find(html)?.groupValues?.getOrNull(1)
+        }
+
+        if (encodedConfig.isNullOrBlank()) {
+            Log.d(
+                "MegadedeProvider",
+                "Voe: config JSON no encontrada"
+            )
+            return null
+        }
+
+        Log.d(
+            "MegadedeProvider",
+            "Voe config encontrada: ${encodedConfig.length} chars"
+        )
+
+        val decodedConfig = decodeVoeConfig(encodedConfig)
+
+        if (decodedConfig.isNullOrBlank()) {
+            Log.d(
+                "MegadedeProvider",
+                "Voe: no se pudo decodificar config"
+            )
+            return null
+        }
+
+        Log.d(
+            "MegadedeProvider",
+            "Voe config decodificada: $decodedConfig"
+        )
+
+        val source = Regex(
+            """"source"\s*:\s*"([^"]+)""""
+        ).find(decodedConfig)?.groupValues?.getOrNull(1)
+
+        if (source.isNullOrBlank()) {
+            Log.d(
+                "MegadedeProvider",
+                "Voe: source HLS no encontrada"
+            )
+            return null
+        }
+
+        val result = source
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+
+        Log.d(
+            "MegadedeProvider",
+            "Voe HLS encontrado: $result"
+        )
+
+        result
+    } catch (e: Exception) {
+        Log.e(
+            "MegadedeProvider",
+            "Voe directo ERROR",
+            e
+        )
+        null
+    }
+}
+
+private fun decodeVoeConfig(encoded: String): String? {
+    return try {
+        // 1. ROT13
+        var value = buildString {
+            for (char in encoded) {
+                append(
+                    when (char) {
+                        in 'A'..'Z' ->
+                            ((char.code - 'A'.code + 13) % 26 + 'A'.code).toChar()
+
+                        in 'a'..'z' ->
+                            ((char.code - 'a'.code + 13) % 26 + 'a'.code).toChar()
+
+                        else -> char
+                    }
+                )
+            }
+        }
+
+        // 2. Separadores -> _
+        val separators = listOf(
+            "@$",
+            "^^",
+            "~@",
+            "%?",
+            "*~",
+            "!!",
+            "#&"
+        )
+
+        for (separator in separators) {
+            value = value.replace(separator, "_")
+        }
+
+        // 3. Eliminar _
+        value = value.replace("_", "")
+
+        // 4. Base64
+        var bytes = java.util.Base64
+            .getDecoder()
+            .decode(value)
+
+        // 5. Restar 3 a cada byte
+        bytes = bytes.map {
+            (it.toInt() - 3).toByte()
+        }.toByteArray()
+
+        // 6. Invertir
+        bytes.reverse()
+
+        // 7. Base64 otra vez
+        val decoded = java.util.Base64
+            .getDecoder()
+            .decode(String(bytes, Charsets.UTF_8))
+
+        String(decoded, Charsets.UTF_8)
+    } catch (e: Exception) {
+        Log.e(
+            "MegadedeProvider",
+            "Voe decode ERROR",
+            e
+        )
+        null
+    }
+}
+
+
+private fun pbkdf2Sha256(
+    password: ByteArray,
+    salt: ByteArray,
+    iterations: Int,
+    keyLength: Int
+): ByteArray {
+    val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+
+    val blockCount =
+        (keyLength + mac.macLength - 1) / mac.macLength
+
+    val output = ByteArray(blockCount * mac.macLength)
+
+    var outputOffset = 0
+
+    for (block in 1..blockCount) {
+        mac.init(
+            javax.crypto.spec.SecretKeySpec(
+                password,
+                "HmacSHA256"
+            )
+        )
+
+        val blockSalt = salt + byteArrayOf(
+            ((block ushr 24) and 0xff).toByte(),
+            ((block ushr 16) and 0xff).toByte(),
+            ((block ushr 8) and 0xff).toByte(),
+            (block and 0xff).toByte()
+        )
+
+        var u = mac.doFinal(blockSalt)
+        val t = u.copyOf()
+
+        for (i in 1 until iterations) {
+            mac.init(
+                javax.crypto.spec.SecretKeySpec(
+                    password,
+                    "HmacSHA256"
+                )
+            )
+
+            u = mac.doFinal(u)
+
+            for (j in t.indices) {
+                t[j] = (t[j].toInt() xor u[j].toInt()).toByte()
+            }
+        }
+
+        System.arraycopy(
+            t,
+            0,
+            output,
+            outputOffset,
+            t.size
+        )
+
+        outputOffset += t.size
+    }
+
+    return output.copyOf(keyLength)
+}
+
+private fun jsonString(value: String): String {
+    return org.json.JSONObject.quote(value)
+}
 }
