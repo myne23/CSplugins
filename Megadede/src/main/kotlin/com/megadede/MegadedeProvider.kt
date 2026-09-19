@@ -36,12 +36,23 @@ class MegadedeProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = when (request.name) {
+        val baseUrl = when (request.name) {
             "Películas" -> "$mainUrl/peliculas"
             "Series" -> "$mainUrl/series"
             "Animes" -> "$mainUrl/animes"
             else -> mainUrl
         }
+
+        val url = if (page > 1) {
+            "$baseUrl?page=$page"
+        } else {
+            baseUrl
+        }
+
+        Log.d(
+            "MegadedeProvider",
+            "HOME request='${request.name}' page=$page url=$url"
+        )
 
         val response = app.get(
             url,
