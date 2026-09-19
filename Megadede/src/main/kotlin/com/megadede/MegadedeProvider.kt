@@ -509,21 +509,12 @@ class MegadedeProvider : MainAPI() {
                     )
 
                     for ((serverName, encoded) in links) {
-                        val realUrl = try {
-                            decryptEmbed69Link(encoded)
-                        } catch (e: Exception) {
-                            Log.e(
-                                "MegadedeProvider",
-                                "LINKS error desencriptando $serverName",
-                                e
-                            )
-                            null
-                        }
+                        val realUrl = encoded
 
-                        if (realUrl.isNullOrBlank()) {
+                        if (realUrl.isBlank()) {
                             Log.d(
                                 "MegadedeProvider",
-                                "LINKS $serverName no pudo desencriptarse"
+                                "LINKS $serverName URL vacía"
                             )
                             continue
                         }
@@ -778,14 +769,6 @@ class MegadedeProvider : MainAPI() {
 
             nonce++
         }
-    }
-
-    private fun decryptEmbed69Link(
-        encrypted: String
-    ): String {
-        throw UnsupportedOperationException(
-            "decryptEmbed69Link debe recibir la key derivada del PoW"
-        )
     }
 
     private fun decryptAes(
