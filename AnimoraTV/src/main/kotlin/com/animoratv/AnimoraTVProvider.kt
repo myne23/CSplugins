@@ -19,7 +19,7 @@ class AnimoraTVProvider : MainAPI() {
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
-        "$mainUrl/api/episodios/recientes?limite=24" to "Últimos episodios",
+        "$mainUrl/api/episodios/recientes?limite=36" to "Últimos episodios",
         "$mainUrl/api/animes/populares" to "Populares"
     )
 
