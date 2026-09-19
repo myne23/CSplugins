@@ -1376,16 +1376,17 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                 "Voe ALTCHA resuelto: counter=$solvedCounter key=$solvedKey"
             )
 
-            val challenge = challengeJson
-
-            val challengeValue = challenge
-                .trim()
-                .removePrefix("{")
-                .let { challengeJson }
-
+            // ALTCHA v2 espera el challenge como objeto JSON,
+            // no como string. Conservamos exactamente el JSON
+            // devuelto por el endpoint de challenge.
             val altchaPayload = """
-                {"challenge":${jsonString(challengeValue)},"solution":{"counter":$solvedCounter,"derivedKey":"$solvedKey","time":0}}
+                {"challenge":$challengeJson,"solution":{"counter":$solvedCounter,"derivedKey":"$solvedKey","time":0}}
             """.trimIndent()
+
+            Log.d(
+                "MegadedeProvider",
+                "Voe ALTCHA payload: challenge object + solution"
+            )
 
             val payloadB64 = java.util.Base64
                 .getEncoder()
@@ -1393,11 +1394,25 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                     altchaPayload.toByteArray(Charsets.UTF_8)
                 )
 
+            // Conservamos explícitamente las cookies de la sesión
+            // que Voe creó al entregar la página ALTCHA.
+            val voeCookies = pageResponse.cookies.entries
+                .joinToString("; ") { (name, value) ->
+                    "$name=$value"
+                }
+
+            Log.d(
+                "MegadedeProvider",
+                "Voe ALTCHA cookies presentes: ${pageResponse.cookies.keys}"
+            )
+
             val postResponse = app.post(
                 realUrl,
                 headers = mapOf(
                     "User-Agent" to "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
                     "Referer" to realUrl,
+                    "Origin" to "https://katherineschoolphone.com",
+                    "Cookie" to voeCookies,
                     "Content-Type" to "application/x-www-form-urlencoded"
                 ),
                 data = mapOf(
