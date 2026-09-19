@@ -183,14 +183,18 @@ class AnimoraTVProvider : MainAPI() {
 
         println("AnimoraTV: loadLinks data=$data")
 
-        val parts = data.split("|")
+        val parts =
+            data.split("|")
 
         if (parts.size < 2) {
-            println("AnimoraTV: ERROR formato data inválido")
+            println(
+                "AnimoraTV: ERROR formato data inválido"
+            )
             return false
         }
 
-        val rawSlug = parts[0]
+        val rawSlug =
+            parts[0]
 
         val episodeNumber =
             parts[1].toIntOrNull()
@@ -216,7 +220,9 @@ class AnimoraTVProvider : MainAPI() {
         val apiUrl =
             "$mainUrl/api/video/$slug/$episodeNumber/fuentes"
 
-        println("AnimoraTV: API $apiUrl")
+        println(
+            "AnimoraTV: API $apiUrl"
+        )
 
         return try {
 
@@ -272,7 +278,7 @@ class AnimoraTVProvider : MainAPI() {
 
                     val servidor =
                         servidores.optJSONObject(j)
-                            ?: continue
+                        ?: continue
 
                     val urlVideo =
                         servidor.optString("urlVideo")
@@ -300,6 +306,108 @@ class AnimoraTVProvider : MainAPI() {
                             .filter { it.isDigit() }
                             .toIntOrNull()
                             ?: Qualities.Unknown.value
+
+                    val isMega =
+                        provider.equals(
+                            "mega",
+                            ignoreCase = true
+                        ) ||
+                        urlVideo.contains(
+                            "mega.nz/",
+                            ignoreCase = true
+                        )
+
+                    if (isMega) {
+
+                        try {
+
+                            println(
+                                "AnimoraTV: MEGA detectado -> $urlVideo"
+                            )
+
+                            val megaMatch =
+                                Regex(
+                                    """mega\.nz/(?:embed/)?([^#]+)#(.+)""",
+                                    RegexOption.IGNORE_CASE
+                                ).find(urlVideo)
+
+                            if (megaMatch == null) {
+
+                                println(
+                                    "AnimoraTV: MEGA URL inválida"
+                                )
+
+                                continue
+                            }
+
+                            val handle =
+                                megaMatch
+                                    .groupValues[1]
+                                    .substringBefore("?")
+                                    .trim()
+
+                            val key =
+                                megaMatch
+                                    .groupValues[2]
+                                    .trim()
+
+                            if (
+                                handle.isBlank() ||
+                                key.isBlank()
+                            ) {
+
+                                println(
+                                    "AnimoraTV: MEGA handle/key vacío"
+                                )
+
+                                continue
+                            }
+
+                            println(
+                                "AnimoraTV: MEGA handle=$handle"
+                            )
+
+                            val localUrl =
+                                MegaLocalServer.start(
+                                    handle,
+                                    key
+                                )
+
+                            callback(
+                                newExtractorLink(
+                                    name = "Mega",
+                                    source = name,
+                                    url = localUrl,
+                                    type = ExtractorLinkType.VIDEO
+                                ) {
+
+                                    referer =
+                                        "$mainUrl/"
+
+                                    quality =
+                                        qualityValue
+                                }
+                            )
+
+                            found = true
+                            totalExtractedLinks++
+
+                            println(
+                                "AnimoraTV: MEGA LINK EMITIDO " +
+                                    "url=$localUrl"
+                            )
+
+                        } catch (e: Exception) {
+
+                            println(
+                                "AnimoraTV: MEGA ERROR -> " +
+                                    "${e.javaClass.simpleName}: " +
+                                    e.message
+                            )
+                        }
+
+                        continue
+                    }
 
                     val isHls =
                         provider.equals(
@@ -390,7 +498,9 @@ class AnimoraTVProvider : MainAPI() {
                             )
                         ) {
 
-                            listOf("$mainUrl/")
+                            listOf(
+                                "$mainUrl/"
+                            )
 
                         } else {
 
