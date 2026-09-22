@@ -43,6 +43,8 @@ class MegadedeProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        val startTime = System.nanoTime()
+
         val baseUrl = when (request.name) {
             "Películas" -> "$mainUrl/peliculas"
             "Series" -> "$mainUrl/series"
@@ -61,11 +63,20 @@ class MegadedeProvider : MainAPI() {
             "HOME request='${request.name}' page=$page url=$url"
         )
 
+        val getStart = System.nanoTime()
+
         val response = app.get(
             url,
             headers = mapOf(
                 "Referer" to mainUrl
             )
+        )
+
+        val getMs = (System.nanoTime() - getStart) / 1_000_000
+
+        Log.d(
+            "MegadedeProvider",
+            "HOME GET terminado: success=${response.isSuccessful} code=${response.code} time=${getMs}ms"
         )
 
         if (!response.isSuccessful) {
@@ -74,6 +85,8 @@ class MegadedeProvider : MainAPI() {
                 emptyList()
             )
         }
+
+        val parseStart = System.nanoTime()
 
         val html = response.text
         val results = mutableListOf<SearchResponse>()
@@ -113,15 +126,14 @@ class MegadedeProvider : MainAPI() {
                 continue
             }
 
-            val image = Regex(
-                """<img[^>]+src=["']([^"']+)["'][^>]*>""",
+            val poster = Regex(
+                """<img[^>]+(?:src|data-src)=["']([^"']+)["']""",
                 RegexOption.IGNORE_CASE
-            ).find(article)
-
-            val poster = image
+            )
+                .find(article)
                 ?.groupValues
                 ?.getOrNull(1)
-                ?.takeIf { it.isNotBlank() }
+                ?.let { absoluteUrl(it) }
 
             val title = Regex(
                 """<h[1-6][^>]*>(.*?)</h[1-6]>""",
@@ -133,8 +145,8 @@ class MegadedeProvider : MainAPI() {
                 .find(article)
                 ?.groupValues
                 ?.getOrNull(1)
-                ?.let { cleanHtml(it) }
-                ?.takeIf { it.isNotBlank() }
+                ?.replace(Regex("<[^>]+>"), "")
+                ?.trim()
                 ?: continue
 
             when {
@@ -143,8 +155,7 @@ class MegadedeProvider : MainAPI() {
                         newAnimeSearchResponse(
                             title,
                             absolute,
-                            TvType.Anime,
-                            false
+                            TvType.Anime
                         ) {
                             this.posterUrl = poster
                         }
@@ -156,8 +167,7 @@ class MegadedeProvider : MainAPI() {
                         newTvSeriesSearchResponse(
                             title,
                             absolute,
-                            TvType.TvSeries,
-                            false
+                            TvType.TvSeries
                         ) {
                             this.posterUrl = poster
                         }
@@ -169,8 +179,7 @@ class MegadedeProvider : MainAPI() {
                         newMovieSearchResponse(
                             title,
                             absolute,
-                            TvType.Movie,
-                            false
+                            TvType.Movie
                         ) {
                             this.posterUrl = poster
                         }
@@ -179,10 +188,15 @@ class MegadedeProvider : MainAPI() {
             }
         }
 
-        return newHomePageResponse(
-            request.name,
-            results
+        val parseMs = (System.nanoTime() - parseStart) / 1_000_000
+        val totalMs = (System.nanoTime() - startTime) / 1_000_000
+
+        Log.d(
+            "MegadedeProvider",
+            "HOME parse terminado: results=${results.size} html=${html.length} time=${parseMs}ms total=${totalMs}ms"
         )
+
+        return newHomePageResponse(request.name, results)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
