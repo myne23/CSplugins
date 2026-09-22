@@ -11,6 +11,11 @@ import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
+
 
 class MegadedeProvider : MainAPI() {
 
@@ -695,228 +700,298 @@ class MegadedeProvider : MainAPI() {
 
             var found = false
 
-            for (server in servers) {
+            /*
+             * Embed69 se resuelve primero porque necesitamos sus URLs
+             * antes de poder lanzar Vidhide / Streamwish / Voe.
+             */
+            val embed69Servers = servers.filter {
+                it.contains("/vidurl/", ignoreCase = true)
+            }
+
+            val directServers = servers.filter {
+                !it.contains("/vidurl/", ignoreCase = true)
+            }
+
+            for (server in embed69Servers) {
                 val serverUrl = absoluteUrl(server)
 
                 Log.d(
                     "MegadedeProvider",
-                    "LINKS procesando servidor: $serverUrl"
+                    "LINKS procesando Embed69: $serverUrl"
                 )
 
-                if (serverUrl.contains("/vidurl/", ignoreCase = true)) {
-                    Log.d(
-                        "MegadedeProvider",
-                        "LINKS detectado Embed69 vidurl"
-                    )
+                val links = extractEmbed69Links(serverUrl)
 
-                    val links = extractEmbed69Links(serverUrl)
+                Log.d(
+                    "MegadedeProvider",
+                    "LINKS Embed69 devolvio ${links.size} links"
+                )
 
-                    Log.d(
-                        "MegadedeProvider",
-                        "LINKS Embed69 devolvio ${links.size} links"
-                    )
+                if (links.isNotEmpty()) {
+                    coroutineScope {
+                        links.map { (serverName, encoded) ->
+                            async {
+                                val realUrl = encoded
 
-                    for ((serverName, encoded) in links) {
-                        val realUrl = encoded
+                                if (realUrl.isBlank()) {
+                                    Log.d(
+                                        "MegadedeProvider",
+                                        "LINKS $serverName URL vacía"
+                                    )
+                                    return@async
+                                }
 
-                        if (realUrl.isBlank()) {
-                            Log.d(
-                                "MegadedeProvider",
-                                "LINKS $serverName URL vacía"
-                            )
-                            continue
-                        }
+                                val language = "LAT"
 
-                        val language = "LAT"
+                                val displayName = when {
+                                    serverName.equals("vidhide", true) -> "Vidhide"
+                                    serverName.equals("streamwish", true) -> "Streamwish"
+                                    serverName.equals("voe", true) -> "Voe"
+                                    else -> serverName
+                                }
 
-                        Log.d(
-                            "MegadedeProvider",
-                            "LINKS Embed69 resultado: server=$serverName language=$language url=$realUrl"
-                        )
-
-                        val displayName = when {
-                            serverName.equals("vidhide", true) -> "Vidhide"
-                            serverName.equals("streamwish", true) -> "Streamwish"
-                            serverName.equals("voe", true) -> "Voe"
-                            else -> serverName
-                        }
-
-                        Log.d(
-                            "MegadedeProvider",
-                            "LINKS Embed69 resultado: server=$serverName language=$language url=$realUrl"
-                        )
-
-                        // Vidhide: extracción directa del HLS.
-                        if (serverName.equals("vidhide", true)) {
-                            Log.d(
-                                "MegadedeProvider",
-                                "LINKS Vidhide directo: $realUrl"
-                            )
-
-                            val hlsUrl = extractVidhideLink(realUrl)
-
-                            if (!hlsUrl.isNullOrBlank()) {
                                 Log.d(
                                     "MegadedeProvider",
-                                    "LINKS Vidhide HLS encontrado: $hlsUrl"
+                                    "LINKS Embed69 resultado: server=$serverName language=$language url=$realUrl"
                                 )
 
-                                callback(
-                                    newExtractorLink(
-                                        "Vidhide",
-                                        "Vidhide",
-                                        hlsUrl,
-                                        ExtractorLinkType.M3U8
-                                    ) {
-                                        referer = realUrl
+                                if (serverName.equals("vidhide", true)) {
+                                    try {
+                                        Log.d(
+                                            "MegadedeProvider",
+                                            "LINKS Vidhide directo: $realUrl"
+                                        )
+
+                                        val hlsUrl = withTimeoutOrNull(7000L) {
+                                            extractVidhideLink(realUrl)
+                                        }
+
+                                        if (!hlsUrl.isNullOrBlank()) {
+                                            Log.d(
+                                                "MegadedeProvider",
+                                                "LINKS Vidhide HLS encontrado: $hlsUrl"
+                                            )
+
+                                            callback(
+                                                newExtractorLink(
+                                                    "Vidhide",
+                                                    "Vidhide",
+                                                    hlsUrl,
+                                                    ExtractorLinkType.M3U8
+                                                ) {
+                                                    referer = realUrl
+                                                }
+                                            )
+
+                                            found = true
+
+                                            Log.d(
+                                                "MegadedeProvider",
+                                                "LINK EMITIDO: source=Vidhide name=Vidhide url=$hlsUrl quality=0"
+                                            )
+                                        } else {
+                                            Log.d(
+                                                "MegadedeProvider",
+                                                "LINKS Vidhide directo: no se obtuvo HLS"
+                                            )
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(
+                                            "MegadedeProvider",
+                                            "LINKS Vidhide ERROR",
+                                            e
+                                        )
                                     }
-                                )
 
-                                found = true
+                                    return@async
+                                }
 
-                                Log.d(
-                                    "MegadedeProvider",
-                                    "LINK EMITIDO: source=Vidhide name=Vidhide url=$hlsUrl quality=0"
-                                )
-                            } else {
-                                Log.d(
-                                    "MegadedeProvider",
-                                    "LINKS Vidhide directo: no se obtuvo HLS"
-                                )
-                            }
+                                if (serverName.equals("voe", true)) {
+                                    try {
+                                        Log.d(
+                                            "MegadedeProvider",
+                                            "LINKS Voe directo: $realUrl"
+                                        )
 
-                            continue
-                        }
+                                        val hlsUrl = withTimeoutOrNull(12000L) {
+                                            extractVoeLink(realUrl)
+                                        }
 
-                        if (serverName.equals("voe", true)) {
-                            Log.d(
-                                "MegadedeProvider",
-                                "LINKS Voe directo: $realUrl"
-                            )
+                                        if (!hlsUrl.isNullOrBlank()) {
+                                            Log.d(
+                                                "MegadedeProvider",
+                                                "LINKS Voe HLS encontrado: $hlsUrl"
+                                            )
 
-                            val hlsUrl = extractVoeLink(realUrl)
+                                            callback(
+                                                newExtractorLink(
+                                                    "Voe",
+                                                    "Voe",
+                                                    hlsUrl,
+                                                    ExtractorLinkType.M3U8
+                                                ) {
+                                                    referer = realUrl
+                                                }
+                                            )
 
-                            if (!hlsUrl.isNullOrBlank()) {
-                                Log.d(
-                                    "MegadedeProvider",
-                                    "LINKS Voe HLS encontrado: $hlsUrl"
-                                )
+                                            found = true
 
-                                callback(
-                                    newExtractorLink(
-                                        "Voe",
-                                        "Voe",
-                                        hlsUrl,
-                                        ExtractorLinkType.M3U8
-                                    ) {
-                                        referer = realUrl
+                                            Log.d(
+                                                "MegadedeProvider",
+                                                "LINK EMITIDO: source=Voe name=Voe url=$hlsUrl quality=0"
+                                            )
+                                        } else {
+                                            Log.d(
+                                                "MegadedeProvider",
+                                                "LINKS Voe: no se obtuvo HLS"
+                                            )
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(
+                                            "MegadedeProvider",
+                                            "LINKS Voe ERROR",
+                                            e
+                                        )
                                     }
-                                )
 
-                                found = true
+                                    return@async
+                                }
 
                                 Log.d(
                                     "MegadedeProvider",
-                                    "LINK EMITIDO: source=Voe name=Voe url=$hlsUrl quality=0"
+                                    "LINKS llamando loadExtractor: name=$displayName url=$realUrl"
                                 )
-                            } else {
-                                Log.d(
+
+                                try {
+                                    val completed = withTimeoutOrNull(7000L) {
+                                        var extractorFound = false
+
+                                        val extractorCallback: (ExtractorLink) -> Unit = { link ->
+                                            Log.d(
+                                                "MegadedeProvider",
+                                                "LINK EMITIDO: source=${link.source} name=${link.name} url=${link.url} quality=${link.quality}"
+                                            )
+
+                                            callback(link)
+                                            extractorFound = true
+                                            found = true
+                                        }
+
+                                        loadExtractor(
+                                            realUrl,
+                                            serverUrl,
+                                            subtitleCallback,
+                                            extractorCallback
+                                        )
+
+                                        Log.d(
+                                            "MegadedeProvider",
+                                            "LINKS loadExtractor terminado: name=$displayName extractorFound=$extractorFound found=$found"
+                                        )
+
+                                        true
+                                    }
+
+                                    if (completed == null) {
+                                        Log.d(
+                                            "MegadedeProvider",
+                                            "LINKS EXTRACTOR TIMEOUT: name=$displayName limite=7000ms"
+                                        )
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(
+                                        "MegadedeProvider",
+                                        "LINKS loadExtractor ERROR: name=$displayName url=$realUrl",
+                                        e
+                                    )
+
+                                    try {
+                                        callback(
+                                            newExtractorLink(
+                                                displayName,
+                                                displayName,
+                                                realUrl
+                                            )
+                                        )
+
+                                        found = true
+
+                                        Log.d(
+                                            "MegadedeProvider",
+                                            "LINKS fallback directo agregado: name=$displayName"
+                                        )
+                                    } catch (fallbackError: Exception) {
+                                        Log.e(
+                                            "MegadedeProvider",
+                                            "LINKS fallback ERROR: name=$displayName",
+                                            fallbackError
+                                        )
+                                    }
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                }
+            }
+
+            /*
+             * Servidores que no vienen dentro de Embed69.
+             * También se procesan en paralelo para evitar que uno lento
+             * bloquee los demás.
+             */
+            if (directServers.isNotEmpty()) {
+                coroutineScope {
+                    directServers.map { server ->
+                        async {
+                            val serverUrl = absoluteUrl(server)
+
+                            Log.d(
+                                "MegadedeProvider",
+                                "LINKS servidor directo: $serverUrl"
+                            )
+
+                            try {
+                                val completed = withTimeoutOrNull(7000L) {
+                                    val extractorCallback: (ExtractorLink) -> Unit = { link ->
+                                        Log.d(
+                                            "MegadedeProvider",
+                                            "LINK EMITIDO: source=${link.source} name=${link.name} url=${link.url} quality=${link.quality}"
+                                        )
+
+                                        callback(link)
+                                        found = true
+                                    }
+
+                                    loadExtractor(
+                                        serverUrl,
+                                        pageUrl,
+                                        subtitleCallback,
+                                        extractorCallback
+                                    )
+
+                                    Log.d(
+                                        "MegadedeProvider",
+                                        "LINKS loadExtractor terminado servidor directo: $serverUrl found=$found"
+                                    )
+
+                                    true
+                                }
+
+                                if (completed == null) {
+                                    Log.d(
+                                        "MegadedeProvider",
+                                        "LINKS EXTRACTOR TIMEOUT servidor directo: $serverUrl limite=7000ms"
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                Log.e(
                                     "MegadedeProvider",
-                                    "LINKS Voe: no se obtuvo HLS"
+                                    "LINKS servidor directo ERROR: $serverUrl",
+                                    e
                                 )
                             }
-
-                            continue
                         }
-
-                        Log.d(
-                            "MegadedeProvider",
-                            "LINKS llamando loadExtractor: name=$displayName url=$realUrl"
-                        )
-
-                        try {
-                            var extractorFound = false
-
-                            val extractorCallback: (ExtractorLink) -> Unit = { link ->
-                                Log.d(
-                                    "MegadedeProvider",
-                                    "LINK EMITIDO: source=${link.source} name=${link.name} url=${link.url} quality=${link.quality}"
-                                )
-
-                                callback(link)
-                                extractorFound = true
-                                found = true
-                            }
-
-                            loadExtractor(
-                                realUrl,
-                                serverUrl,
-                                subtitleCallback,
-                                extractorCallback
-                            )
-
-                            Log.d(
-                                "MegadedeProvider",
-                                "LINKS loadExtractor terminado: name=$displayName extractorFound=$extractorFound found=$found"
-                            )
-                        } catch (e: Exception) {
-                            Log.e(
-                                "MegadedeProvider",
-                                "LINKS loadExtractor ERROR: name=$displayName url=$realUrl",
-                                e
-                            )
-
-                            callback(
-                                newExtractorLink(
-                                    displayName,
-                                    displayName,
-                                    realUrl
-                                )
-                            )
-
-                            found = true
-
-                            Log.d(
-                                "MegadedeProvider",
-                                "LINKS fallback directo agregado: name=$displayName"
-                            )
-                        }
-                    }
-                } else {
-                    Log.d(
-                        "MegadedeProvider",
-                        "LINKS servidor no Embed69, intentando loadExtractor: $serverUrl"
-                    )
-
-                    try {
-                        val extractorCallback: (ExtractorLink) -> Unit = { link ->
-                            Log.d(
-                                "MegadedeProvider",
-                                "LINK EMITIDO: source=${link.source} name=${link.name} url=${link.url} quality=${link.quality}"
-                            )
-
-                            callback(link)
-                            found = true
-                        }
-
-                        loadExtractor(
-                            serverUrl,
-                            pageUrl,
-                            subtitleCallback,
-                            extractorCallback
-                        )
-
-                        Log.d(
-                            "MegadedeProvider",
-                            "LINKS loadExtractor terminado servidor directo: $serverUrl found=$found"
-                        )
-                    } catch (e: Exception) {
-                        Log.e(
-                            "MegadedeProvider",
-                            "LINKS servidor directo ERROR: $serverUrl",
-                            e
-                        )
-                    }
+                    }.awaitAll()
                 }
             }
 

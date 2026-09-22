@@ -1,3 +1,7 @@
+dependencies {
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1")
+}
+
 version = 1
 
 cloudstream {
