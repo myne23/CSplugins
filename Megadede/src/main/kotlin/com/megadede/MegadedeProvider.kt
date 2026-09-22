@@ -496,7 +496,7 @@ class MegadedeProvider : MainAPI() {
                 val episodes = mutableListOf<Episode>()
 
                 val episodeRegex = Regex(
-                    """<a[^>]+href=["']([^"']*/temporada/(\d+)/capitulo/(\d+)[^"']*)["'][^>]*>(.*?)</a>""",
+                    """<a[^>]+href=["']([^"']*/temporada/(\\d+)/capitulo/(\\d+)[^"']*)["'][^>]*>(.*?)</a>""",
                     setOf(
                         RegexOption.IGNORE_CASE,
                         RegexOption.DOT_MATCHES_ALL
@@ -532,45 +532,9 @@ class MegadedeProvider : MainAPI() {
 
                     val episodeUrl = absoluteUrl(href)
 
-                    var episodePoster: String? = poster
-                    var episodeDescription: String? = null
-
-                    if (matches.size <= 30) {
-                        try {
-                            val episodeHtml = app.get(episodeUrl).text
-
-                            episodePoster = Regex(
-                                """<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']""",
-                                RegexOption.IGNORE_CASE
-                            )
-                                .find(episodeHtml)
-                                ?.groupValues
-                                ?.getOrNull(1)
-                                ?: poster
-
-                            episodeDescription = Regex(
-                                """<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["']""",
-                                RegexOption.IGNORE_CASE
-                            )
-                                .find(episodeHtml)
-                                ?.groupValues
-                                ?.getOrNull(1)
-                                ?.let { cleanHtml(it).trim() }
-                                ?.takeIf {
-                                    it.isNotBlank() &&
-                                    !it.startsWith("No se encontró una sinopsis", ignoreCase = true)
-                                }
-                        } catch (e: Exception) {
-                            Log.d(
-                                "MegadedeProvider",
-                                "LOAD error metadata episodio S$season E$episode: ${e.message}"
-                            )
-                        }
-                    }
-
                     Log.d(
                         "MegadedeProvider",
-                        "LOAD episodio S$season E$episode '$episodeTitle' poster=${episodePoster != null}"
+                        "LOAD episodio S$season E$episode '$episodeTitle'"
                     )
 
                     episodes.add(
@@ -578,8 +542,7 @@ class MegadedeProvider : MainAPI() {
                             this.name = episodeTitle
                             this.season = season
                             this.episode = episode
-                            this.posterUrl = episodePoster ?: poster
-                            this.description = episodeDescription
+                            this.posterUrl = poster
                         }
                     )
                 }
