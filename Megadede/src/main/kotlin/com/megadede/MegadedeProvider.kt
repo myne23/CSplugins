@@ -867,7 +867,7 @@ class MegadedeProvider : MainAPI() {
                                 )
 
                                 try {
-                                    val completed = withTimeoutOrNull(7000L) {
+                                    val completed = withTimeoutOrNull(20000L) {
                                         var extractorFound = false
 
                                         val extractorCallback: (ExtractorLink) -> Unit = { link ->
