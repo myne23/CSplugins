@@ -887,9 +887,44 @@ class AnimoraTVProvider : MainAPI() {
 
             /*
              * PASADA 2:
+             * Mega se registra inmediatamente después de HLS.
+             *
+             * Así queda disponible antes de empezar los
+             * extractores que pueden tardar varios segundos.
+             */
+            println(
+                "AnimoraTV: ===== PASADA MEGA ====="
+            )
+
+            for (servidor in allServers) {
+
+                val urlVideo =
+                    servidor.optString("urlVideo")
+
+                val provider =
+                    servidor.optString("proveedor")
+
+                val isMega =
+                    provider.equals(
+                        "mega",
+                        ignoreCase = true
+                    ) ||
+                    urlVideo.contains(
+                        "mega.nz/",
+                        ignoreCase = true
+                    )
+
+                if (isMega) {
+                    processServer(servidor)
+                }
+            }
+
+
+            /*
+             * PASADA 3:
              * Todos los servidores que necesitan extractor.
              *
-             * Mega queda fuera y se procesa al final.
+             * HLS y Mega ya fueron emitidos antes.
              */
             println(
                 "AnimoraTV: ===== PASADA EXTRACTORES ====="
@@ -926,40 +961,6 @@ class AnimoraTVProvider : MainAPI() {
                         )
 
                 if (!isMega && !isHls) {
-                    processServer(servidor)
-                }
-            }
-
-            /*
-             * PASADA 3:
-             * Mega siempre al final.
-             *
-             * Así nunca puede retrasar la entrega de HLS
-             * ni de los extractores normales.
-             */
-            println(
-                "AnimoraTV: ===== PASADA MEGA ====="
-            )
-
-            for (servidor in allServers) {
-
-                val urlVideo =
-                    servidor.optString("urlVideo")
-
-                val provider =
-                    servidor.optString("proveedor")
-
-                val isMega =
-                    provider.equals(
-                        "mega",
-                        ignoreCase = true
-                    ) ||
-                    urlVideo.contains(
-                        "mega.nz/",
-                        ignoreCase = true
-                    )
-
-                if (isMega) {
                     processServer(servidor)
                 }
             }
