@@ -6,6 +6,7 @@ import org.json.JSONObject
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
 
 class AnimoraTVProvider : MainAPI() {
 
@@ -980,13 +981,31 @@ class AnimoraTVProvider : MainAPI() {
                 extractorServers
                     .map { servidor ->
                         async {
-                            try {
-                                processServer(servidor)
-                            } catch (e: Exception) {
+                            val provider =
+                                servidor.optString("proveedor")
+
+                            val completed =
+                                withTimeoutOrNull(7000L) {
+                                    try {
+                                        processServer(servidor)
+                                        true
+                                    } catch (e: Exception) {
+                                        println(
+                                            "AnimoraTV: EXTRACTOR TASK ERROR provider=" +
+                                                provider +
+                                                " -> " +
+                                                "${e.javaClass.simpleName}: " +
+                                                e.message
+                                        )
+                                        true
+                                    }
+                                }
+
+                            if (completed == null) {
                                 println(
-                                    "AnimoraTV: EXTRACTOR TASK ERROR -> " +
-                                        "${e.javaClass.simpleName}: " +
-                                        e.message
+                                    "AnimoraTV: EXTRACTOR TIMEOUT provider=" +
+                                        provider +
+                                        " limite=7000ms"
                                 )
                             }
                         }
