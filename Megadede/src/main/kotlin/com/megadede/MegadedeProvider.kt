@@ -511,21 +511,7 @@ class MegadedeProvider : MainAPI() {
                             val href = match.groupValues[1]
                             val season = match.groupValues[2].toIntOrNull() ?: return@async null
                             val episode = match.groupValues[3].toIntOrNull() ?: return@async null
-                            val cardHtml = match.groupValues[4]
-
-                            val episodeTitle = Regex(
-                                """<p[^>]*>(.*?)</p>""",
-                                setOf(
-                                    RegexOption.IGNORE_CASE,
-                                    RegexOption.DOT_MATCHES_ALL
-                                )
-                            )
-                                .find(cardHtml)
-                                ?.groupValues
-                                ?.getOrNull(1)
-                                ?.let { cleanHtml(it).trim() }
-                                ?.takeIf { it.isNotBlank() }
-                                ?: "Episodio $episode"
+                            val episodeTitle = "Episodio $episode"
 
                             val episodeUrl = absoluteUrl(href)
 
