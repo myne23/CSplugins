@@ -3,6 +3,9 @@ package com.animoratv
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.json.JSONObject
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 class AnimoraTVProvider : MainAPI() {
 
@@ -925,44 +928,70 @@ class AnimoraTVProvider : MainAPI() {
              * Todos los servidores que necesitan extractor.
              *
              * HLS y Mega ya fueron emitidos antes.
+             *
+             * Los extractores se ejecutan EN PARALELO para que
+             * un servidor lento (savefiles, VidGuard, etc.) no
+             * bloquee a los demás.
              */
             println(
-                "AnimoraTV: ===== PASADA EXTRACTORES ====="
+                "AnimoraTV: ===== PASADA EXTRACTORES PARALELA ====="
             )
 
-            for (servidor in allServers) {
+            val extractorServers =
+                allServers.filter { servidor ->
 
-                val urlVideo =
-                    servidor.optString("urlVideo")
+                    val urlVideo =
+                        servidor.optString("urlVideo")
 
-                val provider =
-                    servidor.optString("proveedor")
+                    val provider =
+                        servidor.optString("proveedor")
 
-                val isMega =
-                    provider.equals(
-                        "mega",
-                        ignoreCase = true
-                    ) ||
-                    urlVideo.contains(
-                        "mega.nz/",
-                        ignoreCase = true
-                    )
-
-                val isHls =
-                    provider.equals(
-                        "hls",
-                        ignoreCase = true
-                    ) ||
-                    urlVideo
-                        .substringBefore("?")
-                        .endsWith(
-                            ".m3u8",
+                    val isMega =
+                        provider.equals(
+                            "mega",
+                            ignoreCase = true
+                        ) ||
+                        urlVideo.contains(
+                            "mega.nz/",
                             ignoreCase = true
                         )
 
-                if (!isMega && !isHls) {
-                    processServer(servidor)
+                    val isHls =
+                        provider.equals(
+                            "hls",
+                            ignoreCase = true
+                        ) ||
+                        urlVideo
+                            .substringBefore("?")
+                            .endsWith(
+                                ".m3u8",
+                                ignoreCase = true
+                            )
+
+                    !isMega && !isHls
                 }
+
+            println(
+                "AnimoraTV: extractores paralelos=" +
+                    extractorServers.size
+            )
+
+            coroutineScope {
+                extractorServers
+                    .map { servidor ->
+                        async {
+                            try {
+                                processServer(servidor)
+                            } catch (e: Exception) {
+                                println(
+                                    "AnimoraTV: EXTRACTOR TASK ERROR -> " +
+                                        "${e.javaClass.simpleName}: " +
+                                        e.message
+                                )
+                            }
+                        }
+                    }
+                    .awaitAll()
             }
 
             println(
