@@ -766,7 +766,7 @@ class MegadedeProvider : MainAPI() {
                                             "LINKS Vidhide directo: $realUrl"
                                         )
 
-                                        val hlsUrl = withTimeoutOrNull(7000L) {
+                                        val hlsUrl = withTimeoutOrNull(10000L) {
                                             extractVidhideLink(realUrl)
                                         }
 
@@ -817,7 +817,7 @@ class MegadedeProvider : MainAPI() {
                                             "LINKS Voe directo: $realUrl"
                                         )
 
-                                        val hlsUrl = withTimeoutOrNull(7000L) {
+                                        val hlsUrl = withTimeoutOrNull(20000L) {
                                             withContext(Dispatchers.Default) {
                                                 extractVoeLink(realUrl)
                                             }
@@ -869,7 +869,7 @@ class MegadedeProvider : MainAPI() {
                                 )
 
                                 try {
-                                    val completed = withTimeoutOrNull(7000L) {
+                                    val completed = withTimeoutOrNull(20000L) {
                                         var extractorFound = false
 
                                         val extractorCallback: (ExtractorLink) -> Unit = { link ->
@@ -957,7 +957,7 @@ class MegadedeProvider : MainAPI() {
                             )
 
                             try {
-                                val completed = withTimeoutOrNull(7000L) {
+                                val completed = withTimeoutOrNull(20000L) {
                                     val extractorCallback: (ExtractorLink) -> Unit = { link ->
                                         Log.d(
                                             "MegadedeProvider",
@@ -1666,6 +1666,9 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
             val powStart = System.nanoTime()
 
             for (counter in 0 until 1_000_000) {
+                if (counter % 100 == 0) {
+                    currentCoroutineContext().ensureActive()
+                }
                 val counterBytes = byteArrayOf(
                     ((counter ushr 24) and 0xff).toByte(),
                     ((counter ushr 16) and 0xff).toByte(),
