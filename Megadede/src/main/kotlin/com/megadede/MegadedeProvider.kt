@@ -1258,6 +1258,10 @@ class MegadedeProvider : MainAPI() {
             for (j in 0 until embeds.length()) {
                 val embed = embeds.getJSONObject(j)
 
+                Log.d(
+                    "MegadedeProvider",
+                    "EMBED69 ITEM COMPLETO: $embed"
+                )
                 val serverName = embed.optString("servername")
                 val encrypted = embed.optString("link")
 
