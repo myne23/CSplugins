@@ -493,8 +493,6 @@ class MegadedeProvider : MainAPI() {
                     "LOAD entrando parser de episodios"
                 )
 
-                val episodes = mutableListOf<Episode>()
-
                 val episodeRegex = Regex(
                     """<a[^>]+href=["']([^"']*/temporada/(\\d+)/capitulo/(\\d+)[^"']*)["'][^>]*>(.*?)</a>""",
                     setOf(
@@ -510,41 +508,83 @@ class MegadedeProvider : MainAPI() {
                     "LOAD matches episodios=${matches.size}"
                 )
 
-                for (match in matches) {
-                    val href = match.groupValues[1]
-                    val season = match.groupValues[2].toIntOrNull() ?: continue
-                    val episode = match.groupValues[3].toIntOrNull() ?: continue
-                    val cardHtml = match.groupValues[4]
+                val episodes = coroutineScope {
+                    matches.map { match ->
+                        async {
+                            val href = match.groupValues[1]
+                            val season = match.groupValues[2].toIntOrNull() ?: return@async null
+                            val episode = match.groupValues[3].toIntOrNull() ?: return@async null
+                            val cardHtml = match.groupValues[4]
 
-                    val episodeTitle = Regex(
-                        """<p[^>]*>(.*?)</p>""",
-                        setOf(
-                            RegexOption.IGNORE_CASE,
-                            RegexOption.DOT_MATCHES_ALL
-                        )
-                    )
-                        .find(cardHtml)
-                        ?.groupValues
-                        ?.getOrNull(1)
-                        ?.let { cleanHtml(it).trim() }
-                        ?.takeIf { it.isNotBlank() }
-                        ?: "Episodio $episode"
+                            val episodeTitle = Regex(
+                                """<p[^>]*>(.*?)</p>""",
+                                setOf(
+                                    RegexOption.IGNORE_CASE,
+                                    RegexOption.DOT_MATCHES_ALL
+                                )
+                            )
+                                .find(cardHtml)
+                                ?.groupValues
+                                ?.getOrNull(1)
+                                ?.let { cleanHtml(it).trim() }
+                                ?.takeIf { it.isNotBlank() }
+                                ?: "Episodio $episode"
 
-                    val episodeUrl = absoluteUrl(href)
+                            val episodeUrl = absoluteUrl(href)
 
-                    Log.d(
-                        "MegadedeProvider",
-                        "LOAD episodio S$season E$episode '$episodeTitle'"
-                    )
+                            var episodePoster: String? = poster
+                            var episodeDescription: String? = null
 
-                    episodes.add(
-                        newEpisode(episodeUrl) {
-                            this.name = episodeTitle
-                            this.season = season
-                            this.episode = episode
-                            this.posterUrl = poster
+                            if (matches.size <= 30) {
+                                try {
+                                    val episodeHtml = app.get(episodeUrl).text
+
+                                    episodePoster = Regex(
+                                        """<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']""",
+                                        RegexOption.IGNORE_CASE
+                                    )
+                                        .find(episodeHtml)
+                                        ?.groupValues
+                                        ?.getOrNull(1)
+                                        ?: poster
+
+                                    episodeDescription = Regex(
+                                        """<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([^"']+)["']""",
+                                        RegexOption.IGNORE_CASE
+                                    )
+                                        .find(episodeHtml)
+                                        ?.groupValues
+                                        ?.getOrNull(1)
+                                        ?.let { cleanHtml(it).trim() }
+                                        ?.takeIf {
+                                            it.isNotBlank() &&
+                                            !it.startsWith(
+                                                "No se encontró una sinopsis",
+                                                ignoreCase = true
+                                            )
+                                        }
+                                } catch (e: Exception) {
+                                    Log.d(
+                                        "MegadedeProvider",
+                                        "LOAD error metadata episodio S$season E$episode: ${e.message}"
+                                    )
+                                }
+                            }
+
+                            Log.d(
+                                "MegadedeProvider",
+                                "LOAD episodio S$season E$episode '$episodeTitle' poster=${episodePoster != null}"
+                            )
+
+                            newEpisode(episodeUrl) {
+                                this.name = episodeTitle
+                                this.season = season
+                                this.episode = episode
+                                this.posterUrl = episodePoster ?: poster
+                                this.description = episodeDescription
+                            }
                         }
-                    )
+                    }.awaitAll().filterNotNull()
                 }
 
                 val sortedEpisodes = episodes
