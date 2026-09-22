@@ -300,30 +300,24 @@ class AnimoraTVProvider : MainAPI() {
             "AnimoraTV: loadLinks data=$data"
         )
 
-        val parts =
-            data.split("|")
+        val parts = data.split("|")
 
         if (parts.size < 2) {
-
             println(
                 "AnimoraTV: ERROR formato data inválido"
             )
-
             return false
         }
 
-        val rawSlug =
-            parts[0]
+        val rawSlug = parts[0]
 
         val episodeNumber =
             parts[1].toIntOrNull()
 
         if (episodeNumber == null) {
-
             println(
                 "AnimoraTV: ERROR episodio inválido=${parts[1]}"
             )
-
             return false
         }
 
@@ -355,11 +349,9 @@ class AnimoraTVProvider : MainAPI() {
             )
 
             if (!response.isSuccessful) {
-
                 println(
                     "AnimoraTV: ERROR HTTP ${response.code}"
                 )
-
                 return false
             }
 
@@ -386,6 +378,22 @@ class AnimoraTVProvider : MainAPI() {
             val emittedUrls =
                 mutableSetOf<String>()
 
+            /*
+             * Primero recopilamos TODOS los servidores.
+             *
+             * Esto nos permite procesarlos globalmente por prioridad:
+             *
+             * 1. HLS directo
+             * 2. Extractores normales
+             * 3. Mega
+             *
+             * Así un Mega que aparezca primero en la API nunca bloquea
+             * la entrega de una fuente HLS rápida.
+             */
+
+            val allServers =
+                mutableListOf<JSONObject>()
+
             for (i in 0 until fuentes.length()) {
 
                 val fuente =
@@ -405,423 +413,554 @@ class AnimoraTVProvider : MainAPI() {
 
                     val servidor =
                         servidores.optJSONObject(j)
-                        ?: continue
+                            ?: continue
 
                     val urlVideo =
                         servidor.optString("urlVideo")
 
-                    val calidad =
-                        servidor.optString("calidad")
-
-                    val provider =
-                        servidor.optString("proveedor")
-
                     if (urlVideo.isBlank()) {
-
-                        println(
-                            "AnimoraTV: SKIP " +
-                                "provider=$provider URL vacía"
-                        )
-
                         continue
                     }
 
-                    totalServers++
+                    allServers.add(servidor)
+                }
+            }
 
-                    val qualityValue =
-                        calidad
-                            .filter { it.isDigit() }
-                            .toIntOrNull()
-                            ?: Qualities.Unknown.value
+            totalServers = allServers.size
 
-                    val isMega =
-                        provider.equals(
-                            "mega",
-                            ignoreCase = true
-                        ) ||
-                        urlVideo.contains(
-                            "mega.nz/",
-                            ignoreCase = true
+            println(
+                "AnimoraTV: servidores totales=$totalServers"
+            )
+
+            /*
+             * Procesamos cada servidor con la misma lógica anterior,
+             * pero en el orden de prioridad elegido.
+             */
+            suspend fun processServer(
+                servidor: JSONObject
+            ) {
+
+                val urlVideo =
+                    servidor.optString("urlVideo")
+
+                val calidad =
+                    servidor.optString("calidad")
+
+                val provider =
+                    servidor.optString("proveedor")
+
+                if (urlVideo.isBlank()) {
+                    return
+                }
+
+                val qualityValue =
+                    calidad
+                        .filter { it.isDigit() }
+                        .toIntOrNull()
+                        ?: Qualities.Unknown.value
+
+                val isMega =
+                    provider.equals(
+                        "mega",
+                        ignoreCase = true
+                    ) ||
+                    urlVideo.contains(
+                        "mega.nz/",
+                        ignoreCase = true
+                    )
+
+                if (isMega) {
+
+                    if (megaEmitted) {
+                        println(
+                            "AnimoraTV: MEGA duplicado -> ignorado"
+                        )
+                        return
+                    }
+
+                    try {
+
+                        println(
+                            "AnimoraTV: MEGA detectado -> $urlVideo"
                         )
 
-                    if (isMega) {
+                        var handle = ""
+                        var key = ""
 
-                        try {
+                        val modernMatch =
+                            Regex(
+                                """mega\.nz/embed/([^#!?]+)#(.+)""",
+                                RegexOption.IGNORE_CASE
+                            ).find(urlVideo)
 
-                            println(
-                                "AnimoraTV: MEGA detectado -> $urlVideo"
-                            )
+                        if (modernMatch != null) {
 
-                            var handle = ""
-                            var key = ""
+                            handle =
+                                modernMatch
+                                    .groupValues[1]
+                                    .trim()
 
-                            val modernMatch =
+                            key =
+                                modernMatch
+                                    .groupValues[2]
+                                    .trim()
+
+                        } else {
+
+                            val oldMatch =
                                 Regex(
-                                    """mega\.nz/embed/([^#!?]+)#(.+)""",
+                                    """mega\.nz/embed/#!([^!]+)!(.+)""",
                                     RegexOption.IGNORE_CASE
                                 ).find(urlVideo)
 
-                            if (modernMatch != null) {
+                            if (oldMatch != null) {
 
                                 handle =
-                                    modernMatch
+                                    oldMatch
                                         .groupValues[1]
                                         .trim()
 
                                 key =
-                                    modernMatch
+                                    oldMatch
                                         .groupValues[2]
                                         .trim()
-
-                            } else {
-
-                                val oldMatch =
-                                    Regex(
-                                        """mega\.nz/embed/#!([^!]+)!(.+)""",
-                                        RegexOption.IGNORE_CASE
-                                    ).find(urlVideo)
-
-                                if (oldMatch != null) {
-
-                                    handle =
-                                        oldMatch
-                                            .groupValues[1]
-                                            .trim()
-
-                                    key =
-                                        oldMatch
-                                            .groupValues[2]
-                                            .trim()
-                                }
                             }
-
-                            if (
-                                handle.isBlank() ||
-                                key.isBlank()
-                            ) {
-
-                                println(
-                                    "AnimoraTV: MEGA handle/key vacío"
-                                )
-
-                                continue
-                            }
-
-                            if (megaEmitted) {
-
-                                println(
-                                    "AnimoraTV: MEGA duplicado -> ignorado"
-                                )
-
-                                continue
-                            }
-
-                            megaEmitted = true
-
-                            println(
-                                "AnimoraTV: MEGA handle=$handle"
-                            )
-
-                            val localUrl =
-                                MegaLocalServer.start(
-                                    handle,
-                                    key
-                                )
-
-                            callback(
-                                newExtractorLink(
-                                    name = "Mega",
-                                    source = name,
-                                    url = localUrl,
-                                    type = ExtractorLinkType.VIDEO
-                                ) {
-
-                                    referer =
-                                        "$mainUrl/"
-
-                                    quality =
-                                        qualityValue
-                                }
-                            )
-
-                            found = true
-                            totalExtractedLinks++
-
-                            println(
-                                "AnimoraTV: MEGA LINK EMITIDO " +
-                                    "url=$localUrl"
-                            )
-
-                        } catch (e: Exception) {
-
-                            println(
-                                "AnimoraTV: MEGA ERROR -> " +
-                                    "${e.javaClass.simpleName}: " +
-                                    e.message
-                            )
                         }
 
-                        continue
+                        if (
+                            handle.isBlank() ||
+                            key.isBlank()
+                        ) {
+                            println(
+                                "AnimoraTV: MEGA handle/key vacío"
+                            )
+                            return
+                        }
+
+                        megaEmitted = true
+
+                        println(
+                            "AnimoraTV: MEGA handle=$handle"
+                        )
+
+                        val localUrl =
+                            MegaLocalServer.start(
+                                handle,
+                                key
+                            )
+
+                        callback(
+                            newExtractorLink(
+                                name = "Mega",
+                                source = name,
+                                url = localUrl,
+                                type = ExtractorLinkType.VIDEO
+                            ) {
+                                referer =
+                                    "$mainUrl/"
+
+                                quality =
+                                    qualityValue
+                            }
+                        )
+
+                        found = true
+                        totalExtractedLinks++
+
+                        println(
+                            "AnimoraTV: MEGA LINK EMITIDO " +
+                                "url=$localUrl"
+                        )
+
+                    } catch (e: Exception) {
+
+                        println(
+                            "AnimoraTV: MEGA ERROR -> " +
+                                "${e.javaClass.simpleName}: " +
+                                e.message
+                        )
                     }
 
-                    val isHls =
-                        provider.equals(
-                            "hls",
+                    return
+                }
+
+                val isHls =
+                    provider.equals(
+                        "hls",
+                        ignoreCase = true
+                    ) ||
+                    urlVideo
+                        .substringBefore("?")
+                        .endsWith(
+                            ".m3u8",
                             ignoreCase = true
-                        ) ||
-                        urlVideo
-                            .substringBefore("?")
-                            .endsWith(
-                                ".m3u8",
-                                ignoreCase = true
-                            )
+                        )
 
-                    println(
-                        "AnimoraTV: servidor " +
-                            "provider=$provider " +
-                            "quality=$calidad " +
-                            "hls=$isHls"
-                    )
+                println(
+                    "AnimoraTV: servidor " +
+                        "provider=$provider " +
+                        "quality=$calidad " +
+                        "hls=$isHls"
+                )
 
-                    if (isHls) {
+                if (isHls) {
 
-                        try {
+                    try {
 
-                            println(
-                                "AnimoraTV: HLS directo -> $urlVideo"
-                            )
+                        println(
+                            "AnimoraTV: HLS directo -> $urlVideo"
+                        )
 
-                            val hlsReferer =
-                                try {
+                        val hlsReferer =
+                            try {
 
-                                    val refValue =
-                                        urlVideo
-                                            .substringAfter(
-                                                "ref=",
-                                                ""
-                                            )
-                                            .substringBefore("&")
-
-                                    if (
-                                        refValue.isNotBlank()
-                                    ) {
-
-                                        java.net.URLDecoder.decode(
-                                            refValue,
-                                            "UTF-8"
+                                val refValue =
+                                    urlVideo
+                                        .substringAfter(
+                                            "ref=",
+                                            ""
                                         )
+                                        .substringBefore("&")
 
-                                    } else {
+                                if (
+                                    refValue.isNotBlank()
+                                ) {
 
-                                        "$mainUrl/"
-                                    }
+                                    java.net.URLDecoder.decode(
+                                        refValue,
+                                        "UTF-8"
+                                    )
 
-                                } catch (_: Exception) {
+                                } else {
 
                                     "$mainUrl/"
                                 }
 
-                            println(
-                                "AnimoraTV: HLS referer -> $hlsReferer"
-                            )
-
-                            callback(
-                                newExtractorLink(
-                                    name = provider,
-                                    source = name,
-                                    url = urlVideo,
-                                    type = ExtractorLinkType.M3U8
-                                ) {
-
-                                    referer =
-                                        hlsReferer
-
-                                    quality =
-                                        qualityValue
-                                }
-                            )
-
-                            found = true
-                            totalExtractedLinks++
-
-                            println(
-                                "AnimoraTV: HLS LINK EMITIDO " +
-                                    "provider=$provider " +
-                                    "quality=$qualityValue"
-                            )
-
-                        } catch (e: Exception) {
-
-                            println(
-                                "AnimoraTV: HLS ERROR " +
-                                    "provider=$provider -> ${e.message}"
-                            )
-                        }
-
-                        continue
-                    }
-
-                    val hostReferer =
-                        try {
-
-                            val uri =
-                                java.net.URI(urlVideo)
-
-                            val host =
-                                uri.host ?: ""
-
-                            if (host.isBlank()) {
+                            } catch (_: Exception) {
 
                                 "$mainUrl/"
-
-                            } else {
-
-                                "${uri.scheme ?: "https"}://$host/"
                             }
 
-                        } catch (_: Exception) {
+                        println(
+                            "AnimoraTV: HLS referer -> $hlsReferer"
+                        )
 
-                            "$mainUrl/"
-                        }
-
-                    val referers =
-                        if (
-                            hostReferer.equals(
-                                "$mainUrl/",
-                                ignoreCase = true
-                            )
-                        ) {
-
-                            listOf(
-                                "$mainUrl/"
-                            )
-
-                        } else {
-
-                            listOf(
-                                hostReferer,
-                                "$mainUrl/"
-                            )
-                        }
-
-                    var emitted = 0
-                    var successfulReferer: String? = null
-
-                    val extractorCallback:
-                        (ExtractorLink) -> Unit = { link ->
-
-                        if (
-                            emittedUrls.contains(
-                                link.url
-                            )
-                        ) {
-
-                            println(
-                                "AnimoraTV: LINK DUPLICADO " +
-                                    "ignorado " +
-                                    "name=${link.name} " +
-                                    "provider=$provider " +
-                                    "url=${link.url}"
-                            )
-
-                        } else {
-
-                            emittedUrls.add(
-                                link.url
-                            )
-
-                            emitted++
-                            totalExtractedLinks++
-
-                            println(
-                                "AnimoraTV: EXTRACTED LINK " +
-                                    "provider=$provider " +
-                                    "name=${link.name} " +
-                                    "quality=${link.quality} " +
-                                    "type=${link.type} " +
-                                    "url=${link.url}"
-                            )
-
-                            callback(link)
-                        }
-                    }
-
-                    for (
-                        (attempt, referer)
-                        in referers.withIndex()
-                    ) {
-
-                        if (
-                            successfulReferer != null
-                        ) {
-                            break
-                        }
-
-                        val before =
-                            emitted
-
-                        try {
-
-                            println(
-                                "AnimoraTV: loadExtractor " +
-                                    "intento=${attempt + 1} " +
-                                    "provider=$provider " +
-                                    "referer=$referer " +
-                                    "url=$urlVideo"
-                            )
-
-                            loadExtractor(
-                                urlVideo,
-                                referer,
-                                subtitleCallback,
-                                extractorCallback
-                            )
-
-                            if (
-                                emitted > before
+                        callback(
+                            newExtractorLink(
+                                name = provider,
+                                source = name,
+                                url = urlVideo,
+                                type = ExtractorLinkType.M3U8
                             ) {
+                                referer =
+                                    hlsReferer
 
-                                successfulReferer =
-                                    referer
-
-                                found = true
-
-                                println(
-                                    "AnimoraTV: loadExtractor OK " +
-                                        "provider=$provider " +
-                                        "referer=$referer " +
-                                        "links=${emitted - before}"
-                                )
-
-                            } else {
-
-                                println(
-                                    "AnimoraTV: loadExtractor SIN LINKS " +
-                                        "provider=$provider " +
-                                        "referer=$referer"
-                                )
+                                quality =
+                                    qualityValue
                             }
+                        )
 
-                        } catch (e: Exception) {
+                        found = true
+                        totalExtractedLinks++
 
-                            println(
-                                "AnimoraTV: loadExtractor ERROR " +
-                                    "provider=$provider " +
-                                    "referer=$referer -> ${e.message}"
-                            )
-                        }
+                        println(
+                            "AnimoraTV: HLS LINK EMITIDO " +
+                                "provider=$provider " +
+                                "quality=$qualityValue"
+                        )
+
+                    } catch (e: Exception) {
+
+                        println(
+                            "AnimoraTV: HLS ERROR " +
+                                "provider=$provider -> " +
+                                e.message
+                        )
                     }
+
+                    return
+                }
+
+                val hostReferer =
+                    try {
+
+                        val uri =
+                            java.net.URI(urlVideo)
+
+                        val host =
+                            uri.host ?: ""
+
+                        if (host.isBlank()) {
+                            "$mainUrl/"
+                        } else {
+                            "${uri.scheme ?: "https"}://$host/"
+                        }
+
+                    } catch (_: Exception) {
+
+                        "$mainUrl/"
+                    }
+
+                val referers =
+                    if (
+                        hostReferer.equals(
+                            "$mainUrl/",
+                            ignoreCase = true
+                        )
+                    ) {
+                        listOf(
+                            "$mainUrl/"
+                        )
+                    } else {
+                        listOf(
+                            hostReferer,
+                            "$mainUrl/"
+                        )
+                    }
+
+                var emitted = 0
+                var successfulReferer: String? = null
+
+                val extractorCallback:
+                    (ExtractorLink) -> Unit = { link ->
 
                     if (
-                        successfulReferer == null
+                        emittedUrls.contains(
+                            link.url
+                        )
                     ) {
 
                         println(
-                            "AnimoraTV: EXTRACTOR FALLÓ " +
+                            "AnimoraTV: LINK DUPLICADO " +
+                                "ignorado " +
+                                "name=${link.name} " +
                                 "provider=$provider " +
-                                "hostReferer=$hostReferer"
+                                "url=${link.url}"
+                        )
+
+                    } else {
+
+                        emittedUrls.add(
+                            link.url
+                        )
+
+                        emitted++
+                        totalExtractedLinks++
+
+                        println(
+                            "AnimoraTV: EXTRACTED LINK " +
+                                "provider=$provider " +
+                                "name=${link.name} " +
+                                "quality=${link.quality} " +
+                                "type=${link.type} " +
+                                "url=${link.url}"
+                        )
+
+                        callback(link)
+                    }
+                }
+
+                for (
+                    (attempt, referer)
+                    in referers.withIndex()
+                ) {
+
+                    if (
+                        successfulReferer != null
+                    ) {
+                        break
+                    }
+
+                    val before =
+                        emitted
+
+                    try {
+
+                        println(
+                            "AnimoraTV: loadExtractor " +
+                                "intento=${attempt + 1} " +
+                                "provider=$provider " +
+                                "referer=$referer " +
+                                "url=$urlVideo"
+                        )
+
+                        loadExtractor(
+                            urlVideo,
+                            referer,
+                            subtitleCallback,
+                            extractorCallback
+                        )
+
+                        if (
+                            emitted > before
+                        ) {
+
+                            successfulReferer =
+                                referer
+
+                            found = true
+
+                            println(
+                                "AnimoraTV: loadExtractor OK " +
+                                    "provider=$provider " +
+                                    "referer=$referer " +
+                                    "links=${emitted - before}"
+                            )
+
+                        } else {
+
+                            println(
+                                "AnimoraTV: loadExtractor SIN LINKS " +
+                                    "provider=$provider " +
+                                    "referer=$referer"
+                            )
+                        }
+
+                    } catch (e: Exception) {
+
+                        println(
+                            "AnimoraTV: loadExtractor ERROR " +
+                                "provider=$provider " +
+                                "referer=$referer -> " +
+                                e.message
                         )
                     }
+                }
+
+                if (
+                    successfulReferer == null
+                ) {
+
+                    println(
+                        "AnimoraTV: EXTRACTOR FALLÓ " +
+                            "provider=$provider " +
+                            "hostReferer=$hostReferer"
+                    )
+                }
+            }
+
+            /*
+             * PASADA 1:
+             * HLS/directos.
+             *
+             * Estos son los que queremos que aparezcan primero
+             * en CloudStream.
+             */
+            println(
+                "AnimoraTV: ===== PASADA HLS ====="
+            )
+
+            for (servidor in allServers) {
+
+                val urlVideo =
+                    servidor.optString("urlVideo")
+
+                val provider =
+                    servidor.optString("proveedor")
+
+                val isMega =
+                    provider.equals(
+                        "mega",
+                        ignoreCase = true
+                    ) ||
+                    urlVideo.contains(
+                        "mega.nz/",
+                        ignoreCase = true
+                    )
+
+                val isHls =
+                    provider.equals(
+                        "hls",
+                        ignoreCase = true
+                    ) ||
+                    urlVideo
+                        .substringBefore("?")
+                        .endsWith(
+                            ".m3u8",
+                            ignoreCase = true
+                        )
+
+                if (!isMega && isHls) {
+                    processServer(servidor)
+                }
+            }
+
+            /*
+             * PASADA 2:
+             * Todos los servidores que necesitan extractor.
+             *
+             * Mega queda fuera y se procesa al final.
+             */
+            println(
+                "AnimoraTV: ===== PASADA EXTRACTORES ====="
+            )
+
+            for (servidor in allServers) {
+
+                val urlVideo =
+                    servidor.optString("urlVideo")
+
+                val provider =
+                    servidor.optString("proveedor")
+
+                val isMega =
+                    provider.equals(
+                        "mega",
+                        ignoreCase = true
+                    ) ||
+                    urlVideo.contains(
+                        "mega.nz/",
+                        ignoreCase = true
+                    )
+
+                val isHls =
+                    provider.equals(
+                        "hls",
+                        ignoreCase = true
+                    ) ||
+                    urlVideo
+                        .substringBefore("?")
+                        .endsWith(
+                            ".m3u8",
+                            ignoreCase = true
+                        )
+
+                if (!isMega && !isHls) {
+                    processServer(servidor)
+                }
+            }
+
+            /*
+             * PASADA 3:
+             * Mega siempre al final.
+             *
+             * Así nunca puede retrasar la entrega de HLS
+             * ni de los extractores normales.
+             */
+            println(
+                "AnimoraTV: ===== PASADA MEGA ====="
+            )
+
+            for (servidor in allServers) {
+
+                val urlVideo =
+                    servidor.optString("urlVideo")
+
+                val provider =
+                    servidor.optString("proveedor")
+
+                val isMega =
+                    provider.equals(
+                        "mega",
+                        ignoreCase = true
+                    ) ||
+                    urlVideo.contains(
+                        "mega.nz/",
+                        ignoreCase = true
+                    )
+
+                if (isMega) {
+                    processServer(servidor)
                 }
             }
 
