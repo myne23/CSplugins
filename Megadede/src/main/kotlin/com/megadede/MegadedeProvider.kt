@@ -494,11 +494,8 @@ class MegadedeProvider : MainAPI() {
                 )
 
                 val episodeRegex = Regex(
-                    """<a[^>]+href=["']([^"']*/temporada/(\\d+)/capitulo/(\\d+)[^"']*)["'][^>]*>(.*?)</a>""",
-                    setOf(
-                        RegexOption.IGNORE_CASE,
-                        RegexOption.DOT_MATCHES_ALL
-                    )
+                    """href\\s*=\\s*["']([^"']*/temporada/(\\d+)/capitulo/(\\d+)[^"']*)["']""",
+                    RegexOption.IGNORE_CASE
                 )
 
                 val matches = episodeRegex.findAll(html).toList()
