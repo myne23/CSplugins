@@ -17,6 +17,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 
 class MegadedeProvider : MainAPI() {
@@ -815,7 +817,7 @@ class MegadedeProvider : MainAPI() {
                                             "LINKS Voe directo: $realUrl"
                                         )
 
-                                        val hlsUrl = withTimeoutOrNull(25000L) {
+                                        val hlsUrl = withTimeoutOrNull(7000L) {
                                             withContext(Dispatchers.Default) {
                                                 extractVoeLink(realUrl)
                                             }
@@ -867,7 +869,7 @@ class MegadedeProvider : MainAPI() {
                                 )
 
                                 try {
-                                    val completed = withTimeoutOrNull(20000L) {
+                                    val completed = withTimeoutOrNull(7000L) {
                                         var extractorFound = false
 
                                         val extractorCallback: (ExtractorLink) -> Unit = { link ->
@@ -1232,10 +1234,9 @@ class MegadedeProvider : MainAPI() {
             ?.getOrNull(1)
             ?: return emptyList()
 
-        val nonce = solvePow(
-            challenge,
-            difficulty
-        )
+        val nonce = withContext(Dispatchers.Default) {
+            solvePow(challenge, difficulty)
+        }
 
         Log.d(
             "MegadedeProvider",
@@ -1279,7 +1280,7 @@ class MegadedeProvider : MainAPI() {
         return results
     }
 
-    private fun solvePow(
+    private suspend fun solvePow(
         challenge: String,
         difficulty: Int
     ): Long {
@@ -1288,6 +1289,10 @@ class MegadedeProvider : MainAPI() {
         var nonce = 0L
 
         while (true) {
+            if (nonce % 1000L == 0L) {
+                currentCoroutineContext().ensureActive()
+            }
+
             val hash = sha256(
                 "$challenge$nonce"
             )
