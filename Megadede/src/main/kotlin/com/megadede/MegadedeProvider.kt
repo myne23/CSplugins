@@ -494,7 +494,7 @@ class MegadedeProvider : MainAPI() {
                 )
 
                 val episodeRegex = Regex(
-                    """href\\s*=\\s*["']([^"']*/temporada/(\\d+)/capitulo/(\\d+)[^"']*)["']""",
+                    """href\s*=\s*["']([^"']*/temporada/(\d+)/capitulo/(\d+)[^"']*)["']""",
                     RegexOption.IGNORE_CASE
                 )
 
