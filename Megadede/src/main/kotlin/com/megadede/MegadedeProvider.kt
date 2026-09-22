@@ -12,6 +12,8 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.async
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
@@ -813,8 +815,10 @@ class MegadedeProvider : MainAPI() {
                                             "LINKS Voe directo: $realUrl"
                                         )
 
-                                        val hlsUrl = withTimeoutOrNull(12000L) {
-                                            extractVoeLink(realUrl)
+                                        val hlsUrl = withTimeoutOrNull(25000L) {
+                                            withContext(Dispatchers.Default) {
+                                                extractVoeLink(realUrl)
+                                            }
                                         }
 
                                         if (!hlsUrl.isNullOrBlank()) {
