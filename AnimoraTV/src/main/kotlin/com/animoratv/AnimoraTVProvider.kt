@@ -1097,29 +1097,43 @@ class AnimoraTVProvider : MainAPI() {
         return try {
 
             val response =
-                app.get(apiUrl)
-
-            println(
-                "AnimoraTV: HTTP ${response.code}"
-            )
-
-            if (!response.isSuccessful) {
-                println(
-                    "AnimoraTV: ERROR HTTP ${response.code}"
-                )
-                return false
-            }
-
-            val root =
-                JSONObject(response.text)
-
-            val dataObject =
-                root.optJSONObject("data")
-                    ?: JSONObject()
+                try {
+                    app.get(apiUrl)
+                } catch (e: Exception) {
+                    println(
+                        "AnimoraTV: ERROR API fuentes -> " +
+                            "${e.javaClass.simpleName}: ${e.message}"
+                    )
+                    null
+                }
 
             val fuentes =
-                dataObject.optJSONArray("fuentes")
-                    ?: org.json.JSONArray()
+                if (response == null) {
+                    println(
+                        "AnimoraTV: continuando con AnimeAV"
+                    )
+                    org.json.JSONArray()
+                } else if (!response.isSuccessful) {
+                    println(
+                        "AnimoraTV: ERROR HTTP ${response.code}, " +
+                            "continuando con AnimeAV"
+                    )
+                    org.json.JSONArray()
+                } else {
+                    println(
+                        "AnimoraTV: HTTP ${response.code}"
+                    )
+
+                    val root =
+                        JSONObject(response.text)
+
+                    val dataObject =
+                        root.optJSONObject("data")
+                            ?: JSONObject()
+
+                    dataObject.optJSONArray("fuentes")
+                        ?: org.json.JSONArray()
+                }
 
             println(
                 "AnimoraTV: fuentes=${fuentes.length()}"
