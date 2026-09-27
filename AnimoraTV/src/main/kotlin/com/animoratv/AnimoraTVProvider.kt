@@ -7,6 +7,12 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
+import java.net.URI
+import java.net.URLDecoder
+import java.net.URLEncoder
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 class AnimoraTVProvider : MainAPI() {
 
@@ -155,7 +161,7 @@ class AnimoraTVProvider : MainAPI() {
     ): List<SearchResponse>? {
 
         val encodedQuery =
-            java.net.URLEncoder.encode(
+            URLEncoder.encode(
                 query,
                 "UTF-8"
             )
@@ -293,6 +299,751 @@ class AnimoraTVProvider : MainAPI() {
         }
     }
 
+    private fun normalizeAnimeTitle(value: String): String {
+        return value
+            .lowercase()
+            .replace(
+                Regex(
+                    """[^\p{L}\p{N}]+"""
+                ),
+                " "
+            )
+            .replace(
+                Regex("""\s+"""),
+                " "
+            )
+            .trim()
+    }
+
+    private fun animeTitleScore(
+        requested: String,
+        candidate: String
+    ): Int {
+
+        val requestedNormalized =
+            normalizeAnimeTitle(requested)
+
+        val candidateNormalized =
+            normalizeAnimeTitle(candidate)
+
+        if (
+            requestedNormalized == candidateNormalized
+        ) {
+            return 10000
+        }
+
+        val requestedWords =
+            requestedNormalized
+                .split(" ")
+                .filter {
+                    it.length >= 2
+                }
+                .toSet()
+
+        val candidateWords =
+            candidateNormalized
+                .split(" ")
+                .filter {
+                    it.length >= 2
+                }
+                .toSet()
+
+        if (
+            requestedWords.isEmpty() ||
+            candidateWords.isEmpty()
+        ) {
+            return 0
+        }
+
+        val common =
+            requestedWords
+                .intersect(candidateWords)
+                .size
+
+        var score =
+            common * 100
+
+        if (
+            candidateNormalized.contains(
+                "3rd season"
+            ) ||
+            candidateNormalized.contains(
+                "2nd season"
+            ) ||
+            candidateNormalized.contains(
+                "recap"
+            ) ||
+            candidateNormalized.contains(
+                "ova"
+            )
+        ) {
+            score -= 150
+        }
+
+        return score
+    }
+
+    private suspend fun findAnimeAVSlug(
+        title: String
+    ): String? {
+
+        println(
+            "AnimeAV: buscando título=$title"
+        )
+
+        val encoded =
+            URLEncoder.encode(
+                title,
+                "UTF-8"
+            )
+
+        val searchUrl =
+            "https://animeav1.com/catalogo?search=$encoded"
+
+        println(
+            "AnimeAV: search=$searchUrl"
+        )
+
+        val response =
+            app.get(
+                searchUrl,
+                headers = mapOf(
+                    "User-Agent" to
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0"
+                )
+            )
+
+        if (!response.isSuccessful) {
+            println(
+                "AnimeAV: search HTTP=${response.code}"
+            )
+            return null
+        }
+
+        val html =
+            response.text
+
+        val pattern =
+            Regex(
+                """<h3[^>]*>(.*?)</h3>[\s\S]*?<a[^>]+href="(/media/[^"]+)"""",
+                RegexOption.IGNORE_CASE
+            )
+
+        val candidates =
+            pattern
+                .findAll(html)
+                .mapNotNull { match ->
+
+                    val candidateTitle =
+                        match
+                            .groupValues[1]
+                            .replace(
+                                Regex("<[^>]+>"),
+                                ""
+                            )
+                            .trim()
+
+                    val href =
+                        match
+                            .groupValues[2]
+                            .trim()
+
+                    if (
+                        candidateTitle.isBlank() ||
+                        href.isBlank()
+                    ) {
+                        null
+                    } else {
+                        Triple(
+                            candidateTitle,
+                            href,
+                            animeTitleScore(
+                                title,
+                                candidateTitle
+                            )
+                        )
+                    }
+                }
+                .toList()
+
+        println(
+            "AnimeAV: candidatos=${candidates.size}"
+        )
+
+        candidates
+            .sortedByDescending {
+                it.third
+            }
+            .take(10)
+            .forEach {
+                println(
+                    "AnimeAV: candidato score=${it.third} " +
+                        "title=${it.first} " +
+                        "href=${it.second}"
+                )
+            }
+
+        val best =
+            candidates
+                .maxByOrNull {
+                    it.third
+                }
+
+        if (
+            best == null ||
+            best.third <= 0
+        ) {
+            println(
+                "AnimeAV: no se encontró coincidencia"
+            )
+            return null
+        }
+
+        println(
+            "AnimeAV: seleccionado " +
+                "score=${best.third} " +
+                "title=${best.first} " +
+                "href=${best.second}"
+        )
+
+        return best.second
+            .removePrefix("/media/")
+            .trim()
+            .removeSuffix("/")
+    }
+
+    private suspend fun findAnimeAVEpisodeUrl(
+        animeSlug: String,
+        episodeNumber: Int
+    ): String? {
+
+        val url =
+            "https://animeav1.com/media/$animeSlug"
+
+        println(
+            "AnimeAV: serie=$url"
+        )
+
+        val response =
+            app.get(
+                url,
+                headers = mapOf(
+                    "User-Agent" to
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0"
+                )
+            )
+
+        if (!response.isSuccessful) {
+            println(
+                "AnimeAV: media HTTP=${response.code}"
+            )
+            return null
+        }
+
+        val html =
+            response.text
+
+        val episodesRegex =
+            Regex(
+                """episodes:\[(.*?)\]""",
+                RegexOption.DOT_MATCHES_ALL
+            )
+
+        val episodesMatch =
+            episodesRegex.find(html)
+
+        if (episodesMatch == null) {
+            println(
+                "AnimeAV: no se encontró episodes[]"
+            )
+            return null
+        }
+
+        val episodePattern =
+            Regex(
+                """id:(\d+),number:(\d+)"""
+            )
+
+        val episode =
+            episodePattern
+                .findAll(
+                    episodesMatch.groupValues[1]
+                )
+                .firstOrNull {
+                    it.groupValues[2].toIntOrNull() ==
+                        episodeNumber
+                }
+
+        if (episode == null) {
+            println(
+                "AnimeAV: episodio $episodeNumber no encontrado"
+            )
+            return null
+        }
+
+        val id =
+            episode
+                .groupValues[1]
+
+        println(
+            "AnimeAV: episodio=$episodeNumber id=$id"
+        )
+
+        /*
+         * AnimeAV actualmente usa:
+         *
+         * /media/{slug}/{episode}
+         *
+         * aunque el ID interno también aparece en
+         * el objeto episodes[].
+         */
+        return "https://animeav1.com/media/$animeSlug/$episodeNumber"
+    }
+
+    private fun decryptAnimeAV(
+        inputHex: String,
+        key: String,
+        iv: String
+    ): String {
+
+        val cipher =
+            Cipher.getInstance(
+                "AES/CBC/PKCS5PADDING"
+            )
+
+        val secretKey =
+            SecretKeySpec(
+                key.toByteArray(Charsets.UTF_8),
+                "AES"
+            )
+
+        val ivSpec =
+            IvParameterSpec(
+                iv.toByteArray(Charsets.UTF_8)
+            )
+
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            secretKey,
+            ivSpec
+        )
+
+        val bytes =
+            inputHex
+                .trim()
+                .chunked(2)
+                .map {
+                    it.toInt(16).toByte()
+                }
+                .toByteArray()
+
+        return String(
+            cipher.doFinal(bytes),
+            Charsets.UTF_8
+        )
+    }
+
+    private suspend fun processAnimeAV(
+        title: String,
+        episodeNumber: Int,
+        emittedUrls: MutableSet<String>,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+
+        return try {
+
+            println(
+                "AnimeAV: ===== INICIO ====="
+            )
+
+            println(
+                "AnimeAV: title=$title episode=$episodeNumber"
+            )
+
+            val animeSlug =
+                findAnimeAVSlug(
+                    title
+                )
+
+            if (animeSlug == null) {
+                println(
+                    "AnimeAV: no se pudo encontrar anime"
+                )
+                return false
+            }
+
+            val episodeUrl =
+                findAnimeAVEpisodeUrl(
+                    animeSlug,
+                    episodeNumber
+                )
+
+            if (episodeUrl == null) {
+                println(
+                    "AnimeAV: no se pudo encontrar episodio"
+                )
+                return false
+            }
+
+            println(
+                "AnimeAV: episodeUrl=$episodeUrl"
+            )
+
+            val response =
+                app.get(
+                    episodeUrl,
+                    headers = mapOf(
+                        "User-Agent" to
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0"
+                    )
+                )
+
+            if (!response.isSuccessful) {
+                println(
+                    "AnimeAV: episodio HTTP=${response.code}"
+                )
+                return false
+            }
+
+            val html =
+                response.text
+
+            val embedsMatch =
+                Regex(
+                    """embeds:\{(.*?)\},downloads""",
+                    RegexOption.DOT_MATCHES_ALL
+                ).find(html)
+
+            if (embedsMatch == null) {
+                println(
+                    "AnimeAV: no se encontró embeds"
+                )
+                return false
+            }
+
+            val embeds =
+                embedsMatch.groupValues[1]
+
+            val serverPattern =
+                Regex(
+                    """server:"([^"]+)",url:"([^"]+)""""
+                )
+
+            val servers =
+                serverPattern
+                    .findAll(embeds)
+                    .map {
+                        it.groupValues[1] to
+                            it.groupValues[2]
+                    }
+                    .toList()
+
+            println(
+                "AnimeAV: servidores=${servers.size}"
+            )
+
+            var found = false
+
+            for ((server, rawUrl) in servers) {
+
+                println(
+                    "AnimeAV: servidor=$server url=$rawUrl"
+                )
+
+                /*
+                 * UPNShare
+                 *
+                 * La API actual devuelve hlsVideoTiktok
+                 * cifrado con AES-128-CBC.
+                 */
+                if (
+                    server.equals(
+                        "UPNShare",
+                        ignoreCase = true
+                    )
+                ) {
+
+                    try {
+
+                        val hash =
+                            rawUrl
+                                .substringAfterLast("#")
+                                .substringAfter("/")
+
+                        if (hash.isBlank()) {
+                            println(
+                                "AnimeAV: UPNShare hash vacío"
+                            )
+                            continue
+                        }
+
+                        val apiUrl =
+                            "https://animeav1.uns.bio/api/v1/video?id=$hash"
+
+                        println(
+                            "AnimeAV: UPNShare API=$apiUrl"
+                        )
+
+                        val apiResponse =
+                            app.get(
+                                apiUrl,
+                                headers = mapOf(
+                                    "User-Agent" to
+                                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0"
+                                )
+                            )
+
+                        if (!apiResponse.isSuccessful) {
+                            println(
+                                "AnimeAV: UPNShare HTTP=${apiResponse.code}"
+                            )
+                            continue
+                        }
+
+                        val encrypted =
+                            apiResponse.text.trim()
+
+                        val decrypted =
+                            try {
+                                decryptAnimeAV(
+                                    encrypted,
+                                    "kiemtienmua911ca",
+                                    "1234567890oiuytr"
+                                )
+                            } catch (e: Exception) {
+                                println(
+                                    "AnimeAV: UPNShare AES error -> " +
+                                        "${e.javaClass.simpleName}: ${e.message}"
+                                )
+                                continue
+                            }
+
+                        val json =
+                            JSONObject(decrypted)
+
+                        val hlsPath =
+                            json.optString(
+                                "hlsVideoTiktok"
+                            )
+
+                        if (hlsPath.isBlank()) {
+                            println(
+                                "AnimeAV: UPNShare no tiene hlsVideoTiktok"
+                            )
+                            continue
+                        }
+
+                        val hlsUrl =
+                            if (
+                                hlsPath.startsWith(
+                                    "http://"
+                                ) ||
+                                hlsPath.startsWith(
+                                    "https://"
+                                )
+                            ) {
+                                hlsPath
+                            } else {
+                                "https://animeav1.uns.bio" +
+                                    if (
+                                        hlsPath.startsWith("/")
+                                    ) {
+                                        hlsPath
+                                    } else {
+                                        "/$hlsPath"
+                                    }
+                            }
+
+                        val shouldEmit =
+                            synchronized(emittedUrls) {
+                                if (
+                                    emittedUrls.contains(
+                                        hlsUrl
+                                    )
+                                ) {
+                                    false
+                                } else {
+                                    emittedUrls.add(
+                                        hlsUrl
+                                    )
+                                    true
+                                }
+                            }
+
+                        if (shouldEmit) {
+
+                            callback(
+                                newExtractorLink(
+                                    name = "UPNShare",
+                                    source = name,
+                                    url = hlsUrl,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    referer =
+                                        "https://animeav1.uns.bio/"
+
+                                    quality =
+                                        Qualities.Unknown.value
+                                }
+                            )
+
+                            found = true
+
+                            println(
+                                "AnimeAV: UPNShare LINK EMITIDO " +
+                                    "url=$hlsUrl"
+                            )
+
+                        } else {
+
+                            println(
+                                "AnimeAV: UPNShare LINK DUPLICADO"
+                            )
+                        }
+
+                    } catch (e: Exception) {
+
+                        println(
+                            "AnimeAV: UPNShare ERROR -> " +
+                                "${e.javaClass.simpleName}: " +
+                                e.message
+                        )
+                    }
+
+                    continue
+                }
+
+                /*
+                 * MP4Upload
+                 *
+                 * Reutilizamos el extractor existente de
+                 * CloudStream.
+                 */
+                if (
+                    server.equals(
+                        "MP4Upload",
+                        ignoreCase = true
+                    )
+                ) {
+
+                    try {
+
+                        val before =
+                            synchronized(emittedUrls) {
+                                emittedUrls.size
+                            }
+
+                        println(
+                            "AnimeAV: MP4Upload -> loadExtractor"
+                        )
+
+                        val extractorCallback:
+                            (ExtractorLink) -> Unit = { link ->
+
+                            val shouldEmit =
+                                synchronized(emittedUrls) {
+                                    if (
+                                        emittedUrls.contains(
+                                            link.url
+                                        )
+                                    ) {
+                                        false
+                                    } else {
+                                        emittedUrls.add(
+                                            link.url
+                                        )
+                                        true
+                                    }
+                                }
+
+                            if (shouldEmit) {
+
+                                callback(link)
+
+                                println(
+                                    "AnimeAV: MP4Upload LINK EMITIDO " +
+                                        "name=${link.name} " +
+                                        "quality=${link.quality} " +
+                                        "type=${link.type} " +
+                                        "url=${link.url}"
+                                )
+
+                            } else {
+
+                                println(
+                                    "AnimeAV: MP4Upload LINK DUPLICADO " +
+                                        "url=${link.url}"
+                                )
+                            }
+                        }
+
+                        loadExtractor(
+                            rawUrl,
+                            "https://animeav1.com/",
+                            subtitleCallback,
+                            extractorCallback
+                        )
+
+                        val after =
+                            synchronized(emittedUrls) {
+                                emittedUrls.size
+                            }
+
+                        if (after > before) {
+
+                            found = true
+
+                            println(
+                                "AnimeAV: MP4Upload OK"
+                            )
+
+                        } else {
+
+                            println(
+                                "AnimeAV: MP4Upload SIN LINKS"
+                            )
+                        }
+
+                    } catch (e: Exception) {
+
+                        println(
+                            "AnimeAV: MP4Upload ERROR -> " +
+                                "${e.javaClass.simpleName}: " +
+                                e.message
+                        )
+                    }
+
+                    continue
+                }
+
+                /*
+                 * Voe y cualquier otro servidor quedan fuera
+                 * de esta primera integración.
+                 */
+                println(
+                    "AnimeAV: servidor ignorado=$server"
+                )
+            }
+
+            println(
+                "AnimeAV: ===== FINAL found=$found ====="
+            )
+
+            found
+
+        } catch (e: Exception) {
+
+            println(
+                "AnimeAV: ERROR GENERAL -> " +
+                    "${e.javaClass.simpleName}: " +
+                    e.message
+            )
+
+            false
+        }
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -384,17 +1135,7 @@ class AnimoraTVProvider : MainAPI() {
 
             /*
              * Primero recopilamos TODOS los servidores.
-             *
-             * Esto nos permite procesarlos globalmente por prioridad:
-             *
-             * 1. HLS directo
-             * 2. Extractores normales
-             * 3. Mega
-             *
-             * Así un Mega que aparezca primero en la API nunca bloquea
-             * la entrega de una fuente HLS rápida.
              */
-
             val allServers =
                 mutableListOf<JSONObject>()
 
@@ -436,10 +1177,6 @@ class AnimoraTVProvider : MainAPI() {
                 "AnimoraTV: servidores totales=$totalServers"
             )
 
-            /*
-             * Procesamos cada servidor con la misma lógica anterior,
-             * pero en el orden de prioridad elegido.
-             */
             suspend fun processServer(
                 servidor: JSONObject
             ) {
@@ -630,7 +1367,7 @@ class AnimoraTVProvider : MainAPI() {
                                     refValue.isNotBlank()
                                 ) {
 
-                                    java.net.URLDecoder.decode(
+                                    URLDecoder.decode(
                                         refValue,
                                         "UTF-8"
                                     )
@@ -689,7 +1426,7 @@ class AnimoraTVProvider : MainAPI() {
                     try {
 
                         val uri =
-                            java.net.URI(urlVideo)
+                            URI(urlVideo)
 
                         val host =
                             uri.host ?: ""
@@ -728,39 +1465,42 @@ class AnimoraTVProvider : MainAPI() {
                 val extractorCallback:
                     (ExtractorLink) -> Unit = { link ->
 
-                    if (
-                        emittedUrls.contains(
-                            link.url
-                        )
-                    ) {
+                    synchronized(emittedUrls) {
 
-                        println(
-                            "AnimoraTV: LINK DUPLICADO " +
-                                "ignorado " +
-                                "name=${link.name} " +
-                                "provider=$provider " +
-                                "url=${link.url}"
-                        )
+                        if (
+                            emittedUrls.contains(
+                                link.url
+                            )
+                        ) {
 
-                    } else {
+                            println(
+                                "AnimoraTV: LINK DUPLICADO " +
+                                    "ignorado " +
+                                    "name=${link.name} " +
+                                    "provider=$provider " +
+                                    "url=${link.url}"
+                            )
 
-                        emittedUrls.add(
-                            link.url
-                        )
+                        } else {
 
-                        emitted++
-                        totalExtractedLinks++
+                            emittedUrls.add(
+                                link.url
+                            )
 
-                        println(
-                            "AnimoraTV: EXTRACTED LINK " +
-                                "provider=$provider " +
-                                "name=${link.name} " +
-                                "quality=${link.quality} " +
-                                "type=${link.type} " +
-                                "url=${link.url}"
-                        )
+                            emitted++
+                            totalExtractedLinks++
 
-                        callback(link)
+                            println(
+                                "AnimoraTV: EXTRACTED LINK " +
+                                    "provider=$provider " +
+                                    "name=${link.name} " +
+                                    "quality=${link.quality} " +
+                                    "type=${link.type} " +
+                                    "url=${link.url}"
+                            )
+
+                            callback(link)
+                        }
                     }
                 }
 
@@ -846,9 +1586,6 @@ class AnimoraTVProvider : MainAPI() {
             /*
              * PASADA 1:
              * HLS/directos.
-             *
-             * Estos son los que queremos que aparezcan primero
-             * en CloudStream.
              */
             println(
                 "AnimoraTV: ===== PASADA HLS ====="
@@ -891,10 +1628,7 @@ class AnimoraTVProvider : MainAPI() {
 
             /*
              * PASADA 2:
-             * Mega se registra inmediatamente después de HLS.
-             *
-             * Así queda disponible antes de empezar los
-             * extractores que pueden tardar varios segundos.
+             * Mega.
              */
             println(
                 "AnimoraTV: ===== PASADA MEGA ====="
@@ -923,16 +1657,9 @@ class AnimoraTVProvider : MainAPI() {
                 }
             }
 
-
             /*
              * PASADA 3:
-             * Todos los servidores que necesitan extractor.
-             *
-             * HLS y Mega ya fueron emitidos antes.
-             *
-             * Los extractores se ejecutan EN PARALELO para que
-             * un servidor lento (savefiles, VidGuard, etc.) no
-             * bloquee a los demás.
+             * Extractores en paralelo.
              */
             println(
                 "AnimoraTV: ===== PASADA EXTRACTORES PARALELA ====="
@@ -981,15 +1708,22 @@ class AnimoraTVProvider : MainAPI() {
                 extractorServers
                     .map { servidor ->
                         async {
+
                             val provider =
-                                servidor.optString("proveedor")
+                                servidor.optString(
+                                    "proveedor"
+                                )
 
                             val completed =
                                 withTimeoutOrNull(7000L) {
+
                                     try {
-                                        processServer(servidor)
+                                        processServer(
+                                            servidor
+                                        )
                                         true
                                     } catch (e: Exception) {
+
                                         println(
                                             "AnimoraTV: EXTRACTOR TASK ERROR provider=" +
                                                 provider +
@@ -997,11 +1731,13 @@ class AnimoraTVProvider : MainAPI() {
                                                 "${e.javaClass.simpleName}: " +
                                                 e.message
                                         )
+
                                         true
                                     }
                                 }
 
                             if (completed == null) {
+
                                 println(
                                     "AnimoraTV: EXTRACTOR TIMEOUT provider=" +
                                         provider +
@@ -1011,6 +1747,95 @@ class AnimoraTVProvider : MainAPI() {
                         }
                     }
                     .awaitAll()
+            }
+
+            /*
+             * ============================================================
+             * ANIMEAV
+             * ============================================================
+             *
+             * Importante:
+             * AnimeAV se consulta SIEMPRE.
+             *
+             * Aunque Animora ya haya encontrado fuentes,
+             * AnimeAV agrega las suyas.
+             *
+             * Si AnimeAV falla, conservamos todo lo obtenido
+             * anteriormente desde Animora.
+             */
+            println(
+                "AnimoraTV: ===== ANIMEAV ====="
+            )
+
+            val animeTitle =
+                try {
+
+                    val animeJson =
+                        getJson(
+                            "$mainUrl/api/animes/$slug"
+                        )
+
+                    val anime =
+                        animeJson
+                            .optJSONObject("data")
+                            ?.optJSONObject("anime")
+
+                    anime
+                        ?.optString("titulo")
+                        ?.ifBlank {
+                            anime.optString(
+                                "tituloIngles"
+                            )
+                        }
+                        ?.takeIf {
+                            it.isNotBlank()
+                        }
+
+                } catch (e: Exception) {
+
+                    println(
+                        "AnimeAV: ERROR obteniendo título Animora -> " +
+                            "${e.javaClass.simpleName}: " +
+                            e.message
+                    )
+
+                    null
+                }
+
+            if (animeTitle != null) {
+
+                val animeAvFound =
+                    withTimeoutOrNull(10000L) {
+
+                        processAnimeAV(
+                            animeTitle,
+                            episodeNumber,
+                            emittedUrls,
+                            subtitleCallback,
+                            callback
+                        )
+                    }
+
+                if (animeAvFound == true) {
+                    found = true
+                } else if (animeAvFound == null) {
+
+                    println(
+                        "AnimeAV: TIMEOUT general=10000ms"
+                    )
+
+                } else {
+
+                    println(
+                        "AnimeAV: no agregó fuentes"
+                    )
+                }
+
+            } else {
+
+                println(
+                    "AnimeAV: no se pudo obtener título de Animora"
+                )
             }
 
             println(
@@ -1025,7 +1850,9 @@ class AnimoraTVProvider : MainAPI() {
         } catch (e: Exception) {
 
             println(
-                "AnimoraTV: ERROR loadLinks -> ${e.message}"
+                "AnimoraTV: ERROR loadLinks -> " +
+                    "${e.javaClass.simpleName}: " +
+                    e.message
             )
 
             false
