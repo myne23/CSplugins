@@ -745,18 +745,19 @@ class AnimoraTVProvider : MainAPI() {
 
             var found = false
 
+            /*
+             * UPNShare se procesa directamente porque tenemos
+             * el decoder AES y podemos obtener el HLS sin extractor.
+             */
+            val extractorServers =
+                mutableListOf<Pair<String, String>>()
+
             for ((server, rawUrl) in servers) {
 
                 println(
                     "AnimeAV: servidor=$server url=$rawUrl"
                 )
 
-                /*
-                 * UPNShare
-                 *
-                 * La API actual devuelve hlsVideoTiktok
-                 * cifrado con AES-128-CBC.
-                 */
                 if (
                     server.equals(
                         "UPNShare",
@@ -915,115 +916,158 @@ class AnimoraTVProvider : MainAPI() {
                 }
 
                 /*
-                 * MP4Upload
+                 * MP4Upload, PDrain, Voe y Byse utilizan
+                 * los extractores existentes de CloudStream.
                  *
-                 * Reutilizamos el extractor existente de
-                 * CloudStream.
+                 * Los guardamos para procesarlos todos
+                 * concurrentemente después de descubrir
+                 * todos los servidores.
                  */
                 if (
-                    server.equals(
-                        "MP4Upload",
-                        ignoreCase = true
-                    )
+                    server.equals("MP4Upload", ignoreCase = true) ||
+                    server.equals("PDrain", ignoreCase = true) ||
+                    server.equals("Voe", ignoreCase = true) ||
+                    server.equals("Byse", ignoreCase = true)
                 ) {
 
-                    try {
-
-                        val before =
-                            synchronized(emittedUrls) {
-                                emittedUrls.size
-                            }
-
-                        println(
-                            "AnimeAV: MP4Upload -> loadExtractor"
-                        )
-
-                        val extractorCallback:
-                            (ExtractorLink) -> Unit = { link ->
-
-                            val shouldEmit =
-                                synchronized(emittedUrls) {
-                                    if (
-                                        emittedUrls.contains(
-                                            link.url
-                                        )
-                                    ) {
-                                        false
-                                    } else {
-                                        emittedUrls.add(
-                                            link.url
-                                        )
-                                        true
-                                    }
-                                }
-
-                            if (shouldEmit) {
-
-                                callback(link)
-
-                                println(
-                                    "AnimeAV: MP4Upload LINK EMITIDO " +
-                                        "name=${link.name} " +
-                                        "quality=${link.quality} " +
-                                        "type=${link.type} " +
-                                        "url=${link.url}"
-                                )
-
-                            } else {
-
-                                println(
-                                    "AnimeAV: MP4Upload LINK DUPLICADO " +
-                                        "url=${link.url}"
-                                )
-                            }
-                        }
-
-                        loadExtractor(
-                            rawUrl,
-                            "https://animeav1.com/",
-                            subtitleCallback,
-                            extractorCallback
-                        )
-
-                        val after =
-                            synchronized(emittedUrls) {
-                                emittedUrls.size
-                            }
-
-                        if (after > before) {
-
-                            found = true
-
-                            println(
-                                "AnimeAV: MP4Upload OK"
-                            )
-
-                        } else {
-
-                            println(
-                                "AnimeAV: MP4Upload SIN LINKS"
-                            )
-                        }
-
-                    } catch (e: Exception) {
-
-                        println(
-                            "AnimeAV: MP4Upload ERROR -> " +
-                                "${e.javaClass.simpleName}: " +
-                                e.message
-                        )
-                    }
+                    extractorServers.add(
+                        server to rawUrl
+                    )
 
                     continue
                 }
 
-                /*
-                 * Voe y cualquier otro servidor quedan fuera
-                 * de esta primera integración.
-                 */
                 println(
                     "AnimeAV: servidor ignorado=$server"
                 )
+            }
+
+            /*
+             * Procesamos MP4Upload, PDrain, Voe y Byse
+             * en paralelo.
+             *
+             * Cada extractor tiene su propio timeout para
+             * evitar que un servidor lento bloquee los demás.
+             */
+            if (extractorServers.isNotEmpty()) {
+
+                println(
+                    "AnimeAV: ===== EXTRACTORES PARALELOS ====="
+                )
+
+                val extractorResults =
+                    coroutineScope {
+
+                        extractorServers.map { (server, rawUrl) ->
+
+                            async {
+
+                                withTimeoutOrNull(7000L) {
+
+                                    val before =
+                                        synchronized(emittedUrls) {
+                                            emittedUrls.size
+                                        }
+
+                                    println(
+                                        "AnimeAV: $server -> loadExtractor"
+                                    )
+
+                                    val extractorCallback:
+                                        (ExtractorLink) -> Unit = { link ->
+
+                                        val shouldEmit =
+                                            synchronized(emittedUrls) {
+                                                if (
+                                                    emittedUrls.contains(
+                                                        link.url
+                                                    )
+                                                ) {
+                                                    false
+                                                } else {
+                                                    emittedUrls.add(
+                                                        link.url
+                                                    )
+                                                    true
+                                                }
+                                            }
+
+                                        if (shouldEmit) {
+
+                                            callback(link)
+
+                                            println(
+                                                "AnimeAV: $server LINK EMITIDO " +
+                                                    "name=${link.name} " +
+                                                    "quality=${link.quality} " +
+                                                    "type=${link.type} " +
+                                                    "url=${link.url}"
+                                            )
+
+                                        } else {
+
+                                            println(
+                                                "AnimeAV: $server LINK DUPLICADO " +
+                                                    "url=${link.url}"
+                                            )
+                                        }
+                                    }
+
+                                    try {
+
+                                        loadExtractor(
+                                            rawUrl,
+                                            "https://animeav1.com/",
+                                            subtitleCallback,
+                                            extractorCallback
+                                        )
+
+                                    } catch (e: Exception) {
+
+                                        println(
+                                            "AnimeAV: $server ERROR -> " +
+                                                "${e.javaClass.simpleName}: " +
+                                                e.message
+                                        )
+                                    }
+
+                                    val after =
+                                        synchronized(emittedUrls) {
+                                            emittedUrls.size
+                                        }
+
+                                    if (after > before) {
+
+                                        println(
+                                            "AnimeAV: $server OK"
+                                        )
+
+                                        true
+
+                                    } else {
+
+                                        println(
+                                            "AnimeAV: $server SIN LINKS"
+                                        )
+
+                                        false
+                                    }
+
+                                } ?: run {
+
+                                    println(
+                                        "AnimeAV: $server TIMEOUT 7000ms"
+                                    )
+
+                                    false
+                                }
+                            }
+                        }.awaitAll()
+                    }
+
+                if (extractorResults.any { it }) {
+                    found = true
+                }
             }
 
             println(
