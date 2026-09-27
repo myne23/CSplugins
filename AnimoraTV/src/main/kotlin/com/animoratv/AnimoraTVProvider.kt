@@ -1256,7 +1256,19 @@ class AnimoraTVProvider : MainAPI() {
 
             val response =
                 try {
-                    app.get(apiUrl)
+                    app.get(
+                        apiUrl,
+                        headers = mapOf(
+                            "User-Agent" to
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0",
+                            "Accept" to
+                                "application/json, text/plain, */*",
+                            "Referer" to
+                                "$mainUrl/",
+                            "Origin" to
+                                mainUrl
+                        )
+                    )
                 } catch (e: Exception) {
 
                     println(
