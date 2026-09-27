@@ -52,27 +52,11 @@ jobs:
           curl -I "https://${HOST}/maven2/org/apache/httpcomponents/httpmime/4.5.6/httpmime-4.5.6.pom"
           curl -I "https://${HOST}/maven2/commons-io/commons-io/2.13.0/commons-io-2.13.0.pom"
 
-      - name: Prepare CloudStream Gradle plugin
+      - name: Fix CloudStream Gradle plugin version
         run: |
-          mkdir -p $HOME/.gradle/init.d
-          curl -fL \
-            "https://jitpack.io/com/github/recloudstream/gradle/-SNAPSHOT/gradle--32895aedb6-1.jar" \
-            -o "$HOME/.gradle/recloudstream-gradle.jar"
-
-          cat > $HOME/.gradle/init.d/recloudstream.gradle.kts <<'GRADLE'
-          allprojects {
-              buildscript {
-                  configurations.classpath {
-                      resolutionStrategy.eachDependency {
-                          if (requested.group == "com.github.recloudstream" &&
-                              requested.name == "gradle") {
-                              useModule("com.github.recloudstream:gradle:32895aedb6-1")
-                          }
-                      }
-                  }
-              }
-          }
-          GRADLE
+          cd $GITHUB_WORKSPACE/src
+          sed -i 's/com\.github\.recloudstream:gradle:-SNAPSHOT/com.github.recloudstream:gradle:32895aedb6366f5075cb99bbd2e6ce0a7cac325d/' build.gradle.kts
+          grep 'recloudstream:gradle' build.gradle.kts
 
       - name: Build Plugins
         run: |
