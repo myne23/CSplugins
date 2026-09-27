@@ -1096,49 +1096,6 @@ class AnimoraTVProvider : MainAPI() {
 
         return try {
 
-            val response =
-                try {
-                    app.get(apiUrl)
-                } catch (e: Exception) {
-                    println(
-                        "AnimoraTV: ERROR API fuentes -> " +
-                            "${e.javaClass.simpleName}: ${e.message}"
-                    )
-                    null
-                }
-
-            val fuentes =
-                if (response == null) {
-                    println(
-                        "AnimoraTV: continuando con AnimeAV"
-                    )
-                    org.json.JSONArray()
-                } else if (!response.isSuccessful) {
-                    println(
-                        "AnimoraTV: ERROR HTTP ${response.code}, " +
-                            "continuando con AnimeAV"
-                    )
-                    org.json.JSONArray()
-                } else {
-                    println(
-                        "AnimoraTV: HTTP ${response.code}"
-                    )
-
-                    val root =
-                        JSONObject(response.text)
-
-                    val dataObject =
-                        root.optJSONObject("data")
-                            ?: JSONObject()
-
-                    dataObject.optJSONArray("fuentes")
-                        ?: org.json.JSONArray()
-                }
-
-            println(
-                "AnimoraTV: fuentes=${fuentes.length()}"
-            )
-
             var found = false
             var totalServers = 0
             var totalExtractedLinks = 0
@@ -1152,8 +1109,8 @@ class AnimoraTVProvider : MainAPI() {
              * ANIMEAV ASYNC
              * ============================================================
              *
-             * AnimeAV arranca inmediatamente y corre en paralelo
-             * con todo el procesamiento de fuentes de Animora.
+             * AnimeAV arranca ANTES de consultar las fuentes de Animora,
+             * por lo que el timeout de Animora ya no lo bloquea.
              */
             println(
                 "AnimoraTV: ===== INICIANDO ANIMEAV EN PARALELO ====="
@@ -1224,6 +1181,7 @@ class AnimoraTVProvider : MainAPI() {
                                     subtitleCallback,
                                     callback
                                 )
+
                             } ?: run {
 
                                 println(
@@ -1245,6 +1203,64 @@ class AnimoraTVProvider : MainAPI() {
                         false
                     }
                 }
+
+            /*
+             * ============================================================
+             * ANIMORA / FUENTES
+             * ============================================================
+             */
+
+            val response =
+                try {
+                    app.get(apiUrl)
+                } catch (e: Exception) {
+
+                    println(
+                        "AnimoraTV: ERROR API fuentes -> " +
+                            "${e.javaClass.simpleName}: ${e.message}"
+                    )
+
+                    null
+                }
+
+            val fuentes =
+                if (response == null) {
+
+                    println(
+                        "AnimoraTV: continuando con AnimeAV"
+                    )
+
+                    org.json.JSONArray()
+
+                } else if (!response.isSuccessful) {
+
+                    println(
+                        "AnimoraTV: ERROR HTTP ${response.code}, " +
+                            "continuando con AnimeAV"
+                    )
+
+                    org.json.JSONArray()
+
+                } else {
+
+                    println(
+                        "AnimoraTV: HTTP ${response.code}"
+                    )
+
+                    val root =
+                        JSONObject(response.text)
+
+                    val dataObject =
+                        root.optJSONObject("data")
+                            ?: JSONObject()
+
+                    dataObject.optJSONArray("fuentes")
+                        ?: org.json.JSONArray()
+                }
+
+            println(
+                "AnimoraTV: fuentes=${fuentes.length()}"
+            )
 
             /*
              * Primero recopilamos TODOS los servidores.
@@ -1326,9 +1342,11 @@ class AnimoraTVProvider : MainAPI() {
                 if (isMega) {
 
                     if (megaEmitted) {
+
                         println(
                             "AnimoraTV: MEGA duplicado -> ignorado"
                         )
+
                         return
                     }
 
@@ -1385,9 +1403,11 @@ class AnimoraTVProvider : MainAPI() {
                             handle.isBlank() ||
                             key.isBlank()
                         ) {
+
                             println(
                                 "AnimoraTV: MEGA handle/key vacío"
                             )
+
                             return
                         }
 
@@ -1410,6 +1430,7 @@ class AnimoraTVProvider : MainAPI() {
                                 url = localUrl,
                                 type = ExtractorLinkType.VIDEO
                             ) {
+
                                 referer =
                                     "$mainUrl/"
 
@@ -1506,6 +1527,7 @@ class AnimoraTVProvider : MainAPI() {
                                 url = urlVideo,
                                 type = ExtractorLinkType.M3U8
                             ) {
+
                                 referer =
                                     hlsReferer
 
@@ -1562,10 +1584,13 @@ class AnimoraTVProvider : MainAPI() {
                             ignoreCase = true
                         )
                     ) {
+
                         listOf(
                             "$mainUrl/"
                         )
+
                     } else {
+
                         listOf(
                             hostReferer,
                             "$mainUrl/"
@@ -1818,8 +1843,10 @@ class AnimoraTVProvider : MainAPI() {
             )
 
             coroutineScope {
+
                 extractorServers
                     .map { servidor ->
+
                         async {
 
                             val provider =
@@ -1831,10 +1858,13 @@ class AnimoraTVProvider : MainAPI() {
                                 withTimeoutOrNull(7000L) {
 
                                     try {
+
                                         processServer(
                                             servidor
                                         )
+
                                         true
+
                                     } catch (e: Exception) {
 
                                         println(
@@ -1866,9 +1896,6 @@ class AnimoraTVProvider : MainAPI() {
              * ============================================================
              * ESPERAR ANIMEAV
              * ============================================================
-             *
-             * AnimeAV ya estuvo trabajando en paralelo mientras
-             * Animora procesaba sus propias fuentes.
              */
             println(
                 "AnimoraTV: ===== ESPERANDO ANIMEAV ====="
@@ -1876,7 +1903,9 @@ class AnimoraTVProvider : MainAPI() {
 
             val animeAvFound =
                 try {
+
                     animeAvJob.await()
+
                 } catch (e: Exception) {
 
                     println(
