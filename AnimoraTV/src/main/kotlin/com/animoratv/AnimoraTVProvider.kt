@@ -1324,6 +1324,9 @@ class AnimoraTVProvider : MainAPI() {
             val allServers =
                 mutableListOf<JSONObject>()
 
+            val seenServerUrls =
+                mutableSetOf<String>()
+
             for (i in 0 until fuentes.length()) {
 
                 val fuente =
@@ -1349,6 +1352,13 @@ class AnimoraTVProvider : MainAPI() {
                         servidor.optString("urlVideo")
 
                     if (urlVideo.isBlank()) {
+                        continue
+                    }
+
+                    if (!seenServerUrls.add(urlVideo)) {
+                        println(
+                            "AnimoraTV: servidor duplicado -> ignorado: $urlVideo"
+                        )
                         continue
                     }
 
