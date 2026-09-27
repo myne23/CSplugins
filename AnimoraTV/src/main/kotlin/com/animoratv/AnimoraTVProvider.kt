@@ -1148,6 +1148,105 @@ class AnimoraTVProvider : MainAPI() {
                 mutableSetOf<String>()
 
             /*
+             * ============================================================
+             * ANIMEAV ASYNC
+             * ============================================================
+             *
+             * AnimeAV arranca inmediatamente y corre en paralelo
+             * con todo el procesamiento de fuentes de Animora.
+             */
+            println(
+                "AnimoraTV: ===== INICIANDO ANIMEAV EN PARALELO ====="
+            )
+
+            val animeAvJob =
+                kotlinx.coroutines.CoroutineScope(
+                    kotlinx.coroutines.currentCoroutineContext()
+                ).async {
+
+                    try {
+
+                        val animeTitle =
+                            try {
+
+                                val animeJson =
+                                    getJson(
+                                        "$mainUrl/api/animes/$slug"
+                                    )
+
+                                val anime =
+                                    animeJson
+                                        .optJSONObject("data")
+                                        ?.optJSONObject("anime")
+
+                                anime
+                                    ?.optString("titulo")
+                                    ?.ifBlank {
+                                        anime.optString(
+                                            "tituloIngles"
+                                        )
+                                    }
+                                    ?.takeIf {
+                                        it.isNotBlank()
+                                    }
+
+                            } catch (e: Exception) {
+
+                                println(
+                                    "AnimeAV: ERROR obteniendo título Animora -> " +
+                                        "${e.javaClass.simpleName}: " +
+                                        e.message
+                                )
+
+                                null
+                            }
+
+                        if (animeTitle == null) {
+
+                            println(
+                                "AnimeAV: no se pudo obtener título de Animora"
+                            )
+
+                            false
+
+                        } else {
+
+                            println(
+                                "AnimeAV: título obtenido=$animeTitle"
+                            )
+
+                            withTimeoutOrNull(10000L) {
+
+                                processAnimeAV(
+                                    animeTitle,
+                                    episodeNumber,
+                                    emittedUrls,
+                                    subtitleCallback,
+                                    callback
+                                )
+                            } ?: run {
+
+                                println(
+                                    "AnimeAV: TIMEOUT general=10000ms"
+                                )
+
+                                false
+                            }
+                        }
+
+                    } catch (e: Exception) {
+
+                        println(
+                            "AnimeAV: ERROR paralelo -> " +
+                                "${e.javaClass.simpleName}: " +
+                                e.message
+                        )
+
+                        false
+                    }
+                }
+
+            /*
              * Primero recopilamos TODOS los servidores.
              */
             val allServers =
@@ -1765,92 +1864,37 @@ class AnimoraTVProvider : MainAPI() {
 
             /*
              * ============================================================
-             * ANIMEAV
+             * ESPERAR ANIMEAV
              * ============================================================
              *
-             * Importante:
-             * AnimeAV se consulta SIEMPRE.
-             *
-             * Aunque Animora ya haya encontrado fuentes,
-             * AnimeAV agrega las suyas.
-             *
-             * Si AnimeAV falla, conservamos todo lo obtenido
-             * anteriormente desde Animora.
+             * AnimeAV ya estuvo trabajando en paralelo mientras
+             * Animora procesaba sus propias fuentes.
              */
             println(
-                "AnimoraTV: ===== ANIMEAV ====="
+                "AnimoraTV: ===== ESPERANDO ANIMEAV ====="
             )
 
-            val animeTitle =
+            val animeAvFound =
                 try {
-
-                    val animeJson =
-                        getJson(
-                            "$mainUrl/api/animes/$slug"
-                        )
-
-                    val anime =
-                        animeJson
-                            .optJSONObject("data")
-                            ?.optJSONObject("anime")
-
-                    anime
-                        ?.optString("titulo")
-                        ?.ifBlank {
-                            anime.optString(
-                                "tituloIngles"
-                            )
-                        }
-                        ?.takeIf {
-                            it.isNotBlank()
-                        }
-
+                    animeAvJob.await()
                 } catch (e: Exception) {
 
                     println(
-                        "AnimeAV: ERROR obteniendo título Animora -> " +
+                        "AnimeAV: ERROR await -> " +
                             "${e.javaClass.simpleName}: " +
                             e.message
                     )
 
-                    null
+                    false
                 }
 
-            if (animeTitle != null) {
-
-                val animeAvFound =
-                    withTimeoutOrNull(10000L) {
-
-                        processAnimeAV(
-                            animeTitle,
-                            episodeNumber,
-                            emittedUrls,
-                            subtitleCallback,
-                            callback
-                        )
-                    }
-
-                if (animeAvFound == true) {
-                    found = true
-                } else if (animeAvFound == null) {
-
-                    println(
-                        "AnimeAV: TIMEOUT general=10000ms"
-                    )
-
-                } else {
-
-                    println(
-                        "AnimeAV: no agregó fuentes"
-                    )
-                }
-
-            } else {
-
-                println(
-                    "AnimeAV: no se pudo obtener título de Animora"
-                )
+            if (animeAvFound) {
+                found = true
             }
+
+            println(
+                "AnimoraTV: AnimeAV resultado=$animeAvFound"
+            )
 
             println(
                 "AnimoraTV: FINAL " +
