@@ -45,18 +45,32 @@ jobs:
         with:
           packages: ''
 
+      - name: Prepare CloudStream Gradle plugin
+        run: |
+          cd $GITHUB_WORKSPACE/src
+
+          curl -fL \
+            "https://jitpack.io/com/github/recloudstream/gradle/gradle/-32895aedb6-1/gradle--32895aedb6-1.jar" \
+            -o "$GITHUB_WORKSPACE/recloudstream-gradle.jar"
+
+          echo "CloudStream Gradle plugin:"
+          sha256sum "$GITHUB_WORKSPACE/recloudstream-gradle.jar"
+
+          test "$(sha256sum "$GITHUB_WORKSPACE/recloudstream-gradle.jar" | cut -d' ' -f1)" = "5358ef5bfe9ea8fad162fe9c4895e5706a92659c34a38bbd91457d902fadcb21"
+
+          sed -i \
+            "s|classpath(\"com.github.recloudstream:gradle:-SNAPSHOT\")|classpath(files(\"$GITHUB_WORKSPACE/recloudstream-gradle.jar\"))|" \
+            build.gradle.kts
+
+          echo "Gradle plugin configuration:"
+          grep 'recloudstream:gradle\|recloudstream-gradle.jar' build.gradle.kts
+
       - name: Test Maven repositories
         run: |
           HOST=repo.maven.apache.org
           curl -I "https://${HOST}/maven2/org/jetbrains/kotlin/kotlin-gradle-plugin/2.4.0/kotlin-gradle-plugin-2.4.0.pom"
           curl -I "https://${HOST}/maven2/org/apache/httpcomponents/httpmime/4.5.6/httpmime-4.5.6.pom"
           curl -I "https://${HOST}/maven2/commons-io/commons-io/2.13.0/commons-io-2.13.0.pom"
-
-      - name: Fix CloudStream Gradle plugin version
-        run: |
-          cd $GITHUB_WORKSPACE/src
-          sed -i 's/com\.github\.recloudstream:gradle:-SNAPSHOT/com.github.recloudstream:gradle:32895aedb6366f5075cb99bbd2e6ce0a7cac325d/' build.gradle.kts
-          grep 'recloudstream:gradle' build.gradle.kts
 
       - name: Build Plugins
         run: |
