@@ -195,6 +195,7 @@ class AnimeOnlineProvider : MainAPI() {
         }
     }
 
+    // --- FUNCIÓN DE FALLBACK PARA UQLOAD ---
     private suspend fun resolveUqload(url: String, referer: String, serverName: String, language: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val response = app.get(url, referer = referer).text
@@ -202,9 +203,19 @@ class AnimeOnlineProvider : MainAPI() {
             val packedScript = packedRegex.find(response)?.value
             val htmlToSearch = if (packedScript != null) JsUnpacker(packedScript).unpack() ?: response else response
             val fileUrl = Regex("""file:\s*["'](https[^"']+)["']""").find(htmlToSearch)?.groupValues?.get(1)
+            
             if (!fileUrl.isNullOrBlank()) {
                 val isM3u8 = fileUrl.contains(".m3u8")
-                callback(ExtractorLink("Uqload", "$serverName - $language", fileUrl, "https://uqload.vc/", Qualities.Unknown.value, if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
+                callback(
+                    newExtractorLink(
+                        source = "Uqload",
+                        name = "$serverName - $language",
+                        url = fileUrl,
+                        referer = "https://uqload.vc/",
+                        quality = Qualities.Unknown.value,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    )
+                )
                 true
             } else false
         } catch (e: Exception) {
@@ -221,12 +232,9 @@ class AnimeOnlineProvider : MainAPI() {
             val alternateUrl = "https://n1mwq.org/e/$id"
             println("FILEMOON FALLBACK: Intentando dominios alternativos: $alternateUrl")
             
-            // Usamos app.get de Cloudstream para saltarnos bloqueos
             val response = app.get(alternateUrl, referer = "https://n1mwq.org/").text
-            
             val packedRegex = Regex("""eval\(function\(p,a,c,k,e,d\).*?split\('\|'\)\)\)""")
             val packedScript = packedRegex.find(response)?.value
-            
             val htmlToSearch = if (packedScript != null) {
                 JsUnpacker(packedScript).unpack() ?: response
             } else {
@@ -237,15 +245,14 @@ class AnimeOnlineProvider : MainAPI() {
 
             if (!fileUrl.isNullOrBlank()) {
                 val isM3u8 = fileUrl.contains(".m3u8")
-                // Sin cabeceras personalizadas para cumplir con el compilador actual
                 callback(
-                    ExtractorLink(
-                        "Filemoon",
-                        "$serverName - $language",
-                        fileUrl,
-                        "https://n1mwq.org/",
-                        Qualities.Unknown.value,
-                        if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    newExtractorLink(
+                        source = "Filemoon",
+                        name = "$serverName - $language",
+                        url = fileUrl,
+                        referer = "https://n1mwq.org/",
+                        quality = Qualities.Unknown.value,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                     )
                 )
                 true
