@@ -416,7 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("=== ANIMEONLINE SAIDOCHesto JS DEBUG ===")
+        println("=== ANIMEONLINE SAIDOCHesto PLAYER URL DEBUG ===")
 
         val document = app.get(
             data,
@@ -447,8 +447,6 @@ class AnimeOnlineProvider : MainAPI() {
 
         val body = apiResponse.text
 
-        println("API BODY: $body")
-
         val embedUrl = body
             .substringAfter("\"embed_url\":\"", "")
             .substringBefore("\"")
@@ -469,43 +467,39 @@ class AnimeOnlineProvider : MainAPI() {
 
         println("EMBED STATUS: ${embedResponse.code}")
 
-        val jsElement = embedResponse.document
-            .select("script[src]")
-            .firstOrNull {
-                it.attr("src").contains("iframen.js")
+        val html = embedResponse.text
+
+        println("EMBED HTML LENGTH: ${html.length}")
+
+        val marker = "go_to_player"
+
+        var position = html.indexOf(marker)
+
+        var count = 0
+
+        while (position >= 0 && count < 20) {
+            val startPos = maxOf(0, position - 500)
+            val endPos = minOf(html.length, position + 1000)
+
+            println("=== GO_TO_PLAYER[$count] ===")
+            println(html.substring(startPos, endPos))
+
+            count++
+            position = html.indexOf(marker, position + marker.length)
+        }
+
+        println("GO_TO_PLAYER COUNT: $count")
+
+        println("=== URLS IN EMBED HTML ===")
+
+        Regex("https?://[^\"'<> ]+")
+            .findAll(html)
+            .map { it.value }
+            .distinct()
+            .take(30)
+            .forEachIndexed { index, url ->
+                println("URL[$index]: $url")
             }
-
-        if (jsElement == null) {
-            println("NO IFRAMEN JS")
-            return false
-        }
-
-        val jsSource = jsElement.attr("src")
-
-        println("IFRAMEN SRC: $jsSource")
-
-        val jsUrl = if (jsSource.startsWith("http")) {
-            jsSource
-        } else {
-            "https://saidochesto.top/${jsSource.removePrefix("/")}"
-        }
-
-        println("IFRAMEN URL: $jsUrl")
-
-        val jsResponse = app.get(
-            jsUrl,
-            referer = embedUrl,
-            interceptor = cloudflareKiller
-        )
-
-        println("JS STATUS: ${jsResponse.code}")
-
-        val jsBody = jsResponse.text
-
-        println("JS LENGTH: ${jsBody.length}")
-        println("=== IFRAMEN JS START ===")
-        println(jsBody.take(12000))
-        println("=== IFRAMEN JS END ===")
 
         return false
     }
