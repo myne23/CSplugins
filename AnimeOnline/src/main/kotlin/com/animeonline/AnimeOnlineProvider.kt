@@ -196,7 +196,7 @@ class AnimeOnlineProvider : MainAPI() {
         }
     }
 
-    private suspend fun resolveUqload(url: String, referer: String, serverName: String, descriptiveLabel: String, callback: (ExtractorLink) -> Unit): Boolean {
+    private suspend fun resolveUqload(url: String, referer: String, serverName: String, language: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val response = app.get(url, referer = referer).text
             val packedRegex = Regex("""eval\(function\(p,a,c,k,e,d\).*?split\('\|'\)\)\)""")
@@ -209,7 +209,7 @@ class AnimeOnlineProvider : MainAPI() {
                 callback(
                     ExtractorLink(
                         source = serverName,
-                        name = descriptiveLabel,
+                        name = "${serverName.uppercase()} · $language",
                         url = fileUrl,
                         referer = "https://uqload.vc/",
                         quality = Qualities.Unknown.value,
@@ -248,20 +248,20 @@ class AnimeOnlineProvider : MainAPI() {
             block.select("li[onclick*='go_to_player']").forEach { item ->
                 val server = item.selectFirst("span")?.text()?.trim() ?: "Servidor"
                 val itemText = item.text().trim().ifBlank { server }
-                val descriptiveName = "$server · $blockLang ($itemText)"
+                val descriptiveName = "${server.uppercase()} · $blockLang"
 
                 val sourceUrl = Regex("""go_to_player\(['"]([^'"]+)['"]\)""").find(item.attr("onclick"))?.groupValues?.getOrNull(1)
                 
                 if (sourceUrl.isNullOrBlank()) return@forEach
 
                 if (sourceUrl.contains("uqload", ignoreCase = true)) {
-                    if (resolveUqload(sourceUrl, data, server, descriptiveName, callback)) linkCount++
+                    if (resolveUqload(sourceUrl, data, server, blockLang, callback)) linkCount++
                 } else {
                     loadExtractor(url = sourceUrl, referer = data, subtitleCallback = subtitleCallback, callback = { link ->
                         // Creamos un nuevo ExtractorLink manteniendo los datos del original pero cambiando el nombre
                         val modifiedLink = ExtractorLink(
                             source = link.source,
-                            name = descriptiveName,
+                            name = "${link.name.substringBefore(" · ").substringBefore(" (").trim().uppercase()} · $blockLang",
                             url = link.url,
                             referer = link.referer,
                             quality = link.quality,
