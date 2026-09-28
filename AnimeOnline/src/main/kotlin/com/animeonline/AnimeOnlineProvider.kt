@@ -416,7 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ): Boolean {
-    println("=== ANIMEONLINE SOURCE PARSER TEST ===")
+    println("=== ANIMEONLINE UQLOAD TEST ===")
 
     val document = app.get(
         data,
@@ -463,54 +463,40 @@ class AnimeOnlineProvider : MainAPI() {
         interceptor = cloudflareKiller
     ).document
 
-    println("SAIDOCHesto STATUS: 200")
-
-    val languageBlocks = embedDocument.select(".OD")
-
-    println("LANGUAGE BLOCKS: ${languageBlocks.size}")
-
-    var sourceCount = 0
-
-    languageBlocks.forEach { block ->
-        val language = when {
-            block.hasClass("OD_SUB") -> "SUB"
-            block.hasClass("OD_LAT") -> "LAT"
-            block.hasClass("OD_ES") -> "ES"
-            block.hasClass("OD_EN") -> "EN"
-            else -> "UNKNOWN"
+    val uqloadUrl = embedDocument
+        .select(".OD_SUB li[onclick*='go_to_player']")
+        .firstOrNull { item ->
+            item.selectFirst("span")
+                ?.text()
+                ?.trim()
+                ?.equals("uqload", ignoreCase = true) == true
         }
-
-        block.select("li[onclick*='go_to_player']").forEach { item ->
-            val onclick = item.attr("onclick")
-
-            val url = Regex(
-                """go_to_player\(['"]([^'"]+)['"]\)"""
-            )
+        ?.attr("onclick")
+        ?.let { onclick ->
+            Regex("""go_to_player\(['"]([^'"]+)['"]\)""")
                 .find(onclick)
                 ?.groupValues
                 ?.getOrNull(1)
-
-            val server = item
-                .selectFirst("span")
-                ?.text()
-                ?.trim()
-                ?: "UNKNOWN"
-
-            if (!url.isNullOrBlank()) {
-                sourceCount++
-
-                println(
-                    "SOURCE[$sourceCount] " +
-                        "LANG=$language " +
-                        "SERVER=$server " +
-                        "URL=$url"
-                )
-            }
         }
+
+    println("UQLOAD URL: $uqloadUrl")
+
+    if (uqloadUrl.isNullOrBlank()) {
+        println("NO UQLOAD URL")
+        return false
     }
 
-    println("TOTAL SOURCES: $sourceCount")
+    println("CALLING UQLOAD EXTRACTOR")
 
-    return false
+    loadExtractor(
+        uqloadUrl,
+        data,
+        subtitleCallback,
+        callback
+    )
+
+    println("UQLOAD EXTRACTOR CALLED")
+
+    return true
 }
 }
