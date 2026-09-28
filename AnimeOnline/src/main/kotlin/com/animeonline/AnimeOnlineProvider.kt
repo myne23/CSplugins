@@ -241,8 +241,7 @@ class AnimeOnlineProvider : MainAPI() {
         url: String
     ): LoadResponse? {
 
-        println("=== ANIMEONLINE SEASON STRUCTURE ===")
-        println("URL: $url")
+        println("=== ANIMEONLINE SEASON CHILDREN ===")
 
         val document = app.get(
             url,
@@ -250,41 +249,46 @@ class AnimeOnlineProvider : MainAPI() {
             interceptor = cloudflareKiller
         ).document
 
-        val seasonHeader = document
+        val header = document
             .select("h2, h3")
             .firstOrNull {
                 it.text().contains("Temporadas y episodios", ignoreCase = true)
             }
 
-        if (seasonHeader == null) {
+        if (header == null) {
             println("SEASON HEADER: NOT FOUND")
             return null
         }
 
-        println("SEASON HEADER: ${seasonHeader.text().trim()}")
+        val container = header.nextElementSibling()
 
-        var current = seasonHeader.nextElementSibling()
-        var index = 0
-
-        while (current != null && index < 10) {
-            println("BLOCK[$index] TAG=${current.tagName()} CLASS=${current.className()}")
-            println("BLOCK[$index] TEXT=${current.text().trim().take(500)}")
-
-            val links = current.select("a[href]")
-            println("BLOCK[$index] LINKS=${links.size}")
-
-            links.take(30).forEachIndexed { i, element ->
-                println(
-                    "LINK[$index.$i] TEXT=[${element.text().trim()}] " +
-                    "HREF=[${element.attr("href")}]"
-                )
-            }
-
-            current = current.nextElementSibling()
-            index++
+        if (container == null) {
+            println("CONTAINER: NOT FOUND")
+            return null
         }
 
-        println("=== ANIMEONLINE SEASON STRUCTURE END ===")
+        println("CONTAINER TAG=${container.tagName()}")
+        println("CONTAINER CLASS=${container.className()}")
+
+        container.children().forEachIndexed { index, child ->
+            println(
+                "CHILD[$index] TAG=${child.tagName()} " +
+                "CLASS=${child.className()} " +
+                "TEXT=[${child.text().trim().take(300)}]"
+            )
+
+            val directLinks = child.select(":scope > a[href]")
+            println("CHILD[$index] DIRECT_LINKS=${directLinks.size}")
+
+            directLinks.take(5).forEach { link ->
+                println(
+                    "  LINK TEXT=[${link.text().trim()}] " +
+                    "HREF=[${link.attr("href")}]"
+                )
+            }
+        }
+
+        println("=== ANIMEONLINE SEASON CHILDREN END ===")
 
         return null
     }
