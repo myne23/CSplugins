@@ -1,0 +1,67 @@
+[1mdiff --git a/AnimoraTV/src/main/kotlin/com/animoratv/AnimoraTVProvider.kt b/AnimoraTV/src/main/kotlin/com/animoratv/AnimoraTVProvider.kt[m
+[1mindex f7f6ce8..4f4f568 100644[m
+[1m--- a/AnimoraTV/src/main/kotlin/com/animoratv/AnimoraTVProvider.kt[m
+[1m+++ b/AnimoraTV/src/main/kotlin/com/animoratv/AnimoraTVProvider.kt[m
+[36m@@ -260,6 +260,9 @@[m [mclass AnimoraTVProvider : MainAPI() {[m
+             var totalExtractedLinks = 0[m
+             var megaEmitted = false[m
+ [m
+[32m+[m[32m            val emittedProviders =[m
+[32m+[m[32m                mutableSetOf<String>()[m
+[32m+[m
+             for (i in 0 until fuentes.length()) {[m
+ [m
+                 val fuente =[m
+[36m@@ -550,19 +553,41 @@[m [mclass AnimoraTVProvider : MainAPI() {[m
+                     val extractorCallback:[m
+                         (ExtractorLink) -> Unit = { link ->[m
+ [m
+[31m-                        emitted++[m
+[31m-                        totalExtractedLinks++[m
+[32m+[m[32m                        val normalizedProvider =[m
+[32m+[m[32m                            link.name[m
+[32m+[m[32m                                .trim()[m
+[32m+[m[32m                                .lowercase()[m
+ [m
+[31m-                        println([m
+[31m-                            "AnimoraTV: EXTRACTED LINK " +[m
+[31m-                                "provider=$provider " +[m
+[31m-                                "name=${link.name} " +[m
+[31m-                                "quality=${link.quality} " +[m
+[31m-                                "type=${link.type} " +[m
+[31m-                                "url=${link.url}"[m
+[31m-                        )[m
+[32m+[m[32m                        if ([m
+[32m+[m[32m                            emittedProviders.contains([m
+[32m+[m[32m                                normalizedProvider[m
+[32m+[m[32m                            )[m
+[32m+[m[32m                        ) {[m
+[32m+[m[32m                            println([m
+[32m+[m[32m                                "AnimoraTV: LINK DUPLICADO " +[m
+[32m+[m[32m                                    "ignorado " +[m
+[32m+[m[32m                                    "name=${link.name} " +[m
+[32m+[m[32m                                    "provider=$provider"[m
+[32m+[m[32m                            )[m
+[32m+[m[32m                        } else {[m
+[32m+[m[32m                            emittedProviders.add([m
+[32m+[m[32m                                normalizedProvider[m
+[32m+[m[32m                            )[m
+ [m
+[31m-                        callback(link)[m
+[32m+[m[32m                            emitted++[m
+[32m+[m[32m                            totalExtractedLinks++[m
+[32m+[m
+[32m+[m[32m                            println([m
+[32m+[m[32m                                "AnimoraTV: EXTRACTED LINK " +[m
+[32m+[m[32m                                    "provider=$provider " +[m
+[32m+[m[32m                                    "name=${link.name} " +[m
+[32m+[m[32m                                    "quality=${link.quality} " +[m
+[32m+[m[32m                                    "type=${link.type} " +[m
+[32m+[m[32m                                    "url=${link.url}"[m
+[32m+[m[32m                            )[m
+[32m+[m
+[32m+[m[32m                            callback(link)[m
+[32m+[m[32m                        }[m
+                     }[m
+ [m
+                     for ([m

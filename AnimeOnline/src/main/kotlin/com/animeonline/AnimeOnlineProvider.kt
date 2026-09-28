@@ -410,141 +410,192 @@ class AnimeOnlineProvider : MainAPI() {
         }
     }
 
-    override suspend fun loadLinks(
-    data: String,
-    isCasting: Boolean,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-): Boolean {
-    println("=== ANIMEONLINE ALL SOURCES EXTRACTOR TEST ===")
+    // --- FUNCIÓN DE FALLBACK PARA UQLOAD ---
+    private suspend fun resolveUqload(
+        url: String,
+        referer: String,
+        serverName: String,
+        language: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        return try {
+            val response = app.get(url, referer = referer).text
+            
+            // Buscar sources: ["url"] o file: "url"
+            val fileUrl = Regex("""sources:\s*\["([^"]+)"""").find(response)?.groupValues?.get(1)
+                ?: Regex("""file:\s*"([^"]+)"""").find(response)?.groupValues?.get(1)
 
-    val document = app.get(
-        data,
-        referer = "$mainUrl/",
-        interceptor = cloudflareKiller
-    ).document
-
-    val postId = document
-        .selectFirst("[data-post]")
-        ?.attr("data-post")
-        ?.trim()
-
-    println("POST ID: $postId")
-
-    if (postId.isNullOrBlank()) {
-        println("NO POST ID")
-        return false
-    }
-
-    val apiUrl =
-        "$mainUrl/wp-json/dooplayer/v1/post/$postId?type=tv&source=1"
-
-    val apiResponse = app.get(
-        apiUrl,
-        referer = data,
-        interceptor = cloudflareKiller
-    )
-
-    val embedUrl = apiResponse.text
-        .substringAfter("\"embed_url\":\"", "")
-        .substringBefore("\"")
-        .replace("\\/", "/")
-
-    println("EMBED URL: $embedUrl")
-
-    if (embedUrl.isBlank()) {
-        println("NO EMBED URL")
-        return false
-    }
-
-    val embedDocument = app.get(
-        embedUrl,
-        referer = data,
-        interceptor = cloudflareKiller
-    ).document
-
-    val languageBlocks = embedDocument.select(".OD")
-
-    println("LANGUAGE BLOCKS: ${languageBlocks.size}")
-
-    var sourceCount = 0
-    var linkCount = 0
-
-    languageBlocks.forEach { block ->
-        val language = when {
-            block.hasClass("OD_SUB") -> "SUB"
-            block.hasClass("OD_LAT") -> "LAT"
-            block.hasClass("OD_ES") -> "ES"
-            block.hasClass("OD_EN") -> "EN"
-            else -> "UNKNOWN"
-        }
-
-        block.select("li[onclick*='go_to_player']").forEach { item ->
-            val server = item
-                .selectFirst("span")
-                ?.text()
-                ?.trim()
-                ?: "UNKNOWN"
-
-            val onclick = item.attr("onclick")
-
-            val sourceUrl = Regex(
-                """go_to_player\(['"]([^'"]+)['"]\)"""
-            )
-                .find(onclick)
-                ?.groupValues
-                ?.getOrNull(1)
-
-            if (sourceUrl.isNullOrBlank()) return@forEach
-
-            sourceCount++
-
-            val currentSource = sourceCount
-
-            println(
-                "SOURCE[$currentSource] " +
-                    "LANG=$language " +
-                    "SERVER=$server " +
-                    "URL=$sourceUrl"
-            )
-
-            var foundLink = false
-
-            val result = loadExtractor(
-                url = sourceUrl,
-                referer = data,
-                subtitleCallback = subtitleCallback,
-                callback = { link ->
-                    foundLink = true
-                    linkCount++
-
-                    println(
-                        "LINK FOUND[$currentSource] " +
-                            "LANG=$language " +
-                            "SERVER=$server " +
-                            "NAME=${link.name} " +
-                            "SOURCE=${link.source} " +
-                            "QUALITY=${link.quality} " +
-                            "URL=${link.url}"
+            if (!fileUrl.isNullOrBlank()) {
+                val isM3u8 = fileUrl.contains(".m3u8")
+                callback(
+                    ExtractorLink(
+                        source = "Uqload",
+                        name = "$serverName - $language",
+                        url = fileUrl,
+                        referer = "https://uqload.vc/",
+                        quality = Qualities.Unknown.value,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                     )
-
-                    callback(link)
-                }
-            )
-
-            println(
-                "RESULT[$currentSource] " +
-                    "LANG=$language " +
-                    "SERVER=$server " +
-                    "EXTRACTOR=$result " +
-                    "LINK_FOUND=$foundLink"
-            )
+                )
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
         }
     }
 
-    println("TOTAL SOURCES: $sourceCount")
-    println("TOTAL LINKS: $linkCount")
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        println("=== ANIMEONLINE ALL SOURCES EXTRACTOR TEST ===")
 
-    return linkCount > 0
-}
+        val document = app.get(
+            data,
+            referer = "$mainUrl/",
+            interceptor = cloudflareKiller
+        ).document
+
+        val postId = document
+            .selectFirst("[data-post]")
+            ?.attr("data-post")
+            ?.trim()
+
+        println("POST ID: $postId")
+
+        if (postId.isNullOrBlank()) {
+            println("NO POST ID")
+            return false
+        }
+
+        val apiUrl =
+            "$mainUrl/wp-json/dooplayer/v1/post/$postId?type=tv&source=1"
+
+        val apiResponse = app.get(
+            apiUrl,
+            referer = data,
+            interceptor = cloudflareKiller
+        )
+
+        val embedUrl = apiResponse.text
+            .substringAfter("\"embed_url\":\"", "")
+            .substringBefore("\"")
+            .replace("\\/", "/")
+
+        println("EMBED URL: $embedUrl")
+
+        if (embedUrl.isBlank()) {
+            println("NO EMBED URL")
+            return false
+        }
+
+        val embedDocument = app.get(
+            embedUrl,
+            referer = data,
+            interceptor = cloudflareKiller
+        ).document
+
+        val languageBlocks = embedDocument.select(".OD")
+
+        println("LANGUAGE BLOCKS: ${languageBlocks.size}")
+
+        var sourceCount = 0
+        var linkCount = 0
+
+        languageBlocks.forEach { block ->
+            val language = when {
+                block.hasClass("OD_SUB") -> "SUB"
+                block.hasClass("OD_LAT") -> "LAT"
+                block.hasClass("OD_ES") -> "ES"
+                block.hasClass("OD_EN") -> "EN"
+                else -> "UNKNOWN"
+            }
+
+            block.select("li[onclick*='go_to_player']").forEach { item ->
+                val server = item
+                    .selectFirst("span")
+                    ?.text()
+                    ?.trim()
+                    ?: "UNKNOWN"
+
+                val onclick = item.attr("onclick")
+
+                val sourceUrl = Regex(
+                    """go_to_player\(['"]([^'"]+)['"]\)"""
+                )
+                    .find(onclick)
+                    ?.groupValues
+                    ?.getOrNull(1)
+
+                if (sourceUrl.isNullOrBlank()) return@forEach
+
+                sourceCount++
+                val currentSource = sourceCount
+
+                println(
+                    "SOURCE[$currentSource] " +
+                        "LANG=$language " +
+                        "SERVER=$server " +
+                        "URL=$sourceUrl"
+                )
+
+                var foundLink = false
+
+                val result = loadExtractor(
+                    url = sourceUrl,
+                    referer = data,
+                    subtitleCallback = subtitleCallback,
+                    callback = { link ->
+                        foundLink = true
+                        linkCount++
+
+                        println(
+                            "LINK FOUND[$currentSource] " +
+                                "LANG=$language " +
+                                "SERVER=$server " +
+                                "NAME=${link.name} " +
+                                "SOURCE=${link.source} " +
+                                "QUALITY=${link.quality} " +
+                                "URL=${link.url}"
+                        )
+
+                        callback(link)
+                    }
+                )
+
+                // FALLBACK MANUAL (Si el extractor no resolvió y la URL es de Uqload)
+                if (!foundLink && sourceUrl.contains("uqload", ignoreCase = true)) {
+                    println("FALLBACK[$currentSource] Intentando resolver Uqload manualmente...")
+                    
+                    val uqloadResolved = resolveUqload(sourceUrl, data, server, language, callback)
+                    
+                    if (uqloadResolved) {
+                        foundLink = true
+                        linkCount++
+                        println("FALLBACK[$currentSource] ÉXITO: Uqload resuelto manualmente.")
+                    } else {
+                        println("FALLBACK[$currentSource] FALLÓ: No se encontró media en Uqload.")
+                    }
+                }
+
+                println(
+                    "RESULT[$currentSource] " +
+                        "LANG=$language " +
+                        "SERVER=$server " +
+                        "EXTRACTOR=$result " +
+                        "LINK_FOUND=$foundLink"
+                )
+            }
+        }
+
+        println("TOTAL SOURCES: $sourceCount")
+        println("TOTAL LINKS: $linkCount")
+
+        return linkCount > 0
+    }
 }
