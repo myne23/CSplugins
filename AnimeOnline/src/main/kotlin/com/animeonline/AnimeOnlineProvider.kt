@@ -240,6 +240,9 @@ class AnimeOnlineProvider : MainAPI() {
     override suspend fun load(
         url: String
     ): LoadResponse? {
+        println("=== ANIMEONLINE LOAD ENTRY ===")
+        println("ANIMEONLINE STEP 1")
+
 
         val document = app.get(
             url,
