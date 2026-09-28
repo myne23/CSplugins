@@ -241,41 +241,30 @@ class AnimeOnlineProvider : MainAPI() {
         url: String
     ): LoadResponse? {
 
-        println("=== ANIMEONLINE LOAD START ===")
+        println("=== ANIMEONLINE LOAD STRUCTURE ===")
         println("URL: $url")
 
-        try {
-            val response = app.get(
-                url,
-                referer = "$mainUrl/",
-                interceptor = cloudflareKiller
-            )
+        val document = app.get(
+            url,
+            referer = "$mainUrl/",
+            interceptor = cloudflareKiller
+        ).document
 
-            println("LOAD HTTP RESPONSE RECEIVED")
+        println("TITLE: ${document.select("h1").lastOrNull()?.text()?.trim()}")
 
-            val document = response.document
+        val episodeLinks = document.select("a[href*='/episodio/']")
 
-            println("LOAD DOCUMENT TITLE: ${document.title()}")
-            println("LOAD ARTICLE COUNT: ${document.select("article").size}")
-            println("LOAD H1 COUNT: ${document.select("h1").size}")
-            println("LOAD H2 COUNT: ${document.select("h2").size}")
-            println("LOAD H3 COUNT: ${document.select("h3").size}")
-            println("LOAD EPISODE LINKS: ${document.select("a[href*='/episodio/']").size}")
-            println("LOAD ONLINE LINKS: ${document.select("a[href*='/online/']").size}")
+        println("EPISODE COUNT: ${episodeLinks.size}")
 
-            println("LOAD H1 TEXT: ${document.select("h1").joinToString(" | ") { it.text().trim() }}")
-            println("LOAD H2 TEXT: ${document.select("h2").joinToString(" | ") { it.text().trim() }}")
-            println("LOAD H3 TEXT: ${document.select("h3").take(20).joinToString(" | ") { it.text().trim() }}")
+        episodeLinks.forEachIndexed { index, element ->
+            val href = element.attr("href")
+            val text = element.text().trim()
+            val parent = element.parent()?.text()?.trim()
 
-        } catch (e: Exception) {
-            println("=== ANIMEONLINE LOAD ERROR ===")
-            println("ERROR TYPE: ${e::class.java.name}")
-            println("ERROR MESSAGE: ${e.message}")
-            println("ERROR CAUSE: ${e.cause}")
-            e.printStackTrace()
+            println("EP[$index] TEXT=[$text] HREF=[$href] PARENT=[$parent]")
         }
 
-        println("=== ANIMEONLINE LOAD END ===")
+        println("=== ANIMEONLINE LOAD STRUCTURE END ===")
 
         return null
     }
