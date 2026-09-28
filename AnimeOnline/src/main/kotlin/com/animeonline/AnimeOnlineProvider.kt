@@ -240,6 +240,34 @@ class AnimeOnlineProvider : MainAPI() {
     override suspend fun load(
         url: String
     ): LoadResponse? {
+
+        println("=== ANIMEONLINE LOAD START ===")
+        println("URL: $url")
+
+        val response = app.get(
+            url,
+            referer = "$mainUrl/",
+            interceptor = cloudflareKiller
+        )
+
+        println("LOAD HTTP RESPONSE RECEIVED")
+
+        val document = response.document
+
+        println("LOAD DOCUMENT TITLE: ${document.title()}")
+        println("LOAD ARTICLE COUNT: ${document.select("article").size}")
+        println("LOAD H1 COUNT: ${document.select("h1").size}")
+        println("LOAD H2 COUNT: ${document.select("h2").size}")
+        println("LOAD H3 COUNT: ${document.select("h3").size}")
+        println("LOAD EPISODE LINKS: ${document.select("a[href*='/episodio/']").size}")
+        println("LOAD ONLINE LINKS: ${document.select("a[href*='/online/']").size}")
+
+        println("LOAD H1 TEXT: ${document.select("h1").joinToString(" | ") { it.text().trim() }}")
+        println("LOAD H2 TEXT: ${document.select("h2").joinToString(" | ") { it.text().trim() }}")
+        println("LOAD H3 TEXT: ${document.select("h3").take(20).joinToString(" | ") { it.text().trim() }}")
+
+        println("=== ANIMEONLINE LOAD END ===")
+
         return null
     }
 
