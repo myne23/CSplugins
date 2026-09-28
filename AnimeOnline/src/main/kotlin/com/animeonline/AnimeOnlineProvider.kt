@@ -73,7 +73,7 @@ class AnimeOnlineProvider : MainAPI() {
         println("URL: $mainUrl/inicio/")
         println("PAGE: $page")
 
-        val response = app.get("$mainUrl/inicio/")
+        val response = app.get("$mainUrl/inicio/", headers = mapOf("User-Agent" to "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"))
         println("HTTP RESPONSE RECEIVED")
 
         val document = response.document
