@@ -416,7 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("=== ANIMEONLINE PLAYER OPTIONS DEBUG ===")
+        println("=== ANIMEONLINE EMBED DEBUG ===")
 
         val document = app.get(
             data,
@@ -431,28 +431,6 @@ class AnimeOnlineProvider : MainAPI() {
 
         println("POST ID: $postId")
 
-        val allDataNume = document.select("[data-nume]")
-
-        println("DATA-NUME ELEMENTS: ${allDataNume.size}")
-
-        allDataNume.forEachIndexed { index, element ->
-            println(
-                "DATA-NUME[$index]: " +
-                    "nume=${element.attr("data-nume")} " +
-                    "type=${element.attr("data-type")} " +
-                    "post=${element.attr("data-post")} " +
-                    "class=${element.attr("class")}"
-            )
-        }
-
-        val ajaxMode = document.select("ul.ajax_mode")
-
-        println("AJAX MODE ELEMENTS: ${ajaxMode.size}")
-
-        ajaxMode.forEachIndexed { index, element ->
-            println("AJAX MODE[$index]: ${element.outerHtml().take(5000)}")
-        }
-
         if (postId.isNullOrBlank()) {
             println("NO POST ID")
             return false
@@ -461,16 +439,60 @@ class AnimeOnlineProvider : MainAPI() {
         val apiUrl =
             "$mainUrl/wp-json/dooplayer/v1/post/$postId?type=tv&source=1"
 
-        println("TEST SOURCE 1 URL: $apiUrl")
-
         val response = app.get(
             apiUrl,
             referer = data,
             interceptor = cloudflareKiller
         )
 
-        println("TEST SOURCE 1 STATUS: ${response.code}")
-        println("TEST SOURCE 1 BODY: ${response.text}")
+        val body = response.text
+
+        println("API BODY: $body")
+
+        val embedUrl = Regex(
+            "\"embed_url\"\\s*:\\s*\"([^\"]+)\""
+        )
+            .find(body)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.replace("\\/","/")
+
+        println("EMBED URL: $embedUrl")
+
+        if (embedUrl.isNullOrBlank()) {
+            println("NO EMBED URL")
+            return false
+        }
+
+        val embedResponse = app.get(
+            embedUrl,
+            referer = data,
+            interceptor = cloudflareKiller
+        )
+
+        println("EMBED STATUS: ${embedResponse.code}")
+        println("EMBED URL FINAL: ${embedResponse.url}")
+
+        val embedDocument = embedResponse.document
+
+        val iframes = embedDocument.select("iframe[src]")
+        val videos = embedDocument.select("video[src], video source[src]")
+        val scripts = embedDocument.select("script[src]")
+
+        println("IFRAMES: ${iframes.size}")
+        iframes.forEach {
+            println("IFRAME: ${it.attr("src")}")
+        }
+
+        println("VIDEOS: ${videos.size}")
+        videos.forEach {
+            println("VIDEO: ${it.attr("src")}")
+        }
+
+        println("SCRIPTS: ${scripts.size}")
+        scripts.forEach {
+            println("SCRIPT: ${it.attr("src")}")
+        }
 
         return false
     }
