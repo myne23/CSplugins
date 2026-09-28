@@ -416,7 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ): Boolean {
-    println("=== ANIMEONLINE UQLOAD ALL LANGUAGES TEST ===")
+    println("=== ANIMEONLINE UQLOAD RESULT TEST ===")
 
     val document = app.get(
         data,
@@ -463,60 +463,48 @@ class AnimeOnlineProvider : MainAPI() {
         interceptor = cloudflareKiller
     ).document
 
-    val languageBlocks = embedDocument.select(".OD")
-
-    println("LANGUAGE BLOCKS: ${languageBlocks.size}")
-
-    var uqloadCount = 0
-
-    languageBlocks.forEach { block ->
-        val language = when {
-            block.hasClass("OD_SUB") -> "SUB"
-            block.hasClass("OD_LAT") -> "LAT"
-            block.hasClass("OD_ES") -> "ES"
-            block.hasClass("OD_EN") -> "EN"
-            else -> "UNKNOWN"
+    val uqloadUrl = embedDocument
+        .select(".OD_SUB li[onclick*='go_to_player']")
+        .firstOrNull { item ->
+            item.selectFirst("span")
+                ?.text()
+                ?.trim()
+                ?.equals("uqload", ignoreCase = true) == true
         }
-
-        val item = block
-            .select("li[onclick*='go_to_player']")
-            .firstOrNull { element ->
-                element.selectFirst("span")
-                    ?.text()
-                    ?.trim()
-                    ?.equals("uqload", ignoreCase = true) == true
-            }
-
-        val onclick = item?.attr("onclick")
-
-        val uqloadUrl = onclick?.let {
+        ?.attr("onclick")
+        ?.let { onclick ->
             Regex("""go_to_player\(['"]([^'"]+)['"]\)""")
-                .find(it)
+                .find(onclick)
                 ?.groupValues
                 ?.getOrNull(1)
         }
 
-        if (!uqloadUrl.isNullOrBlank()) {
-            uqloadCount++
+    println("UQLOAD URL: $uqloadUrl")
 
-            println(
-                "UQLOAD[$uqloadCount] " +
-                    "LANG=$language URL=$uqloadUrl"
-            )
-
-            loadExtractor(
-                uqloadUrl,
-                data,
-                subtitleCallback,
-                callback
-            )
-
-            println("UQLOAD[$uqloadCount] EXTRACTOR CALLED")
-        }
+    if (uqloadUrl.isNullOrBlank()) {
+        println("NO UQLOAD URL")
+        return false
     }
 
-    println("TOTAL UQLOAD SOURCES: $uqloadCount")
+    println("CALLING UQLOAD EXTRACTOR")
 
-    return uqloadCount > 0
+    val result = loadExtractor(
+        url = uqloadUrl,
+        referer = uqloadUrl,
+        subtitleCallback = subtitleCallback,
+        callback = { link ->
+            println("!!! EXTRACTOR LINK FOUND !!!")
+            println("LINK NAME: ${link.name}")
+            println("LINK SOURCE: ${link.source}")
+            println("LINK URL: ${link.url}")
+            println("LINK REFERER: ${link.referer}")
+            println("LINK QUALITY: ${link.quality}")
+            callback(link)
+        }
+    )
+
+    println("UQLOAD EXTRACTOR RESULT: $result")
+
+    return result
 }
 }
