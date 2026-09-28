@@ -1,6 +1,7 @@
 package com.animeonline
 
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
@@ -17,6 +18,8 @@ class AnimeOnlineProvider : MainAPI() {
 
     override var lang = "es"
     override val hasMainPage = true
+
+    private val cloudflareKiller by lazy { CloudflareKiller() }
 
     private fun parseAnimeCard(article: Element): SearchResponse? {
         val link = article.selectFirst("a[href]")?.attr("href")
@@ -73,7 +76,12 @@ class AnimeOnlineProvider : MainAPI() {
         println("URL: $mainUrl/inicio/")
         println("PAGE: $page")
 
-        val response = app.get("$mainUrl/inicio/", headers = mapOf("User-Agent" to "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"))
+        val response = app.get(
+            "$mainUrl/inicio/",
+            referer = "$mainUrl/",
+            interceptor = cloudflareKiller
+        )
+
         println("HTTP RESPONSE RECEIVED")
 
         val document = response.document
