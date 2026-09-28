@@ -241,40 +241,120 @@ class AnimeOnlineProvider : MainAPI() {
         url: String
     ): LoadResponse? {
 
-        println("=== ANIMEONLINE SEASON HTML ===")
-
         val document = app.get(
             url,
             referer = "$mainUrl/",
             interceptor = cloudflareKiller
         ).document
 
-        val header = document
-            .select("h2, h3")
-            .firstOrNull {
-                it.text().contains("Temporadas y episodios", ignoreCase = true)
+        val title = document
+            .select("h1")
+            .lastOrNull()
+            ?.text()
+            ?.trim()
+            ?: return null
+
+        val poster = document
+            .selectFirst("meta[property='og:image']")
+            ?.attr("content")
+            ?.takeIf { it.isNotBlank() }
+
+        val description: String? = null
+
+        val seasons = document
+            .select("#seasons > .se-c")
+            .mapIndexedNotNull { index, seasonElement ->
+
+                val seasonNumber = seasonElement
+                    .selectFirst(".se-q .se-t")
+                    ?.text()
+                    ?.trim()
+                    ?.toIntOrNull()
+                    ?: (index + 1)
+
+                val episodes = seasonElement
+                    .select(".episodios a[href]")
+                    .mapNotNull { element ->
+
+                        val href = element.attr("href").trim()
+                        if (href.isBlank()) return@mapNotNull null
+
+                        val name = element.text()
+                            .trim()
+                            .ifBlank { "Episodio" }
+
+                        val episodeContainer = element.parent()
+
+                        val numberText = episodeContainer
+                            ?.selectFirst(".numerando")
+                            ?.text()
+                            ?.trim()
+
+                        val episodeNumber = numberText
+                            ?.substringAfterLast("-")
+                            ?.trim()
+                            ?.toDoubleOrNull()
+                            ?.toInt()
+
+                        var episodePoster: String? = null
+
+                        val image = episodeContainer?.selectFirst(".imagen img")
+
+                        if (image != null) {
+                            val dataSrc = image.attr("data-src")
+                            val src = image.attr("src")
+
+                            episodePoster = if (dataSrc.isNotBlank()) {
+                                dataSrc
+                            } else if (src.isNotBlank()) {
+                                src
+                            } else {
+                                null
+                            }
+                        }
+
+                        newEpisode(fixUrl(href)) {
+                            this.name = name
+                            this.season = seasonNumber
+                            this.episode = episodeNumber
+                            this.posterUrl = episodePoster
+                        }
+                    }
+
+                if (episodes.isEmpty()) {
+                    null
+                } else {
+                    seasonNumber to episodes
+                }
             }
 
-        if (header == null) {
-            println("SEASON HEADER: NOT FOUND")
-            return null
+        if (seasons.isEmpty()) return null
+
+        println("=== ANIMEONLINE LOAD ===")
+        println("TITLE: $title")
+        println("SEASONS: ${seasons.size}")
+        println("EPISODES: ${seasons.sumOf { it.second.size }}")
+
+        seasons.forEach {
+            println("SEASON ${it.first}: ${it.second.size} episodes")
         }
 
-        val container = header.nextElementSibling()
+        return newAnimeLoadResponse(
+            title,
+            url,
+            TvType.Anime
+        ) {
+            posterUrl = poster
+            posterHeaders = this@AnimeOnlineProvider.posterHeaders
+            this.plot = description
 
-        if (container == null) {
-            println("CONTAINER: NOT FOUND")
-            return null
+            seasons.forEach { (_, episodeList) ->
+                addEpisodes(
+                    DubStatus.Subbed,
+                    episodeList
+                )
+            }
         }
-
-        val html = container.outerHtml()
-
-        println("HTML LENGTH: ${html.length}")
-        println(html.take(15000))
-
-        println("=== ANIMEONLINE SEASON HTML END ===")
-
-        return null
     }
 
     override suspend fun loadLinks(
