@@ -416,7 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
 ): Boolean {
-    println("=== ANIMEONLINE UQLOAD TEST ===")
+    println("=== ANIMEONLINE UQLOAD ALL LANGUAGES TEST ===")
 
     val document = app.get(
         data,
@@ -463,40 +463,60 @@ class AnimeOnlineProvider : MainAPI() {
         interceptor = cloudflareKiller
     ).document
 
-    val uqloadUrl = embedDocument
-        .select(".OD_SUB li[onclick*='go_to_player']")
-        .firstOrNull { item ->
-            item.selectFirst("span")
-                ?.text()
-                ?.trim()
-                ?.equals("uqload", ignoreCase = true) == true
+    val languageBlocks = embedDocument.select(".OD")
+
+    println("LANGUAGE BLOCKS: ${languageBlocks.size}")
+
+    var uqloadCount = 0
+
+    languageBlocks.forEach { block ->
+        val language = when {
+            block.hasClass("OD_SUB") -> "SUB"
+            block.hasClass("OD_LAT") -> "LAT"
+            block.hasClass("OD_ES") -> "ES"
+            block.hasClass("OD_EN") -> "EN"
+            else -> "UNKNOWN"
         }
-        ?.attr("onclick")
-        ?.let { onclick ->
+
+        val item = block
+            .select("li[onclick*='go_to_player']")
+            .firstOrNull { element ->
+                element.selectFirst("span")
+                    ?.text()
+                    ?.trim()
+                    ?.equals("uqload", ignoreCase = true) == true
+            }
+
+        val onclick = item?.attr("onclick")
+
+        val uqloadUrl = onclick?.let {
             Regex("""go_to_player\(['"]([^'"]+)['"]\)""")
-                .find(onclick)
+                .find(it)
                 ?.groupValues
                 ?.getOrNull(1)
         }
 
-    println("UQLOAD URL: $uqloadUrl")
+        if (!uqloadUrl.isNullOrBlank()) {
+            uqloadCount++
 
-    if (uqloadUrl.isNullOrBlank()) {
-        println("NO UQLOAD URL")
-        return false
+            println(
+                "UQLOAD[$uqloadCount] " +
+                    "LANG=$language URL=$uqloadUrl"
+            )
+
+            loadExtractor(
+                uqloadUrl,
+                data,
+                subtitleCallback,
+                callback
+            )
+
+            println("UQLOAD[$uqloadCount] EXTRACTOR CALLED")
+        }
     }
 
-    println("CALLING UQLOAD EXTRACTOR")
+    println("TOTAL UQLOAD SOURCES: $uqloadCount")
 
-    loadExtractor(
-        uqloadUrl,
-        data,
-        subtitleCallback,
-        callback
-    )
-
-    println("UQLOAD EXTRACTOR CALLED")
-
-    return true
+    return uqloadCount > 0
 }
 }
