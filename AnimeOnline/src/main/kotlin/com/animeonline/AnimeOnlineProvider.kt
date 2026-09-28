@@ -1,3 +1,4 @@
+@file:Suppress("DEPRECATION")
 package com.animeonline
 
 import com.lagradost.cloudstream3.*
@@ -207,7 +208,7 @@ class AnimeOnlineProvider : MainAPI() {
             if (!fileUrl.isNullOrBlank()) {
                 val isM3u8 = fileUrl.contains(".m3u8")
                 callback(
-                    newExtractorLink(
+                    ExtractorLink(
                         source = "Uqload",
                         name = "$serverName - $language",
                         url = fileUrl,
@@ -246,7 +247,7 @@ class AnimeOnlineProvider : MainAPI() {
             if (!fileUrl.isNullOrBlank()) {
                 val isM3u8 = fileUrl.contains(".m3u8")
                 callback(
-                    newExtractorLink(
+                    ExtractorLink(
                         source = "Filemoon",
                         name = "$serverName - $language",
                         url = fileUrl,
