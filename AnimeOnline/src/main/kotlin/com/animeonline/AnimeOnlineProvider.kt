@@ -87,309 +87,170 @@ class AnimeOnlineProvider : MainAPI() {
         }
     }
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-
-        val response = app.get(
-            "$mainUrl/inicio/",
-            referer = "$mainUrl/",
-            interceptor = cloudflareKiller
-        )
-
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val response = app.get("$mainUrl/inicio/", referer = "$mainUrl/", interceptor = cloudflareKiller)
         val document = response.document
         val sections = ArrayList<HomePageList>()
 
-        val latestEpisodes = document
-            .select("div.items article.item.se.episodes")
-            .mapNotNull { parseEpisodeCard(it) }
+        val latestEpisodes = document.select("div.items article.item.se.episodes").mapNotNull { parseEpisodeCard(it) }
+        if (latestEpisodes.isNotEmpty()) sections.add(HomePageList("Últimos episodios ⚡", latestEpisodes))
 
-        if (latestEpisodes.isNotEmpty()) {
-            sections.add(
-                HomePageList(
-                    "Últimos episodios ⚡",
-                    latestEpisodes
-                )
-            )
-        }
+        val latestAnimeHeader = document.select("header").firstOrNull { it.text().contains("ÚLTIMOS ANIMES AGREGADOS") }
+        val latestAnime = latestAnimeHeader?.nextElementSibling()?.nextElementSibling()?.select("article.item")?.mapNotNull { parseAnimeCard(it) } ?: emptyList()
+        if (latestAnime.isNotEmpty()) sections.add(HomePageList("Últimos animes agregados 💥", latestAnime))
 
-        val latestAnimeHeader = document
-            .select("header")
-            .firstOrNull {
-                it.text().contains("ÚLTIMOS ANIMES AGREGADOS")
+        val latestMoviesHeader = document.select("header").firstOrNull { it.text().contains("ÚLTIMAS PELICULAS AGREGADAS") }
+        val latestMovies = latestMoviesHeader?.nextElementSibling()?.nextElementSibling()?.select("article.item")?.mapNotNull { article ->
+            val link = article.selectFirst("a[href]")?.attr("href") ?: return@mapNotNull null
+            val title = article.selectFirst(".data h3")?.text()?.trim() ?: return@mapNotNull null
+            val image = article.selectFirst("img")
+            val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+            newMovieSearchResponse(title, fixUrl(link), TvType.Movie) {
+                this.posterUrl = poster
+                this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
             }
+        } ?: emptyList()
+        if (latestMovies.isNotEmpty()) sections.add(HomePageList("Últimas peliculas agregadas 🎬", latestMovies))
 
-        val latestAnime = latestAnimeHeader
-            ?.nextElementSibling()
-            ?.nextElementSibling()
-            ?.select("article.item")
-            ?.mapNotNull { parseAnimeCard(it) }
-            ?: emptyList()
-
-        if (latestAnime.isNotEmpty()) {
-            sections.add(
-                HomePageList(
-                    "Últimos animes agregados 💥",
-                    latestAnime
-                )
-            )
-        }
-
-        val latestMoviesHeader = document
-            .select("header")
-            .firstOrNull {
-                it.text().contains("ÚLTIMAS PELICULAS AGREGADAS")
-            }
-
-        val latestMovies = latestMoviesHeader
-            ?.nextElementSibling()
-            ?.nextElementSibling()
-            ?.select("article.item")
-            ?.mapNotNull { article ->
-                val link = article.selectFirst("a[href]")?.attr("href")
-                    ?: return@mapNotNull null
-
-                val title = article.selectFirst(".data h3")?.text()?.trim()
-                    ?: return@mapNotNull null
-
-                val image = article.selectFirst("img")
-                val poster = image?.attr("data-src")
-                    ?.takeIf { it.isNotBlank() }
-                    ?: image?.attr("src")?.takeIf { it.isNotBlank() }
-
-                newMovieSearchResponse(
-                    title,
-                    fixUrl(link),
-                    TvType.Movie
-                ) {
-                    this.posterUrl = poster
-                    this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
-                }
-            }
-            ?: emptyList()
-
-        if (latestMovies.isNotEmpty()) {
-            sections.add(
-                HomePageList(
-                    "Últimas peliculas agregadas 🎬",
-                    latestMovies
-                )
-            )
-        }
-
-        return newHomePageResponse(
-            sections,
-            hasNext = false
-        )
+        return newHomePageResponse(sections, hasNext = false)
     }
 
-    override suspend fun search(
-        query: String
-    ): List<SearchResponse>? {
-
+    override suspend fun search(query: String): List<SearchResponse>? {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
-
-        val document = app.get(
-            "$mainUrl/search/?s=$encodedQuery",
-            referer = "$mainUrl/",
-            interceptor = cloudflareKiller
-        ).document
-
-        return document
-            .select("article.item")
-            .mapNotNull { article ->
-
-                val link = article.selectFirst("a[href]")?.attr("href")
-                    ?: return@mapNotNull null
-
-                val title = article.selectFirst(".data h3")?.text()?.trim()
-                    ?: return@mapNotNull null
-
-                val image = article.selectFirst("img")
-                val poster = image?.attr("data-src")
-                    ?.takeIf { it.isNotBlank() }
-                    ?: image?.attr("src")?.takeIf { it.isNotBlank() }
-
-                newAnimeSearchResponse(
-                    title,
-                    fixUrl(link),
-                    TvType.Anime
-                ) {
-                    this.posterUrl = poster
-                    this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
-                }
+        val document = app.get("$mainUrl/search/?s=$encodedQuery", referer = "$mainUrl/", interceptor = cloudflareKiller).document
+        return document.select("article.item").mapNotNull { article ->
+            val link = article.selectFirst("a[href]")?.attr("href") ?: return@mapNotNull null
+            val title = article.selectFirst(".data h3")?.text()?.trim() ?: return@mapNotNull null
+            val image = article.selectFirst("img")
+            val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+            newAnimeSearchResponse(title, fixUrl(link), TvType.Anime) {
+                this.posterUrl = poster
+                this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
             }
+        }
     }
 
-    override suspend fun load(
-        url: String
-    ): LoadResponse? {
-        val document = app.get(
-            url,
-            referer = "$mainUrl/",
-            interceptor = cloudflareKiller
-        ).document
-
-        val title = document
-            .select("h1")
-            .lastOrNull()
-            ?.text()
-            ?.trim()
-            ?: return null
-
-        val poster = document
-            .selectFirst("meta[property='og:image']")
-            ?.attr("content")
-            ?.takeIf { it.isNotBlank() }
-
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url, referer = "$mainUrl/", interceptor = cloudflareKiller).document
+        val title = document.select("h1").lastOrNull()?.text()?.trim() ?: return null
+        val poster = document.selectFirst("meta[property='og:image']")?.attr("content")?.takeIf { it.isNotBlank() }
         var description: String? = null
 
         for (heading in document.select("h2")) {
             if (heading.text().trim().equals("Sinopsis", ignoreCase = true)) {
                 val headingHtml = heading.parent()?.html() ?: ""
-
                 val marker = "Sinopsis"
                 val markerIndex = headingHtml.indexOf(marker, ignoreCase = true)
-
                 if (markerIndex >= 0) {
                     val afterMarker = headingHtml.substring(markerIndex + marker.length)
-
-                    val stripped = afterMarker
-                        .replace(Regex("<[^>]*>"), " ")
-                        .replace(Regex("\\s+"), " ")
-                        .trim()
-
-                    if (stripped.isNotBlank()) {
-                        description = stripped
-                    }
+                    val stripped = afterMarker.replace(Regex("<[^>]*>"), " ").replace(Regex("\\s+"), " ").trim()
+                    if (stripped.isNotBlank()) description = stripped
                 }
                 break
             }
         }
 
-        val seasons = document
-            .select("#seasons > .se-c")
-            .mapIndexedNotNull { index, seasonElement ->
+        val seasons = document.select("#seasons > .se-c").mapIndexedNotNull { index, seasonElement ->
+            val seasonNumber = seasonElement.selectFirst(".se-q .se-t")?.text()?.trim()?.toIntOrNull() ?: (index + 1)
+            val episodeLinks = seasonElement.select(".episodios a[href]")
+            val episodeImages = seasonElement.select(".episodios img")
 
-                val seasonNumber = seasonElement
-                    .selectFirst(".se-q .se-t")
-                    ?.text()
-                    ?.trim()
-                    ?.toIntOrNull()
-                    ?: (index + 1)
+            val episodes = episodeLinks.mapIndexedNotNull { episodeIndex, element ->
+                val href = element.attr("href").trim()
+                if (href.isBlank()) return@mapIndexedNotNull null
+                val name = element.text().trim().ifBlank { "Episodio" }
+                val episodeNumber = episodeIndex + 1
+                var episodePoster: String? = null
 
-                val episodeLinks = seasonElement
-                    .select(".episodios a[href]")
-
-                val episodeImages = seasonElement
-                    .select(".episodios img")
-
-                val episodes = episodeLinks
-                    .mapIndexedNotNull { episodeIndex, element ->
-
-                        val href = element.attr("href").trim()
-                        if (href.isBlank()) return@mapIndexedNotNull null
-
-                        val name = element.text()
-                            .trim()
-                            .ifBlank { "Episodio" }
-
-                        val episodeNumber = episodeIndex + 1
-
-                        var episodePoster: String? = null
-
-                        if (episodeIndex < episodeImages.size) {
-                            val image = episodeImages[episodeIndex]
-
-                            val dataSrc = image.attr("data-src")
-                            val lazySrc = image.attr("data-lazy-src")
-                            val src = image.attr("src")
-                            val srcset = image.attr("srcset")
-
-                            episodePoster = when {
-                                dataSrc.isNotBlank() -> dataSrc
-                                lazySrc.isNotBlank() -> lazySrc
-                                src.isNotBlank() -> src
-                                srcset.isNotBlank() -> srcset.substringBefore(",").trim().substringBefore(" ")
-                                else -> null
-                            }
-                        }
-
-                        newEpisode(fixUrl(href)) {
-                            this.name = name
-                            this.season = seasonNumber
-                            this.episode = episodeNumber
-                            this.posterUrl = episodePoster
-                        }
+                if (episodeIndex < episodeImages.size) {
+                    val image = episodeImages[episodeIndex]
+                    val dataSrc = image.attr("data-src")
+                    val lazySrc = image.attr("data-lazy-src")
+                    val src = image.attr("src")
+                    val srcset = image.attr("srcset")
+                    episodePoster = when {
+                        dataSrc.isNotBlank() -> dataSrc
+                        lazySrc.isNotBlank() -> lazySrc
+                        src.isNotBlank() -> src
+                        srcset.isNotBlank() -> srcset.substringBefore(",").trim().substringBefore(" ")
+                        else -> null
                     }
-
-                if (episodes.isEmpty()) {
-                    null
-                } else {
-                    seasonNumber to episodes
+                }
+                newEpisode(fixUrl(href)) {
+                    this.name = name
+                    this.season = seasonNumber
+                    this.episode = episodeNumber
+                    this.posterUrl = episodePoster
                 }
             }
+            if (episodes.isEmpty()) null else seasonNumber to episodes
+        }
 
         if (seasons.isEmpty()) return null
-
-        return newAnimeLoadResponse(
-            title,
-            url,
-            TvType.Anime
-        ) {
+        return newAnimeLoadResponse(title, url, TvType.Anime) {
             posterUrl = poster
             posterHeaders = this@AnimeOnlineProvider.posterHeaders
             this.plot = description
-
-            seasons.forEach { (_, episodeList) ->
-                addEpisodes(
-                    DubStatus.Subbed,
-                    episodeList
-                )
-            }
+            seasons.forEach { (_, episodeList) -> addEpisodes(DubStatus.Subbed, episodeList) }
         }
     }
 
-    // --- FUNCIÓN DE FALLBACK PARA UQLOAD CON JS UNPACKER ---
-    private suspend fun resolveUqload(
-        url: String,
-        referer: String,
-        serverName: String,
-        language: String,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
+    private suspend fun resolveUqload(url: String, referer: String, serverName: String, language: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val response = app.get(url, referer = referer).text
+            val packedRegex = Regex("""eval\(function\(p,a,c,k,e,d\).*?split\('\|'\)\)\)""")
+            val packedScript = packedRegex.find(response)?.value
+            val htmlToSearch = if (packedScript != null) JsUnpacker(packedScript).unpack() ?: response else response
+            val fileUrl = Regex("""file:\s*["'](https[^"']+)["']""").find(htmlToSearch)?.groupValues?.get(1)
+            if (!fileUrl.isNullOrBlank()) {
+                val isM3u8 = fileUrl.contains(".m3u8")
+                callback(ExtractorLink("Uqload", "$serverName - $language", fileUrl, "https://uqload.vc/", Qualities.Unknown.value, if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO))
+                true
+            } else false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // --- FUNCIÓN DE FALLBACK PARA FILEMOON ---
+    private suspend fun resolveFilemoon(url: String, serverName: String, language: String, callback: (ExtractorLink) -> Unit): Boolean {
+        return try {
+            val id = url.substringAfter("/e/").substringBefore("/")
+            if (id.isBlank()) return false
+
+            val alternateUrl = "https://n1mwq.org/e/$id"
+            println("FILEMOON FALLBACK: Intentando dominios alternativos: $alternateUrl")
             
-            // Buscar el script empaquetado de JS (eval(function(p,a,c,k,e,d)...))
+            // Usamos app.get de Cloudstream para saltarnos bloqueos de Cloudflare
+            val response = app.get(alternateUrl, referer = "https://n1mwq.org/").text
+            
             val packedRegex = Regex("""eval\(function\(p,a,c,k,e,d\).*?split\('\|'\)\)\)""")
             val packedScript = packedRegex.find(response)?.value
             
-            // Desempaquetar el código si existe, de lo contrario buscar en el texto plano
             val htmlToSearch = if (packedScript != null) {
                 JsUnpacker(packedScript).unpack() ?: response
             } else {
                 response
             }
-            
-            // Buscar file: "url"
+
             val fileUrl = Regex("""file:\s*["'](https[^"']+)["']""").find(htmlToSearch)?.groupValues?.get(1)
 
             if (!fileUrl.isNullOrBlank()) {
                 val isM3u8 = fileUrl.contains(".m3u8")
                 callback(
                     ExtractorLink(
-                        source = "Uqload",
+                        source = "Filemoon",
                         name = "$serverName - $language",
                         url = fileUrl,
-                        referer = "https://uqload.vc/",
+                        referer = "https://n1mwq.org/",
                         quality = Qualities.Unknown.value,
-                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                        headers = mapOf("Origin" to "https://n1mwq.org")
                     )
                 )
                 true
             } else {
+                println("FILEMOON FALLBACK FALLÓ. Código extraído: ${htmlToSearch.take(300)}")
                 false
             }
         } catch (e: Exception) {
@@ -398,59 +259,20 @@ class AnimeOnlineProvider : MainAPI() {
         }
     }
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
+    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         println("=== ANIMEONLINE ALL SOURCES EXTRACTOR TEST ===")
+        val document = app.get(data, referer = "$mainUrl/", interceptor = cloudflareKiller).document
+        val postId = document.selectFirst("[data-post]")?.attr("data-post")?.trim()
+        if (postId.isNullOrBlank()) return false
 
-        val document = app.get(
-            data,
-            referer = "$mainUrl/",
-            interceptor = cloudflareKiller
-        ).document
+        val apiResponse = app.get("$mainUrl/wp-json/dooplayer/v1/post/$postId?type=tv&source=1", referer = data, interceptor = cloudflareKiller)
+        val embedUrl = apiResponse.text.substringAfter("\"embed_url\":\"").substringBefore("\"").replace("\\/", "/")
+        if (embedUrl.isBlank()) return false
 
-        val postId = document
-            .selectFirst("[data-post]")
-            ?.attr("data-post")
-            ?.trim()
-
-        if (postId.isNullOrBlank()) {
-            return false
-        }
-
-        val apiUrl =
-            "$mainUrl/wp-json/dooplayer/v1/post/$postId?type=tv&source=1"
-
-        val apiResponse = app.get(
-            apiUrl,
-            referer = data,
-            interceptor = cloudflareKiller
-        )
-
-        val embedUrl = apiResponse.text
-            .substringAfter("\"embed_url\":\"", "")
-            .substringBefore("\"")
-            .replace("\\/", "/")
-
-        if (embedUrl.isBlank()) {
-            return false
-        }
-
-        val embedDocument = app.get(
-            embedUrl,
-            referer = data,
-            interceptor = cloudflareKiller
-        ).document
-
-        val languageBlocks = embedDocument.select(".OD")
-
-        var sourceCount = 0
+        val embedDocument = app.get(embedUrl, referer = data, interceptor = cloudflareKiller).document
         var linkCount = 0
 
-        languageBlocks.forEach { block ->
+        embedDocument.select(".OD").forEach { block ->
             val language = when {
                 block.hasClass("OD_SUB") -> "SUB"
                 block.hasClass("OD_LAT") -> "LAT"
@@ -460,58 +282,35 @@ class AnimeOnlineProvider : MainAPI() {
             }
 
             block.select("li[onclick*='go_to_player']").forEach { item ->
-                val server = item
-                    .selectFirst("span")
-                    ?.text()
-                    ?.trim()
-                    ?: "UNKNOWN"
-
-                val onclick = item.attr("onclick")
-
-                val sourceUrl = Regex(
-                    """go_to_player\(['"]([^'"]+)['"]\)"""
-                )
-                    .find(onclick)
-                    ?.groupValues
-                    ?.getOrNull(1)
-
+                val server = item.selectFirst("span")?.text()?.trim() ?: "UNKNOWN"
+                val sourceUrl = Regex("""go_to_player\(['"]([^'"]+)['"]\)""").find(item.attr("onclick"))?.groupValues?.getOrNull(1)
+                
                 if (sourceUrl.isNullOrBlank()) return@forEach
 
-                sourceCount++
-                val currentSource = sourceCount
-
                 var foundLink = false
+                loadExtractor(url = sourceUrl, referer = data, subtitleCallback = subtitleCallback, callback = { link ->
+                    foundLink = true
+                    linkCount++
+                    callback(link)
+                })
 
-                val result = loadExtractor(
-                    url = sourceUrl,
-                    referer = data,
-                    subtitleCallback = subtitleCallback,
-                    callback = { link ->
-                        foundLink = true
-                        linkCount++
-
-                        println("LINK FOUND[$currentSource] LANG=$language SERVER=$server NAME=${link.name}")
-                        callback(link)
-                    }
-                )
-
-                // FALLBACK MANUAL (Si el extractor no resolvió y la URL es de Uqload)
+                // UQLOAD FALLBACK
                 if (!foundLink && sourceUrl.contains("uqload", ignoreCase = true)) {
-                    println("FALLBACK[$currentSource] Intentando resolver Uqload manualmente...")
-                    
-                    val uqloadResolved = resolveUqload(sourceUrl, data, server, language, callback)
-                    
-                    if (uqloadResolved) {
+                    if (resolveUqload(sourceUrl, data, server, language, callback)) {
                         foundLink = true
                         linkCount++
-                        println("FALLBACK[$currentSource] ÉXITO: Uqload resuelto manualmente.")
-                    } else {
-                        println("FALLBACK[$currentSource] FALLÓ: No se encontró media en Uqload.")
+                    }
+                }
+
+                // FILEMOON FALLBACK
+                if (!foundLink && sourceUrl.contains("filemoon", ignoreCase = true)) {
+                    if (resolveFilemoon(sourceUrl, server, language, callback)) {
+                        foundLink = true
+                        linkCount++
                     }
                 }
             }
         }
-
         return linkCount > 0
     }
 }
