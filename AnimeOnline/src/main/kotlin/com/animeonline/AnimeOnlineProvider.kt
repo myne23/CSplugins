@@ -16,6 +16,7 @@ class AnimeOnlineProvider : MainAPI() {
     )
 
     override var lang = "es"
+    override val hasMainPage = true
 
     private fun parseAnimeCard(article: Element): SearchResponse? {
         val link = article.selectFirst("a[href]")?.attr("href")
