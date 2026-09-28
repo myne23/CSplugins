@@ -241,76 +241,52 @@ class AnimeOnlineProvider : MainAPI() {
         url: String
     ): LoadResponse? {
 
+        println("=== ANIMEONLINE SEASON STRUCTURE ===")
+        println("URL: $url")
+
         val document = app.get(
             url,
             referer = "$mainUrl/",
             interceptor = cloudflareKiller
         ).document
 
-        val title = document
-            .select("h1")
-            .lastOrNull()
-            ?.text()
-            ?.trim()
-            ?: return null
-
-        val poster = document
-            .selectFirst("meta[property='og:image']")
-            ?.attr("content")
-            ?.takeIf { it.isNotBlank() }
-
-        val episodes = document
-            .select("a[href*='/episodio/']")
-            .mapNotNull { element ->
-
-                val href = element.attr("href").trim()
-                val text = element.text().trim()
-
-                val isValidEpisode = when {
-                    href.contains("-link-click-3-cap-") -> true
-                    href.contains("-bridon-arc-cap-") -> true
-                    href.contains("-link-click-ii-cap-") -> true
-                    href.contains("-link-click-mini-cap-") -> true
-                    href.contains("-link-click-cap-") -> true
-                    else -> false
-                }
-
-                if (!isValidEpisode) {
-                    return@mapNotNull null
-                }
-
-                val episodeNumber = Regex("-cap-(\\d+)(?:-\\d+)?/?$")
-                    .find(href)
-                    ?.groupValues
-                    ?.get(1)
-                    ?.toIntOrNull()
-
-                newEpisode(fixUrl(href)) {
-                    name = text.ifBlank { "Episodio $episodeNumber" }
-                    season = 1
-                    episode = episodeNumber
-                }
+        val seasonHeader = document
+            .select("h2, h3")
+            .firstOrNull {
+                it.text().contains("Temporadas y episodios", ignoreCase = true)
             }
 
-        if (episodes.isEmpty()) return null
-
-        println("=== ANIMEONLINE LOAD ===")
-        println("TITLE: $title")
-        println("EPISODES: ${episodes.size}")
-
-        return newAnimeLoadResponse(
-            title,
-            url,
-            TvType.Anime
-        ) {
-            posterUrl = poster
-            posterHeaders = this@AnimeOnlineProvider.posterHeaders
-
-            addEpisodes(
-                DubStatus.Subbed,
-                episodes
-            )
+        if (seasonHeader == null) {
+            println("SEASON HEADER: NOT FOUND")
+            return null
         }
+
+        println("SEASON HEADER: ${seasonHeader.text().trim()}")
+
+        var current = seasonHeader.nextElementSibling()
+        var index = 0
+
+        while (current != null && index < 10) {
+            println("BLOCK[$index] TAG=${current.tagName()} CLASS=${current.className()}")
+            println("BLOCK[$index] TEXT=${current.text().trim().take(500)}")
+
+            val links = current.select("a[href]")
+            println("BLOCK[$index] LINKS=${links.size}")
+
+            links.take(30).forEachIndexed { i, element ->
+                println(
+                    "LINK[$index.$i] TEXT=[${element.text().trim()}] " +
+                    "HREF=[${element.attr("href")}]"
+                )
+            }
+
+            current = current.nextElementSibling()
+            index++
+        }
+
+        println("=== ANIMEONLINE SEASON STRUCTURE END ===")
+
+        return null
     }
 
     override suspend fun loadLinks(
