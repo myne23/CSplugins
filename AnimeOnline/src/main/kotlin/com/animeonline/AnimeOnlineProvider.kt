@@ -448,8 +448,17 @@ class AnimeOnlineProvider : MainAPI() {
         )
 
         println("API STATUS: ${response.code}")
-        println("=== DOOPLAYER API RESPONSE ===")
-        println(response.text)
+        println("API HEADERS: ${response.headers}")
+        println("API CONTENT TYPE: ${response.headers["Content-Type"]}")
+
+        val body = response.text
+
+        println("API BODY LENGTH: ${body.length}")
+        println("API BODY EMPTY: ${body.isEmpty()}")
+
+        if (body.isNotEmpty()) {
+            println("API BODY START: ${body.take(1000)}")
+        }
 
         return false
     }
