@@ -416,7 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("=== ANIMEONLINE EMBED DEBUG ===")
+        println("=== ANIMEONLINE SAIDOCHesto JS DEBUG ===")
 
         val document = app.get(
             data,
@@ -439,27 +439,24 @@ class AnimeOnlineProvider : MainAPI() {
         val apiUrl =
             "$mainUrl/wp-json/dooplayer/v1/post/$postId?type=tv&source=1"
 
-        val response = app.get(
+        val apiResponse = app.get(
             apiUrl,
             referer = data,
             interceptor = cloudflareKiller
         )
 
-        val body = response.text
+        val body = apiResponse.text
 
         println("API BODY: $body")
 
-        val embedUrl = Regex(
-            "\"embed_url\"\\s*:\\s*\"([^\"]+)\""
-        )
-            .find(body)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.replace("\\/","/")
+        val embedUrl = body
+            .substringAfter("\"embed_url\":\"", "")
+            .substringBefore("\"")
+            .replace("\\/", "/")
 
         println("EMBED URL: $embedUrl")
 
-        if (embedUrl.isNullOrBlank()) {
+        if (embedUrl.isBlank()) {
             println("NO EMBED URL")
             return false
         }
@@ -471,28 +468,44 @@ class AnimeOnlineProvider : MainAPI() {
         )
 
         println("EMBED STATUS: ${embedResponse.code}")
-        println("EMBED URL FINAL: ${embedResponse.url}")
 
-        val embedDocument = embedResponse.document
+        val jsElement = embedResponse.document
+            .select("script[src]")
+            .firstOrNull {
+                it.attr("src").contains("iframen.js")
+            }
 
-        val iframes = embedDocument.select("iframe[src]")
-        val videos = embedDocument.select("video[src], video source[src]")
-        val scripts = embedDocument.select("script[src]")
-
-        println("IFRAMES: ${iframes.size}")
-        iframes.forEach {
-            println("IFRAME: ${it.attr("src")}")
+        if (jsElement == null) {
+            println("NO IFRAMEN JS")
+            return false
         }
 
-        println("VIDEOS: ${videos.size}")
-        videos.forEach {
-            println("VIDEO: ${it.attr("src")}")
+        val jsSource = jsElement.attr("src")
+
+        println("IFRAMEN SRC: $jsSource")
+
+        val jsUrl = if (jsSource.startsWith("http")) {
+            jsSource
+        } else {
+            "https://saidochesto.top/${jsSource.removePrefix("/")}"
         }
 
-        println("SCRIPTS: ${scripts.size}")
-        scripts.forEach {
-            println("SCRIPT: ${it.attr("src")}")
-        }
+        println("IFRAMEN URL: $jsUrl")
+
+        val jsResponse = app.get(
+            jsUrl,
+            referer = embedUrl,
+            interceptor = cloudflareKiller
+        )
+
+        println("JS STATUS: ${jsResponse.code}")
+
+        val jsBody = jsResponse.text
+
+        println("JS LENGTH: ${jsBody.length}")
+        println("=== IFRAMEN JS START ===")
+        println(jsBody.take(12000))
+        println("=== IFRAMEN JS END ===")
 
         return false
     }
