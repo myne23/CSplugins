@@ -196,7 +196,7 @@ class AnimeOnlineProvider : MainAPI() {
         }
     }
 
-    private suspend fun resolveUqload(url: String, referer: String, serverName: String, language: String, callback: (ExtractorLink) -> Unit): Boolean {
+    private suspend fun resolveUqload(url: String, referer: String, serverName: String, descriptiveLabel: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val response = app.get(url, referer = referer).text
             val packedRegex = Regex("""eval\(function\(p,a,c,k,e,d\).*?split\('\|'\)\)\)""")
@@ -208,8 +208,8 @@ class AnimeOnlineProvider : MainAPI() {
                 val isM3u8 = fileUrl.contains(".m3u8")
                 callback(
                     ExtractorLink(
-                        source = "Uqload",
-                        name = "$serverName - $language",
+                        source = serverName,
+                        name = descriptiveLabel,
                         url = fileUrl,
                         referer = "https://uqload.vc/",
                         quality = Qualities.Unknown.value,
@@ -219,48 +219,6 @@ class AnimeOnlineProvider : MainAPI() {
                 true
             } else false
         } catch (e: Exception) {
-            false
-        }
-    }
-
-    private suspend fun resolveFilemoon(url: String, serverName: String, language: String, callback: (ExtractorLink) -> Unit): Boolean {
-        return try {
-            val id = url.substringAfter("/e/").substringBefore("/")
-            if (id.isBlank()) return false
-
-            val alternateUrl = "https://n1mwq.org/e/$id"
-            println("FILEMOON BYPASS: Intentando dominios alternativos: $alternateUrl")
-            
-            val response = app.get(alternateUrl, referer = "https://n1mwq.org/").text
-            val packedRegex = Regex("""eval\(function\(p,a,c,k,e,d\).*?split\('\|'\)\)\)""")
-            val packedScript = packedRegex.find(response)?.value
-            val htmlToSearch = if (packedScript != null) {
-                JsUnpacker(packedScript).unpack() ?: response
-            } else {
-                response
-            }
-
-            val fileUrl = Regex("""file:\s*["'](https[^"']+)["']""").find(htmlToSearch)?.groupValues?.get(1)
-
-            if (!fileUrl.isNullOrBlank()) {
-                val isM3u8 = fileUrl.contains(".m3u8")
-                callback(
-                    ExtractorLink(
-                        source = "Filemoon",
-                        name = "$serverName - $language",
-                        url = fileUrl,
-                        referer = "https://n1mwq.org/",
-                        quality = Qualities.Unknown.value,
-                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    )
-                )
-                true
-            } else {
-                println("FILEMOON BYPASS FALLÓ. URL original: $url")
-                false
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
             false
         }
     }
@@ -279,29 +237,32 @@ class AnimeOnlineProvider : MainAPI() {
         var linkCount = 0
 
         embedDocument.select(".OD").forEach { block ->
-            val language = when {
+            // Determinar categoría/idioma base del bloque
+            val blockLang = when {
                 block.hasClass("OD_SUB") -> "SUB"
                 block.hasClass("OD_LAT") -> "LAT"
                 block.hasClass("OD_ES") -> "ES"
                 block.hasClass("OD_EN") -> "EN"
-                else -> "UNKNOWN"
+                else -> "SUB"
             }
 
             block.select("li[onclick*='go_to_player']").forEach { item ->
-                val server = item.selectFirst("span")?.text()?.trim() ?: "UNKNOWN"
+                val server = item.selectFirst("span")?.text()?.trim() ?: "Servidor"
+                
+                // Extraer el texto completo del li para ver detalles específicos (ej. subtitulos, nombre del archivo, etc.)
+                val itemText = item.text().trim().ifBlank { server }
+                val descriptiveName = "$server · $blockLang ($itemText)"
+
                 val sourceUrl = Regex("""go_to_player\(['"]([^'"]+)['"]\)""").find(item.attr("onclick"))?.groupValues?.getOrNull(1)
                 
                 if (sourceUrl.isNullOrBlank()) return@forEach
 
-                // BYPASS DIRECTO: Solo usamos CloudStream para los que sí funcionan rápido (como Streamtape).
                 if (sourceUrl.contains("uqload", ignoreCase = true)) {
-                    println("BYPASS: Resolviendo Uqload ($language)...")
-                    if (resolveUqload(sourceUrl, data, server, language, callback)) linkCount++
-                } else if (sourceUrl.contains("filemo", ignoreCase = true)) {
-                    println("BYPASS: Resolviendo Filemoon ($language)...")
-                    if (resolveFilemoon(sourceUrl, server, language, callback)) linkCount++
+                    if (resolveUqload(sourceUrl, data, server, descriptiveName, callback)) linkCount++
                 } else {
                     loadExtractor(url = sourceUrl, referer = data, subtitleCallback = subtitleCallback, callback = { link ->
+                        // Renombramos el link del extractor nativo para que incluya la info de audio/idioma
+                        link.name = descriptiveName
                         linkCount++
                         callback(link)
                     })
