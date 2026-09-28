@@ -416,7 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("=== ANIMEONLINE DOOPLAYER DEBUG ===")
+        println("=== ANIMEONLINE DOOPLAYER SCRIPT DEBUG ===")
         println("DATA: $data")
 
         val document = app.get(
@@ -425,39 +425,26 @@ class AnimeOnlineProvider : MainAPI() {
             interceptor = cloudflareKiller
         ).document
 
-        val postId = document
-            .selectFirst("[data-post]")
-            ?.attr("data-post")
-            ?.trim()
+        println("=== DOOPLAYER CONFIG ===")
 
-        println("POST ID: $postId")
+        document.select("script").forEachIndexed { index, script ->
+            val html = script.html()
 
-        if (postId.isNullOrBlank()) {
-            println("NO POST ID")
-            return false
+            if (
+                html.contains("play_ajaxmd", ignoreCase = true) ||
+                html.contains("play_method", ignoreCase = true) ||
+                html.contains("dtAjax", ignoreCase = true) ||
+                html.contains("admin-ajax.php", ignoreCase = true)
+            ) {
+                println("=== MATCH SCRIPT $index ===")
+                println(html.take(12000))
+            }
         }
 
-        val apiUrl = "$mainUrl/wp-json/dooplayer/v1/post/$postId"
+        println("=== PLAYER DATA ATTRIBUTES ===")
 
-        println("API URL: $apiUrl")
-
-        val response = app.get(
-            apiUrl,
-            referer = data,
-            interceptor = cloudflareKiller
-        )
-
-        println("API STATUS: ${response.code}")
-        println("API HEADERS: ${response.headers}")
-        println("API CONTENT TYPE: ${response.headers["Content-Type"]}")
-
-        val body = response.text
-
-        println("API BODY LENGTH: ${body.length}")
-        println("API BODY EMPTY: ${body.isEmpty()}")
-
-        if (body.isNotEmpty()) {
-            println("API BODY START: ${body.take(1000)}")
+        document.select("[data-post], [data-nume], [data-type], [data-rurl], [data-key]").forEach {
+            println(it.outerHtml().take(3000))
         }
 
         return false
