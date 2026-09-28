@@ -241,32 +241,76 @@ class AnimeOnlineProvider : MainAPI() {
         url: String
     ): LoadResponse? {
 
-        println("=== ANIMEONLINE LOAD STRUCTURE ===")
-        println("URL: $url")
-
         val document = app.get(
             url,
             referer = "$mainUrl/",
             interceptor = cloudflareKiller
         ).document
 
-        println("TITLE: ${document.select("h1").lastOrNull()?.text()?.trim()}")
+        val title = document
+            .select("h1")
+            .lastOrNull()
+            ?.text()
+            ?.trim()
+            ?: return null
 
-        val episodeLinks = document.select("a[href*='/episodio/']")
+        val poster = document
+            .selectFirst("meta[property='og:image']")
+            ?.attr("content")
+            ?.takeIf { it.isNotBlank() }
 
-        println("EPISODE COUNT: ${episodeLinks.size}")
+        val episodes = document
+            .select("a[href*='/episodio/']")
+            .mapNotNull { element ->
 
-        episodeLinks.forEachIndexed { index, element ->
-            val href = element.attr("href")
-            val text = element.text().trim()
-            val parent = element.parent()?.text()?.trim()
+                val href = element.attr("href").trim()
+                val text = element.text().trim()
 
-            println("EP[$index] TEXT=[$text] HREF=[$href] PARENT=[$parent]")
+                val isValidEpisode = when {
+                    href.contains("-link-click-3-cap-") -> true
+                    href.contains("-bridon-arc-cap-") -> true
+                    href.contains("-link-click-ii-cap-") -> true
+                    href.contains("-link-click-mini-cap-") -> true
+                    href.contains("-link-click-cap-") -> true
+                    else -> false
+                }
+
+                if (!isValidEpisode) {
+                    return@mapNotNull null
+                }
+
+                val episodeNumber = Regex("-cap-(\\d+)(?:-\\d+)?/?$")
+                    .find(href)
+                    ?.groupValues
+                    ?.get(1)
+                    ?.toIntOrNull()
+
+                newEpisode(fixUrl(href)) {
+                    name = text.ifBlank { "Episodio $episodeNumber" }
+                    season = 1
+                    episode = episodeNumber
+                }
+            }
+
+        if (episodes.isEmpty()) return null
+
+        println("=== ANIMEONLINE LOAD ===")
+        println("TITLE: $title")
+        println("EPISODES: ${episodes.size}")
+
+        return newAnimeLoadResponse(
+            title,
+            url,
+            TvType.Anime
+        ) {
+            posterUrl = poster
+            posterHeaders = this@AnimeOnlineProvider.posterHeaders
+
+            addEpisodes(
+                DubStatus.Subbed,
+                episodes
+            )
         }
-
-        println("=== ANIMEONLINE LOAD STRUCTURE END ===")
-
-        return null
     }
 
     override suspend fun loadLinks(
