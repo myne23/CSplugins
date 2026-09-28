@@ -416,7 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("=== ANIMEONLINE DOOPLAYER API TEST ===")
+        println("=== ANIMEONLINE DOOPLAYER SOURCES DEBUG ===")
         println("DATA: $data")
 
         val document = app.get(
@@ -437,27 +437,38 @@ class AnimeOnlineProvider : MainAPI() {
             return false
         }
 
-        val type = "tv"
-        val source = "1"
+        val options = document
+            .select(".dooplay_player_option[data-nume]")
+            .mapNotNull { element ->
+                val source = element.attr("data-nume").trim()
+                if (source.isBlank()) return@mapNotNull null
 
-        val apiUrl =
-            "$mainUrl/wp-json/dooplayer/v1/post/$postId?type=$type&source=$source"
+                val type = element.attr("data-type")
+                    .trim()
+                    .ifBlank { "tv" }
 
-        println("API URL: $apiUrl")
+                source to type
+            }
+            .distinct()
 
-        val response = app.get(
-            apiUrl,
-            referer = data,
-            interceptor = cloudflareKiller
-        )
+        println("PLAYER OPTIONS: ${options.size}")
 
-        println("API STATUS: ${response.code}")
-        println("API CONTENT TYPE: ${response.headers["Content-Type"]}")
+        options.forEach { (source, type) ->
+            val apiUrl =
+                "$mainUrl/wp-json/dooplayer/v1/post/$postId?type=$type&source=$source"
 
-        val body = response.text
+            println("=== SOURCE $source TYPE $type ===")
+            println("API URL: $apiUrl")
 
-        println("API BODY LENGTH: ${body.length}")
-        println("API BODY: $body")
+            val response = app.get(
+                apiUrl,
+                referer = data,
+                interceptor = cloudflareKiller
+            )
+
+            println("STATUS: ${response.code}")
+            println("BODY: ${response.text}")
+        }
 
         return false
     }
