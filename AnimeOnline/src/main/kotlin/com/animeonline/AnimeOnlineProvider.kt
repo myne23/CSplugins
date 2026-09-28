@@ -416,7 +416,8 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("=== ANIMEONLINE DOOPLAYER JS INSPECT ===")
+        println("=== ANIMEONLINE DOOPLAYER API TEST ===")
+        println("DATA: $data")
 
         val document = app.get(
             data,
@@ -424,53 +425,39 @@ class AnimeOnlineProvider : MainAPI() {
             interceptor = cloudflareKiller
         ).document
 
-        val scriptUrls = document
-            .select("script[src]")
-            .map { it.attr("src").trim() }
-            .filter {
-                it.contains("front.scripts.js", ignoreCase = true) ||
-                it.contains("front.ajax.js", ignoreCase = true)
-            }
-            .distinct()
+        val postId = document
+            .selectFirst("[data-post]")
+            ?.attr("data-post")
+            ?.trim()
 
-        println("FOUND JS FILES: ${scriptUrls.size}")
+        println("POST ID: $postId")
 
-        scriptUrls.forEach { scriptUrl ->
-            println("=== JS: $scriptUrl ===")
-
-            val js = app.get(
-                fixUrl(scriptUrl),
-                referer = data,
-                interceptor = cloudflareKiller
-            ).text
-
-            println("JS LENGTH: ${js.length}")
-
-            val terms = listOf(
-                "url_api",
-                "play_method",
-                "wp_json",
-                "dooplayer",
-                "admin-ajax",
-                "data-post",
-                "data-nume",
-                "data-type"
-            )
-
-            terms.forEach { term ->
-                var pos = js.indexOf(term, ignoreCase = true)
-
-                while (pos >= 0) {
-                    val from = maxOf(0, pos - 500)
-                    val to = minOf(js.length, pos + 1500)
-
-                    println("=== MATCH [$term] POS $pos ===")
-                    println(js.substring(from, to))
-
-                    pos = js.indexOf(term, pos + term.length, ignoreCase = true)
-                }
-            }
+        if (postId.isNullOrBlank()) {
+            println("NO POST ID")
+            return false
         }
+
+        val type = "tv"
+        val source = "1"
+
+        val apiUrl =
+            "$mainUrl/wp-json/dooplayer/v1/post/$postId?type=$type&source=$source"
+
+        println("API URL: $apiUrl")
+
+        val response = app.get(
+            apiUrl,
+            referer = data,
+            interceptor = cloudflareKiller
+        )
+
+        println("API STATUS: ${response.code}")
+        println("API CONTENT TYPE: ${response.headers["Content-Type"]}")
+
+        val body = response.text
+
+        println("API BODY LENGTH: ${body.length}")
+        println("API BODY: $body")
 
         return false
     }
