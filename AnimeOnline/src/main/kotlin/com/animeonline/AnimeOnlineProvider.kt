@@ -411,96 +411,106 @@ class AnimeOnlineProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        println("=== ANIMEONLINE SAIDOCHesto PLAYER URL DEBUG ===")
+    data: String,
+    isCasting: Boolean,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+): Boolean {
+    println("=== ANIMEONLINE SOURCE PARSER TEST ===")
 
-        val document = app.get(
-            data,
-            referer = "$mainUrl/",
-            interceptor = cloudflareKiller
-        ).document
+    val document = app.get(
+        data,
+        referer = "$mainUrl/",
+        interceptor = cloudflareKiller
+    ).document
 
-        val postId = document
-            .selectFirst("[data-post]")
-            ?.attr("data-post")
-            ?.trim()
+    val postId = document
+        .selectFirst("[data-post]")
+        ?.attr("data-post")
+        ?.trim()
 
-        println("POST ID: $postId")
+    println("POST ID: $postId")
 
-        if (postId.isNullOrBlank()) {
-            println("NO POST ID")
-            return false
-        }
-
-        val apiUrl =
-            "$mainUrl/wp-json/dooplayer/v1/post/$postId?type=tv&source=1"
-
-        val apiResponse = app.get(
-            apiUrl,
-            referer = data,
-            interceptor = cloudflareKiller
-        )
-
-        val body = apiResponse.text
-
-        val embedUrl = body
-            .substringAfter("\"embed_url\":\"", "")
-            .substringBefore("\"")
-            .replace("\\/", "/")
-
-        println("EMBED URL: $embedUrl")
-
-        if (embedUrl.isBlank()) {
-            println("NO EMBED URL")
-            return false
-        }
-
-        val embedResponse = app.get(
-            embedUrl,
-            referer = data,
-            interceptor = cloudflareKiller
-        )
-
-        println("EMBED STATUS: ${embedResponse.code}")
-
-        val html = embedResponse.text
-
-        println("EMBED HTML LENGTH: ${html.length}")
-
-        val marker = "go_to_player"
-
-        var position = html.indexOf(marker)
-
-        var count = 0
-
-        while (position >= 0 && count < 20) {
-            val startPos = maxOf(0, position - 500)
-            val endPos = minOf(html.length, position + 1000)
-
-            println("=== GO_TO_PLAYER[$count] ===")
-            println(html.substring(startPos, endPos))
-
-            count++
-            position = html.indexOf(marker, position + marker.length)
-        }
-
-        println("GO_TO_PLAYER COUNT: $count")
-
-        println("=== URLS IN EMBED HTML ===")
-
-        Regex("https?://[^\"'<> ]+")
-            .findAll(html)
-            .map { it.value }
-            .distinct()
-            .take(30)
-            .forEachIndexed { index, url ->
-                println("URL[$index]: $url")
-            }
-
+    if (postId.isNullOrBlank()) {
+        println("NO POST ID")
         return false
     }
+
+    val apiUrl =
+        "$mainUrl/wp-json/dooplayer/v1/post/$postId?type=tv&source=1"
+
+    val apiResponse = app.get(
+        apiUrl,
+        referer = data,
+        interceptor = cloudflareKiller
+    )
+
+    val embedUrl = apiResponse.text
+        .substringAfter("\"embed_url\":\"", "")
+        .substringBefore("\"")
+        .replace("\\/", "/")
+
+    println("EMBED URL: $embedUrl")
+
+    if (embedUrl.isBlank()) {
+        println("NO EMBED URL")
+        return false
+    }
+
+    val embedDocument = app.get(
+        embedUrl,
+        referer = data,
+        interceptor = cloudflareKiller
+    ).document
+
+    println("SAIDOCHesto STATUS: 200")
+
+    val languageBlocks = embedDocument.select(".OD")
+
+    println("LANGUAGE BLOCKS: ${languageBlocks.size}")
+
+    var sourceCount = 0
+
+    languageBlocks.forEach { block ->
+        val language = when {
+            block.hasClass("OD_SUB") -> "SUB"
+            block.hasClass("OD_LAT") -> "LAT"
+            block.hasClass("OD_ES") -> "ES"
+            block.hasClass("OD_EN") -> "EN"
+            else -> "UNKNOWN"
+        }
+
+        block.select("li[onclick*='go_to_player']").forEach { item ->
+            val onclick = item.attr("onclick")
+
+            val url = Regex(
+                """go_to_player\(['"]([^'"]+)['"]\)"""
+            )
+                .find(onclick)
+                ?.groupValues
+                ?.getOrNull(1)
+
+            val server = item
+                .selectFirst("span")
+                ?.text()
+                ?.trim()
+                ?: "UNKNOWN"
+
+            if (!url.isNullOrBlank()) {
+                sourceCount++
+
+                println(
+                    "SOURCE[$sourceCount] " +
+                        "LANG=$language " +
+                        "SERVER=$server " +
+                        "URL=$url"
+                )
+            }
+        }
+    }
+
+    println("TOTAL SOURCES: $sourceCount")
+
+    return false
+}
 }
