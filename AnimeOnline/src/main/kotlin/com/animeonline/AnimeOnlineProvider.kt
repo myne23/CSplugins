@@ -241,7 +241,7 @@ class AnimeOnlineProvider : MainAPI() {
         url: String
     ): LoadResponse? {
 
-        println("=== ANIMEONLINE SEASON MARKERS ===")
+        println("=== ANIMEONLINE SEASON HTML ===")
 
         val document = app.get(
             url,
@@ -267,28 +267,12 @@ class AnimeOnlineProvider : MainAPI() {
             return null
         }
 
-        val markers = container
-            .select("*")
-            .filter {
-                it.text().trim().matches(
-                    Regex("^\\d+Temporada .*$")
-                ) ||
-                it.text().trim().matches(
-                    Regex("^Temporada \\d+.*$")
-                )
-            }
+        val html = container.outerHtml()
 
-        println("MARKERS FOUND: ${markers.size}")
+        println("HTML LENGTH: ${html.length}")
+        println(html.take(15000))
 
-        markers.forEachIndexed { index, element ->
-            println(
-                "MARKER[$index] TAG=${element.tagName()} " +
-                "CLASS=${element.className()} " +
-                "TEXT=[${element.text().trim().take(500)}]"
-            )
-        }
-
-        println("=== ANIMEONLINE SEASON MARKERS END ===")
+        println("=== ANIMEONLINE SEASON HTML END ===")
 
         return null
     }
