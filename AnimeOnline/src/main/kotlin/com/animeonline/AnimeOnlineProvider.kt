@@ -259,7 +259,23 @@ class AnimeOnlineProvider : MainAPI() {
             ?.attr("content")
             ?.takeIf { it.isNotBlank() }
 
-        val description: String? = null
+        println("=== ANIMEONLINE METADATA DEBUG ===")
+        println("TITLE: $title")
+        println("MAIN POSTER: $poster")
+
+        for (heading in document.select("h2")) {
+            println("H2: [${heading.text().trim()}]")
+            println("H2 NEXT: [${heading.nextElementSibling()?.text()?.trim()}]")
+        }
+
+        val episodeElements = document.select("#seasons .episodio")
+
+        println("EPISODE ELEMENTS: ${episodeElements.size}")
+
+        episodeElements.take(3).forEachIndexed { index, episode ->
+            println("=== EPISODE HTML $index ===")
+            println(episode.outerHtml())
+        }
 
         val seasons = document
             .select("#seasons > .se-c")
@@ -346,7 +362,7 @@ class AnimeOnlineProvider : MainAPI() {
         ) {
             posterUrl = poster
             posterHeaders = this@AnimeOnlineProvider.posterHeaders
-            this.plot = description
+            this.plot = null
 
             seasons.forEach { (_, episodeList) ->
                 addEpisodes(
