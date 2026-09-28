@@ -196,7 +196,6 @@ class AnimeOnlineProvider : MainAPI() {
         }
     }
 
-    // --- FUNCIÓN DE FALLBACK PARA UQLOAD ---
     private suspend fun resolveUqload(url: String, referer: String, serverName: String, language: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val response = app.get(url, referer = referer).text
@@ -224,14 +223,13 @@ class AnimeOnlineProvider : MainAPI() {
         }
     }
 
-    // --- FUNCIÓN DE FALLBACK PARA FILEMOON ---
     private suspend fun resolveFilemoon(url: String, serverName: String, language: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val id = url.substringAfter("/e/").substringBefore("/")
             if (id.isBlank()) return false
 
             val alternateUrl = "https://n1mwq.org/e/$id"
-            println("FILEMOON FALLBACK: Intentando dominios alternativos: $alternateUrl")
+            println("FILEMOON BYPASS: Intentando dominios alternativos: $alternateUrl")
             
             val response = app.get(alternateUrl, referer = "https://n1mwq.org/").text
             val packedRegex = Regex("""eval\(function\(p,a,c,k,e,d\).*?split\('\|'\)\)\)""")
@@ -258,7 +256,7 @@ class AnimeOnlineProvider : MainAPI() {
                 )
                 true
             } else {
-                println("FILEMOON FALLBACK FALLÓ. Código extraído: ${htmlToSearch.take(300)}")
+                println("FILEMOON BYPASS FALLÓ. URL original: $url")
                 false
             }
         } catch (e: Exception) {
@@ -295,27 +293,18 @@ class AnimeOnlineProvider : MainAPI() {
                 
                 if (sourceUrl.isNullOrBlank()) return@forEach
 
-                var foundLink = false
-                loadExtractor(url = sourceUrl, referer = data, subtitleCallback = subtitleCallback, callback = { link ->
-                    foundLink = true
-                    linkCount++
-                    callback(link)
-                })
-
-                // UQLOAD FALLBACK
-                if (!foundLink && sourceUrl.contains("uqload", ignoreCase = true)) {
-                    if (resolveUqload(sourceUrl, data, server, language, callback)) {
-                        foundLink = true
+                // BYPASS DIRECTO: Solo usamos CloudStream para los que sí funcionan rápido (como Streamtape).
+                if (sourceUrl.contains("uqload", ignoreCase = true)) {
+                    println("BYPASS: Resolviendo Uqload ($language)...")
+                    if (resolveUqload(sourceUrl, data, server, language, callback)) linkCount++
+                } else if (sourceUrl.contains("filemo", ignoreCase = true)) {
+                    println("BYPASS: Resolviendo Filemoon ($language)...")
+                    if (resolveFilemoon(sourceUrl, server, language, callback)) linkCount++
+                } else {
+                    loadExtractor(url = sourceUrl, referer = data, subtitleCallback = subtitleCallback, callback = { link ->
                         linkCount++
-                    }
-                }
-
-                // FILEMOON FALLBACK
-                if (!foundLink && sourceUrl.contains("filemoon", ignoreCase = true)) {
-                    if (resolveFilemoon(sourceUrl, server, language, callback)) {
-                        foundLink = true
-                        linkCount++
-                    }
+                        callback(link)
+                    })
                 }
             }
         }
