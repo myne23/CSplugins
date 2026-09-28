@@ -243,7 +243,6 @@ class AnimeOnlineProvider : MainAPI() {
         println("=== ANIMEONLINE LOAD ENTRY ===")
         println("ANIMEONLINE STEP 1")
 
-
         val document = app.get(
             url,
             referer = "$mainUrl/",
@@ -303,7 +302,36 @@ class AnimeOnlineProvider : MainAPI() {
                     .select(".episodios a[href]")
 
                 val episodeImages = seasonElement
-                    .select(".episodios .imagen img")
+                    .select(".episodios img")
+
+                if (index == 0) {
+                    println("=== ANIMEONLINE EPISODE IMAGE DEBUG ===")
+                    println("EPISODE LINKS: ${episodeLinks.size}")
+                    println("ALL IMAGES IN SEASON: ${episodeImages.size}")
+
+                    val firstImage = episodeImages.firstOrNull()
+                    if (firstImage != null) {
+                        println("FIRST IMAGE HTML: ${firstImage.outerHtml()}")
+                        println("FIRST IMAGE SRC: ${firstImage.attr("src")}")
+                        println("FIRST IMAGE DATA-SRC: ${firstImage.attr("data-src")}")
+                        println("FIRST IMAGE DATA-LAZY-SRC: ${firstImage.attr("data-lazy-src")}")
+                        println("FIRST IMAGE SRCSET: ${firstImage.attr("srcset")}")
+                        println("FIRST IMAGE STYLE: ${firstImage.attr("style")}")
+                    }
+
+                    val firstImageContainer = seasonElement
+                        .select(".episodios .imagen")
+                        .firstOrNull()
+
+                    if (firstImageContainer != null) {
+                        println("FIRST IMAGE CONTAINER HTML: ${firstImageContainer.outerHtml()}")
+                    }
+
+                    val firstEpisodeLink = episodeLinks.firstOrNull()
+                    if (firstEpisodeLink != null) {
+                        println("FIRST EPISODE LINK HTML: ${firstEpisodeLink.outerHtml()}")
+                    }
+                }
 
                 val episodes = episodeLinks
                     .mapIndexedNotNull { episodeIndex, element ->
@@ -315,18 +343,7 @@ class AnimeOnlineProvider : MainAPI() {
                             .trim()
                             .ifBlank { "Episodio" }
 
-                        val episodeContainer = element.parent()
-
-                        val numberText = episodeContainer
-                            ?.selectFirst(".numerando")
-                            ?.text()
-                            ?.trim()
-
-                        val episodeNumber = numberText
-                            ?.substringAfterLast("-")
-                            ?.trim()
-                            ?.toDoubleOrNull()
-                            ?.toInt()
+                        val episodeNumber = episodeIndex + 1
 
                         var episodePoster: String? = null
 
@@ -336,11 +353,13 @@ class AnimeOnlineProvider : MainAPI() {
                             val dataSrc = image.attr("data-src")
                             val lazySrc = image.attr("data-lazy-src")
                             val src = image.attr("src")
+                            val srcset = image.attr("srcset")
 
                             episodePoster = when {
                                 dataSrc.isNotBlank() -> dataSrc
                                 lazySrc.isNotBlank() -> lazySrc
                                 src.isNotBlank() -> src
+                                srcset.isNotBlank() -> srcset.substringBefore(",").trim().substringBefore(" ")
                                 else -> null
                             }
                         }
