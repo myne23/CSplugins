@@ -21,6 +21,24 @@ class AnimeOnlineProvider : MainAPI() {
 
     private val cloudflareKiller by lazy { CloudflareKiller() }
 
+    private val posterHeaders: Map<String, String>
+        get() {
+            val base = mutableMapOf(
+                "Referer" to "$mainUrl/",
+                "User-Agent" to "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+                "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            )
+
+            runCatching {
+                cloudflareKiller.getCookieHeaders(mainUrl).toMap()
+            }.getOrNull()?.forEach { (k, v) ->
+                base[k] = v
+            }
+
+            return base
+        }
+
     private fun parseAnimeCard(article: Element): SearchResponse? {
         val link = article.selectFirst("a[href]")?.attr("href")
             ?: return null
@@ -38,6 +56,7 @@ class AnimeOnlineProvider : MainAPI() {
             TvType.Anime
         ) {
             this.posterUrl = poster
+            this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
         }
     }
 
@@ -64,6 +83,7 @@ class AnimeOnlineProvider : MainAPI() {
             TvType.Anime
         ) {
             this.posterUrl = poster
+            this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
         }
     }
 
@@ -163,11 +183,13 @@ class AnimeOnlineProvider : MainAPI() {
                     TvType.Movie
                 ) {
                     this.posterUrl = poster
+                    this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                 }
             }
             ?: emptyList()
 
         println("LATEST MOVIES PARSED: ${latestMovies.size}")
+
         println("TOTAL SECTIONS: ${sections.size}")
         println("=== ANIMEONLINE HOME END ===")
 
@@ -184,7 +206,9 @@ class AnimeOnlineProvider : MainAPI() {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
 
         val document = app.get(
-            "$mainUrl/search/?s=$encodedQuery"
+            "$mainUrl/search/?s=$encodedQuery",
+            referer = "$mainUrl/",
+            interceptor = cloudflareKiller
         ).document
 
         return document
@@ -208,6 +232,7 @@ class AnimeOnlineProvider : MainAPI() {
                     TvType.Anime
                 ) {
                     this.posterUrl = poster
+                    this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                 }
             }
     }
