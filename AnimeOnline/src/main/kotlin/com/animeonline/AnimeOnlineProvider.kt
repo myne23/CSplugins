@@ -69,7 +69,7 @@ class AnimeOnlineProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
 
-        val document = app.get(mainUrl).document
+        val document = app.get("$mainUrl/inicio/").document
 
         val sections = ArrayList<HomePageList>()
 
