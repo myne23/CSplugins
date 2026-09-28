@@ -416,7 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("=== ANIMEONLINE LOADLINKS DEBUG 2 ===")
+        println("=== ANIMEONLINE DOOPLAYER DEBUG ===")
         println("DATA: $data")
 
         val document = app.get(
@@ -425,29 +425,31 @@ class AnimeOnlineProvider : MainAPI() {
             interceptor = cloudflareKiller
         ).document
 
-        println("=== SCRIPTS ===")
-        document.select("script").forEach { script ->
-            val text = script.html()
+        val postId = document
+            .selectFirst("[data-post]")
+            ?.attr("data-post")
+            ?.trim()
 
-            if (text.contains(
-                    Regex(
-                        "player|video|embed|iframe|stream|server|source|url|link",
-                        RegexOption.IGNORE_CASE
-                    )
-                )
-            ) {
-                println("SCRIPT: $text")
-            }
+        println("POST ID: $postId")
+
+        if (postId.isNullOrBlank()) {
+            println("NO POST ID")
+            return false
         }
 
-        println("=== DATA ATTRIBUTES ===")
-        document.select("*").forEach { element ->
-            element.attributes().forEach { attr ->
-                if (attr.key.startsWith("data-", ignoreCase = true)) {
-                    println("${attr.key} = ${attr.value}")
-                }
-            }
-        }
+        val apiUrl = "$mainUrl/wp-json/dooplayer/v1/post/$postId"
+
+        println("API URL: $apiUrl")
+
+        val response = app.get(
+            apiUrl,
+            referer = data,
+            interceptor = cloudflareKiller
+        )
+
+        println("API STATUS: ${response.code}")
+        println("=== DOOPLAYER API RESPONSE ===")
+        println(response.text)
 
         return false
     }
