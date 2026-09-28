@@ -118,46 +118,48 @@ class AnimeOnlineProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse>? {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val searchUrl = "$mainUrl/search/?s=$encodedQuery"
-
         val document = app.get(
-            searchUrl,
+            "$mainUrl/search/?s=$encodedQuery",
             referer = "$mainUrl/",
             interceptor = cloudflareKiller
         ).document
 
-        println("=== ANIMEONLINE SEARCH DEBUG ===")
-        println("QUERY: $query")
-        println("URL: $searchUrl")
-        println("TITLE: ${document.title()}")
-        println("ARTICLE.ITEM COUNT: ${document.select("article.item").size}")
-        println("ALL ARTICLE COUNT: ${document.select("article").size}")
-        println("RESULT-ITEM COUNT: ${document.select(".result-item").size}")
-        println("SEARCH-ITEM COUNT: ${document.select(".search-item").size}")
-        println("H3 COUNT: ${document.select("h3").size}")
-
-        document.select("article, .result-item, .search-item").take(20).forEachIndexed { index, element ->
-            println("--- RESULT $index ---")
-            println("TAG: ${element.tagName()}")
-            println("CLASS: ${element.className()}")
-            println("TEXT: ${element.text().take(200)}")
-            println("HREFS: ${element.select("a[href]").map { it.attr("href") }.take(5)}")
-        }
-
-        return document.select("article.item").mapNotNull { article ->
-            val link = article.selectFirst("a[href]")?.attr("href")
+        return document.select(".result-item").mapNotNull { item ->
+            val link = item.selectFirst("a[href]")?.attr("href")
                 ?: return@mapNotNull null
 
-            val title = article.selectFirst(".data h3")?.text()?.trim()
+            val title = item.selectFirst("h3")?.text()?.trim()
+                ?: item.selectFirst(".title")?.text()?.trim()
                 ?: return@mapNotNull null
 
-            val image = article.selectFirst("img")
+            val image = item.selectFirst("img")
             val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() }
+                ?: image?.attr("data-lazy-src")?.takeIf { it.isNotBlank() }
                 ?: image?.attr("src")?.takeIf { it.isNotBlank() }
 
-            newAnimeSearchResponse(title, fixUrl(link), TvType.Anime) {
-                this.posterUrl = poster
-                this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
+            val fixedLink = fixUrl(link)
+
+            when {
+                fixedLink.contains("/pelicula/") -> {
+                    newMovieSearchResponse(title, fixedLink, TvType.Movie) {
+                        this.posterUrl = poster
+                        this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
+                    }
+                }
+
+                fixedLink.contains("/episodio/") -> {
+                    newAnimeSearchResponse(title, fixedLink, TvType.Anime) {
+                        this.posterUrl = poster
+                        this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
+                    }
+                }
+
+                else -> {
+                    newAnimeSearchResponse(title, fixedLink, TvType.Anime) {
+                        this.posterUrl = poster
+                        this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
+                    }
+                }
             }
         }
     }
