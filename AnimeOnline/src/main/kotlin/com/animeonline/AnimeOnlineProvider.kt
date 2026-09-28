@@ -221,7 +221,7 @@ class AnimeOnlineProvider : MainAPI() {
             val alternateUrl = "https://n1mwq.org/e/$id"
             println("FILEMOON FALLBACK: Intentando dominios alternativos: $alternateUrl")
             
-            // Usamos app.get de Cloudstream para saltarnos bloqueos de Cloudflare
+            // Usamos app.get de Cloudstream para saltarnos bloqueos
             val response = app.get(alternateUrl, referer = "https://n1mwq.org/").text
             
             val packedRegex = Regex("""eval\(function\(p,a,c,k,e,d\).*?split\('\|'\)\)\)""")
@@ -237,15 +237,15 @@ class AnimeOnlineProvider : MainAPI() {
 
             if (!fileUrl.isNullOrBlank()) {
                 val isM3u8 = fileUrl.contains(".m3u8")
+                // Sin cabeceras personalizadas para cumplir con el compilador actual
                 callback(
                     ExtractorLink(
-                        source = "Filemoon",
-                        name = "$serverName - $language",
-                        url = fileUrl,
-                        referer = "https://n1mwq.org/",
-                        quality = Qualities.Unknown.value,
-                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                        headers = mapOf("Origin" to "https://n1mwq.org")
+                        "Filemoon",
+                        "$serverName - $language",
+                        fileUrl,
+                        "https://n1mwq.org/",
+                        Qualities.Unknown.value,
+                        if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                     )
                 )
                 true
