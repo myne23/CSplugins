@@ -258,8 +258,15 @@ class AnimeOnlineProvider : MainAPI() {
                     if (resolveUqload(sourceUrl, data, server, descriptiveName, callback)) linkCount++
                 } else {
                     loadExtractor(url = sourceUrl, referer = data, subtitleCallback = subtitleCallback, callback = { link ->
-                        // Usamos .copy() para modificar el nombre de manera segura en Kotlin
-                        val modifiedLink = link.copy(name = descriptiveName)
+                        // Creamos un nuevo ExtractorLink manteniendo los datos del original pero cambiando el nombre
+                        val modifiedLink = ExtractorLink(
+                            source = link.source,
+                            name = descriptiveName,
+                            url = link.url,
+                            referer = link.referer,
+                            quality = link.quality,
+                            type = link.type
+                        )
                         linkCount++
                         callback(modifiedLink)
                     })
