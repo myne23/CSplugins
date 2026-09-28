@@ -237,7 +237,6 @@ class AnimeOnlineProvider : MainAPI() {
         var linkCount = 0
 
         embedDocument.select(".OD").forEach { block ->
-            // Determinar categoría/idioma base del bloque
             val blockLang = when {
                 block.hasClass("OD_SUB") -> "SUB"
                 block.hasClass("OD_LAT") -> "LAT"
@@ -248,8 +247,6 @@ class AnimeOnlineProvider : MainAPI() {
 
             block.select("li[onclick*='go_to_player']").forEach { item ->
                 val server = item.selectFirst("span")?.text()?.trim() ?: "Servidor"
-                
-                // Extraer el texto completo del li para ver detalles específicos (ej. subtitulos, nombre del archivo, etc.)
                 val itemText = item.text().trim().ifBlank { server }
                 val descriptiveName = "$server · $blockLang ($itemText)"
 
@@ -261,10 +258,10 @@ class AnimeOnlineProvider : MainAPI() {
                     if (resolveUqload(sourceUrl, data, server, descriptiveName, callback)) linkCount++
                 } else {
                     loadExtractor(url = sourceUrl, referer = data, subtitleCallback = subtitleCallback, callback = { link ->
-                        // Renombramos el link del extractor nativo para que incluya la info de audio/idioma
-                        link.name = descriptiveName
+                        // Usamos .copy() para modificar el nombre de manera segura en Kotlin
+                        val modifiedLink = link.copy(name = descriptiveName)
                         linkCount++
-                        callback(link)
+                        callback(modifiedLink)
                     })
                 }
             }
