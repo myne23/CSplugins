@@ -416,8 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("=== ANIMEONLINE DOOPLAYER SOURCES DEBUG ===")
-        println("DATA: $data")
+        println("=== ANIMEONLINE PLAYER OPTIONS DEBUG ===")
 
         val document = app.get(
             data,
@@ -432,43 +431,46 @@ class AnimeOnlineProvider : MainAPI() {
 
         println("POST ID: $postId")
 
+        val allDataNume = document.select("[data-nume]")
+
+        println("DATA-NUME ELEMENTS: ${allDataNume.size}")
+
+        allDataNume.forEachIndexed { index, element ->
+            println(
+                "DATA-NUME[$index]: " +
+                    "nume=${element.attr("data-nume")} " +
+                    "type=${element.attr("data-type")} " +
+                    "post=${element.attr("data-post")} " +
+                    "class=${element.attr("class")}"
+            )
+        }
+
+        val ajaxMode = document.select("ul.ajax_mode")
+
+        println("AJAX MODE ELEMENTS: ${ajaxMode.size}")
+
+        ajaxMode.forEachIndexed { index, element ->
+            println("AJAX MODE[$index]: ${element.outerHtml().take(5000)}")
+        }
+
         if (postId.isNullOrBlank()) {
             println("NO POST ID")
             return false
         }
 
-        val options = document
-            .select(".dooplay_player_option[data-nume]")
-            .mapNotNull { element ->
-                val source = element.attr("data-nume").trim()
-                if (source.isBlank()) return@mapNotNull null
+        val apiUrl =
+            "$mainUrl/wp-json/dooplayer/v1/post/$postId?type=tv&source=1"
 
-                val type = element.attr("data-type")
-                    .trim()
-                    .ifBlank { "tv" }
+        println("TEST SOURCE 1 URL: $apiUrl")
 
-                source to type
-            }
-            .distinct()
+        val response = app.get(
+            apiUrl,
+            referer = data,
+            interceptor = cloudflareKiller
+        )
 
-        println("PLAYER OPTIONS: ${options.size}")
-
-        options.forEach { (source, type) ->
-            val apiUrl =
-                "$mainUrl/wp-json/dooplayer/v1/post/$postId?type=$type&source=$source"
-
-            println("=== SOURCE $source TYPE $type ===")
-            println("API URL: $apiUrl")
-
-            val response = app.get(
-                apiUrl,
-                referer = data,
-                interceptor = cloudflareKiller
-            )
-
-            println("STATUS: ${response.code}")
-            println("BODY: ${response.text}")
-        }
+        println("TEST SOURCE 1 STATUS: ${response.code}")
+        println("TEST SOURCE 1 BODY: ${response.text}")
 
         return false
     }
