@@ -69,14 +69,26 @@ class AnimeOnlineProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
 
-        val document = app.get("$mainUrl/inicio/").document
+        println("=== ANIMEONLINE HOME START ===")
+        println("URL: $mainUrl/inicio/")
+        println("PAGE: $page")
+
+        val response = app.get("$mainUrl/inicio/")
+        println("HTTP RESPONSE RECEIVED")
+
+        val document = response.document
+        println("DOCUMENT TITLE: ${document.title()}")
+        println("ARTICLE COUNT: ${document.select("article").size}")
+        println("ITEM COUNT: ${document.select("article.item").size}")
+        println("EPISODE ARTICLE COUNT: ${document.select("div.items article.item.se.episodes").size}")
 
         val sections = ArrayList<HomePageList>()
 
-        // ÚLTIMOS EPISODIOS
         val latestEpisodes = document
             .select("div.items article.item.se.episodes")
             .mapNotNull { parseEpisodeCard(it) }
+
+        println("LATEST EPISODES PARSED: ${latestEpisodes.size}")
 
         if (latestEpisodes.isNotEmpty()) {
             sections.add(
@@ -87,12 +99,13 @@ class AnimeOnlineProvider : MainAPI() {
             )
         }
 
-        // ÚLTIMOS ANIMES AGREGADOS
         val latestAnimeHeader = document
             .select("header")
             .firstOrNull {
                 it.text().contains("ÚLTIMOS ANIMES AGREGADOS")
             }
+
+        println("LATEST ANIME HEADER FOUND: ${latestAnimeHeader != null}")
 
         val latestAnime = latestAnimeHeader
             ?.nextElementSibling()
@@ -100,6 +113,8 @@ class AnimeOnlineProvider : MainAPI() {
             ?.select("article.item")
             ?.mapNotNull { parseAnimeCard(it) }
             ?: emptyList()
+
+        println("LATEST ANIME PARSED: ${latestAnime.size}")
 
         if (latestAnime.isNotEmpty()) {
             sections.add(
@@ -110,12 +125,13 @@ class AnimeOnlineProvider : MainAPI() {
             )
         }
 
-        // ÚLTIMAS PELÍCULAS AGREGADAS
         val latestMoviesHeader = document
             .select("header")
             .firstOrNull {
                 it.text().contains("ÚLTIMAS PELICULAS AGREGADAS")
             }
+
+        println("LATEST MOVIES HEADER FOUND: ${latestMoviesHeader != null}")
 
         val latestMovies = latestMoviesHeader
             ?.nextElementSibling()
@@ -143,14 +159,9 @@ class AnimeOnlineProvider : MainAPI() {
             }
             ?: emptyList()
 
-        if (latestMovies.isNotEmpty()) {
-            sections.add(
-                HomePageList(
-                    "Últimas películas agregadas 🎬",
-                    latestMovies
-                )
-            )
-        }
+        println("LATEST MOVIES PARSED: ${latestMovies.size}")
+        println("TOTAL SECTIONS: ${sections.size}")
+        println("=== ANIMEONLINE HOME END ===")
 
         return newHomePageResponse(
             sections,
