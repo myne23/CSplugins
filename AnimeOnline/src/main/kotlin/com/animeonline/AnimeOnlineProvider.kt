@@ -416,7 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("=== ANIMEONLINE DOOPLAYER JS DEBUG ===")
+        println("=== ANIMEONLINE DOOPLAYER JS INSPECT ===")
 
         val document = app.get(
             data,
@@ -424,24 +424,52 @@ class AnimeOnlineProvider : MainAPI() {
             interceptor = cloudflareKiller
         ).document
 
-        println("=== SCRIPT SOURCES ===")
-
-        document.select("script[src]").forEach {
-            val src = it.attr("src").trim()
-
-            if (
-                src.contains("doo", ignoreCase = true) ||
-                src.contains("player", ignoreCase = true) ||
-                src.contains("main", ignoreCase = true)
-            ) {
-                println("SCRIPT SRC: $src")
+        val scriptUrls = document
+            .select("script[src]")
+            .map { it.attr("src").trim() }
+            .filter {
+                it.contains("front.scripts.js", ignoreCase = true) ||
+                it.contains("front.ajax.js", ignoreCase = true)
             }
-        }
+            .distinct()
 
-        println("=== PLAYER ELEMENTS ===")
+        println("FOUND JS FILES: ${scriptUrls.size}")
 
-        document.select("[data-post], [data-nume], [data-type], [data-rurl]").forEach {
-            println(it.outerHtml().take(5000))
+        scriptUrls.forEach { scriptUrl ->
+            println("=== JS: $scriptUrl ===")
+
+            val js = app.get(
+                fixUrl(scriptUrl),
+                referer = data,
+                interceptor = cloudflareKiller
+            ).text
+
+            println("JS LENGTH: ${js.length}")
+
+            val terms = listOf(
+                "url_api",
+                "play_method",
+                "wp_json",
+                "dooplayer",
+                "admin-ajax",
+                "data-post",
+                "data-nume",
+                "data-type"
+            )
+
+            terms.forEach { term ->
+                var pos = js.indexOf(term, ignoreCase = true)
+
+                while (pos >= 0) {
+                    val from = maxOf(0, pos - 500)
+                    val to = minOf(js.length, pos + 1500)
+
+                    println("=== MATCH [$term] POS $pos ===")
+                    println(js.substring(from, to))
+
+                    pos = js.indexOf(term, pos + term.length, ignoreCase = true)
+                }
+            }
         }
 
         return false
