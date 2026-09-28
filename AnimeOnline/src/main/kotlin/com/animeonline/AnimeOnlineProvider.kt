@@ -259,22 +259,30 @@ class AnimeOnlineProvider : MainAPI() {
             ?.attr("content")
             ?.takeIf { it.isNotBlank() }
 
-        println("=== ANIMEONLINE METADATA DEBUG ===")
-        println("TITLE: $title")
-        println("MAIN POSTER: $poster")
+        var description: String? = null
 
         for (heading in document.select("h2")) {
-            println("H2: [${heading.text().trim()}]")
-            println("H2 NEXT: [${heading.nextElementSibling()?.text()?.trim()}]")
-        }
+            if (heading.text().trim().equals("Sinopsis", ignoreCase = true)) {
+                val headingHtml = heading.parent()?.html() ?: ""
 
-        val episodeElements = document.select("#seasons .episodio")
+                val marker = "Sinopsis"
+                val markerIndex = headingHtml.indexOf(marker, ignoreCase = true)
 
-        println("EPISODE ELEMENTS: ${episodeElements.size}")
+                if (markerIndex >= 0) {
+                    val afterMarker = headingHtml.substring(markerIndex + marker.length)
 
-        episodeElements.take(3).forEachIndexed { index, episode ->
-            println("=== EPISODE HTML $index ===")
-            println(episode.outerHtml())
+                    val stripped = afterMarker
+                        .replace(Regex("<[^>]*>"), " ")
+                        .replace(Regex("\\s+"), " ")
+                        .trim()
+
+                    if (stripped.isNotBlank()) {
+                        description = stripped
+                    }
+                }
+
+                break
+            }
         }
 
         val seasons = document
@@ -288,12 +296,17 @@ class AnimeOnlineProvider : MainAPI() {
                     ?.toIntOrNull()
                     ?: (index + 1)
 
-                val episodes = seasonElement
+                val episodeLinks = seasonElement
                     .select(".episodios a[href]")
-                    .mapNotNull { element ->
+
+                val episodeImages = seasonElement
+                    .select(".episodios .imagen img")
+
+                val episodes = episodeLinks
+                    .mapIndexedNotNull { episodeIndex, element ->
 
                         val href = element.attr("href").trim()
-                        if (href.isBlank()) return@mapNotNull null
+                        if (href.isBlank()) return@mapIndexedNotNull null
 
                         val name = element.text()
                             .trim()
@@ -314,18 +327,18 @@ class AnimeOnlineProvider : MainAPI() {
 
                         var episodePoster: String? = null
 
-                        val image = episodeContainer?.selectFirst(".imagen img")
+                        if (episodeIndex < episodeImages.size) {
+                            val image = episodeImages[episodeIndex]
 
-                        if (image != null) {
                             val dataSrc = image.attr("data-src")
+                            val lazySrc = image.attr("data-lazy-src")
                             val src = image.attr("src")
 
-                            episodePoster = if (dataSrc.isNotBlank()) {
-                                dataSrc
-                            } else if (src.isNotBlank()) {
-                                src
-                            } else {
-                                null
+                            episodePoster = when {
+                                dataSrc.isNotBlank() -> dataSrc
+                                lazySrc.isNotBlank() -> lazySrc
+                                src.isNotBlank() -> src
+                                else -> null
                             }
                         }
 
@@ -348,6 +361,8 @@ class AnimeOnlineProvider : MainAPI() {
 
         println("=== ANIMEONLINE LOAD ===")
         println("TITLE: $title")
+        println("MAIN POSTER: $poster")
+        println("DESCRIPTION: $description")
         println("SEASONS: ${seasons.size}")
         println("EPISODES: ${seasons.sumOf { it.second.size }}")
 
@@ -362,7 +377,7 @@ class AnimeOnlineProvider : MainAPI() {
         ) {
             posterUrl = poster
             posterHeaders = this@AnimeOnlineProvider.posterHeaders
-            this.plot = null
+            this.plot = description
 
             seasons.forEach { (_, episodeList) ->
                 addEpisodes(
