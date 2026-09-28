@@ -416,6 +416,39 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        println("=== ANIMEONLINE LOADLINKS DEBUG ===")
+        println("DATA: $data")
+
+        val document = app.get(
+            data,
+            referer = "$mainUrl/",
+            interceptor = cloudflareKiller
+        ).document
+
+        println("=== IFRAMES ===")
+        document.select("iframe").forEach {
+            println(it.outerHtml())
+        }
+
+        println("=== EMBEDS ===")
+        document.select("[src], [href], [data-src], [data-player], [data-embed]").forEach {
+            val html = it.outerHtml()
+            if (html.contains(
+                    Regex(
+                        "embed|player|video|stream|iframe|vid|voe|filemoon|streamwish|okru|mega|m3u8",
+                        RegexOption.IGNORE_CASE
+                    )
+                )
+            ) {
+                println(html)
+            }
+        }
+
+        println("=== VIDEO ===")
+        document.select("video").forEach {
+            println(it.outerHtml())
+        }
+
         return false
     }
 }
