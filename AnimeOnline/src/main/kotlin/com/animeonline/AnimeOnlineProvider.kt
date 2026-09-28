@@ -416,8 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("=== ANIMEONLINE DOOPLAYER SCRIPT DEBUG ===")
-        println("DATA: $data")
+        println("=== ANIMEONLINE DOOPLAYER JS DEBUG ===")
 
         val document = app.get(
             data,
@@ -425,26 +424,24 @@ class AnimeOnlineProvider : MainAPI() {
             interceptor = cloudflareKiller
         ).document
 
-        println("=== DOOPLAYER CONFIG ===")
+        println("=== SCRIPT SOURCES ===")
 
-        document.select("script").forEachIndexed { index, script ->
-            val html = script.html()
+        document.select("script[src]").forEach {
+            val src = it.attr("src").trim()
 
             if (
-                html.contains("play_ajaxmd", ignoreCase = true) ||
-                html.contains("play_method", ignoreCase = true) ||
-                html.contains("dtAjax", ignoreCase = true) ||
-                html.contains("admin-ajax.php", ignoreCase = true)
+                src.contains("doo", ignoreCase = true) ||
+                src.contains("player", ignoreCase = true) ||
+                src.contains("main", ignoreCase = true)
             ) {
-                println("=== MATCH SCRIPT $index ===")
-                println(html.take(12000))
+                println("SCRIPT SRC: $src")
             }
         }
 
-        println("=== PLAYER DATA ATTRIBUTES ===")
+        println("=== PLAYER ELEMENTS ===")
 
-        document.select("[data-post], [data-nume], [data-type], [data-rurl], [data-key]").forEach {
-            println(it.outerHtml().take(3000))
+        document.select("[data-post], [data-nume], [data-type], [data-rurl]").forEach {
+            println(it.outerHtml().take(5000))
         }
 
         return false
