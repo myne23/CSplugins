@@ -241,7 +241,7 @@ class AnimeOnlineProvider : MainAPI() {
         url: String
     ): LoadResponse? {
 
-        println("=== ANIMEONLINE SEASON CHILDREN ===")
+        println("=== ANIMEONLINE SEASON MARKERS ===")
 
         val document = app.get(
             url,
@@ -267,28 +267,28 @@ class AnimeOnlineProvider : MainAPI() {
             return null
         }
 
-        println("CONTAINER TAG=${container.tagName()}")
-        println("CONTAINER CLASS=${container.className()}")
-
-        container.children().forEachIndexed { index, child ->
-            println(
-                "CHILD[$index] TAG=${child.tagName()} " +
-                "CLASS=${child.className()} " +
-                "TEXT=[${child.text().trim().take(300)}]"
-            )
-
-            val directLinks = child.select(":scope > a[href]")
-            println("CHILD[$index] DIRECT_LINKS=${directLinks.size}")
-
-            directLinks.take(5).forEach { link ->
-                println(
-                    "  LINK TEXT=[${link.text().trim()}] " +
-                    "HREF=[${link.attr("href")}]"
+        val markers = container
+            .select("*")
+            .filter {
+                it.text().trim().matches(
+                    Regex("^\\d+Temporada .*$")
+                ) ||
+                it.text().trim().matches(
+                    Regex("^Temporada \\d+.*$")
                 )
             }
+
+        println("MARKERS FOUND: ${markers.size}")
+
+        markers.forEachIndexed { index, element ->
+            println(
+                "MARKER[$index] TAG=${element.tagName()} " +
+                "CLASS=${element.className()} " +
+                "TEXT=[${element.text().trim().take(500)}]"
+            )
         }
 
-        println("=== ANIMEONLINE SEASON CHILDREN END ===")
+        println("=== ANIMEONLINE SEASON MARKERS END ===")
 
         return null
     }
