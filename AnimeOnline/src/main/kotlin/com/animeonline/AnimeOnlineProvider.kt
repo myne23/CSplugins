@@ -416,7 +416,7 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("=== ANIMEONLINE LOADLINKS DEBUG ===")
+        println("=== ANIMEONLINE LOADLINKS DEBUG 2 ===")
         println("DATA: $data")
 
         val document = app.get(
@@ -425,28 +425,28 @@ class AnimeOnlineProvider : MainAPI() {
             interceptor = cloudflareKiller
         ).document
 
-        println("=== IFRAMES ===")
-        document.select("iframe").forEach {
-            println(it.outerHtml())
-        }
+        println("=== SCRIPTS ===")
+        document.select("script").forEach { script ->
+            val text = script.html()
 
-        println("=== EMBEDS ===")
-        document.select("[src], [href], [data-src], [data-player], [data-embed]").forEach {
-            val html = it.outerHtml()
-            if (html.contains(
+            if (text.contains(
                     Regex(
-                        "embed|player|video|stream|iframe|vid|voe|filemoon|streamwish|okru|mega|m3u8",
+                        "player|video|embed|iframe|stream|server|source|url|link",
                         RegexOption.IGNORE_CASE
                     )
                 )
             ) {
-                println(html)
+                println("SCRIPT: $text")
             }
         }
 
-        println("=== VIDEO ===")
-        document.select("video").forEach {
-            println(it.outerHtml())
+        println("=== DATA ATTRIBUTES ===")
+        document.select("*").forEach { element ->
+            element.attributes().forEach { attr ->
+                if (attr.key.startsWith("data-", ignoreCase = true)) {
+                    println("${attr.key} = ${attr.value}")
+                }
+            }
         }
 
         return false
