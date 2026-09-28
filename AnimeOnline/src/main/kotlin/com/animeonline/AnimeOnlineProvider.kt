@@ -2,6 +2,8 @@ package com.animeonline
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Element
+import java.net.URLEncoder
 
 class AnimeOnlineProvider : MainAPI() {
 
@@ -15,43 +17,185 @@ class AnimeOnlineProvider : MainAPI() {
 
     override var lang = "es"
 
-    private val testUrl =
-        "https://strm3.uqload.vc/hls2/02/02006/3pu70qn8uyul_n/master.m3u8?t=dYDM5uK76QfJ2L7vW4xk0ZgF7zVI28FGERMjvbunRI8&s=1790553444&e=14400&v=207157&i=201.178&sp=0"
+    private fun parseAnimeCard(article: Element): SearchResponse? {
+        val link = article.selectFirst("a[href]")?.attr("href")
+            ?: return null
+
+        val title = article.selectFirst(".data h3")?.text()?.trim()
+            ?: return null
+
+        val image = article.selectFirst("img")
+        val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() }
+            ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+
+        return newAnimeSearchResponse(
+            title,
+            fixUrl(link),
+            TvType.Anime
+        ) {
+            this.posterUrl = poster
+        }
+    }
+
+    private fun parseEpisodeCard(article: Element): SearchResponse? {
+        val link = article.selectFirst("a[href*='/episodio/']")?.attr("href")
+            ?: return null
+
+        val title = article.selectFirst(".data h3")?.text()?.trim()
+            ?: return null
+
+        val image = article.selectFirst("img")
+        val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() }
+            ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+
+        val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
+
+        return newAnimeSearchResponse(
+            if (!episodeTitle.isNullOrBlank()) {
+                "$title - $episodeTitle"
+            } else {
+                title
+            },
+            fixUrl(link),
+            TvType.Anime
+        ) {
+            this.posterUrl = poster
+        }
+    }
+
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+
+        val document = app.get(mainUrl).document
+
+        val sections = ArrayList<HomePageList>()
+
+        // ÚLTIMOS EPISODIOS
+        val latestEpisodes = document
+            .select("div.items article.item.se.episodes")
+            .mapNotNull { parseEpisodeCard(it) }
+
+        if (latestEpisodes.isNotEmpty()) {
+            sections.add(
+                HomePageList(
+                    "Últimos episodios ⚡",
+                    latestEpisodes
+                )
+            )
+        }
+
+        // ÚLTIMOS ANIMES AGREGADOS
+        val latestAnimeHeader = document
+            .select("header")
+            .firstOrNull {
+                it.text().contains("ÚLTIMOS ANIMES AGREGADOS")
+            }
+
+        val latestAnime = latestAnimeHeader
+            ?.nextElementSibling()
+            ?.nextElementSibling()
+            ?.select("article.item")
+            ?.mapNotNull { parseAnimeCard(it) }
+            ?: emptyList()
+
+        if (latestAnime.isNotEmpty()) {
+            sections.add(
+                HomePageList(
+                    "Últimos animes agregados 💥",
+                    latestAnime
+                )
+            )
+        }
+
+        // ÚLTIMAS PELÍCULAS AGREGADAS
+        val latestMoviesHeader = document
+            .select("header")
+            .firstOrNull {
+                it.text().contains("ÚLTIMAS PELICULAS AGREGADAS")
+            }
+
+        val latestMovies = latestMoviesHeader
+            ?.nextElementSibling()
+            ?.nextElementSibling()
+            ?.select("article.item")
+            ?.mapNotNull { article ->
+                val link = article.selectFirst("a[href]")?.attr("href")
+                    ?: return@mapNotNull null
+
+                val title = article.selectFirst(".data h3")?.text()?.trim()
+                    ?: return@mapNotNull null
+
+                val image = article.selectFirst("img")
+                val poster = image?.attr("data-src")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+
+                newMovieSearchResponse(
+                    title,
+                    fixUrl(link),
+                    TvType.Movie
+                ) {
+                    this.posterUrl = poster
+                }
+            }
+            ?: emptyList()
+
+        if (latestMovies.isNotEmpty()) {
+            sections.add(
+                HomePageList(
+                    "Últimas películas agregadas 🎬",
+                    latestMovies
+                )
+            )
+        }
+
+        return newHomePageResponse(
+            sections,
+            hasNext = false
+        )
+    }
 
     override suspend fun search(
         query: String
     ): List<SearchResponse>? {
 
-        return listOf(
-            newAnimeSearchResponse(
-                "AnimeOnline Uqload TEST",
-                "$mainUrl/test",
-                TvType.Anime
-            )
-        )
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+
+        val document = app.get(
+            "$mainUrl/search/?s=$encodedQuery"
+        ).document
+
+        return document
+            .select("article.item")
+            .mapNotNull { article ->
+
+                val link = article.selectFirst("a[href]")?.attr("href")
+                    ?: return@mapNotNull null
+
+                val title = article.selectFirst(".data h3")?.text()?.trim()
+                    ?: return@mapNotNull null
+
+                val image = article.selectFirst("img")
+                val poster = image?.attr("data-src")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+
+                newAnimeSearchResponse(
+                    title,
+                    fixUrl(link),
+                    TvType.Anime
+                ) {
+                    this.posterUrl = poster
+                }
+            }
     }
 
     override suspend fun load(
         url: String
     ): LoadResponse? {
-
-        val episodeList =
-            ArrayList<Episode>()
-
-        episodeList.add(
-            newEpisode(testUrl) {
-                name = "Uqload HLS Test"
-                episode = 1
-                season = 1
-            }
-        )
-
-        return newTvSeriesLoadResponse(
-            "AnimeOnline Uqload TEST",
-            url,
-            TvType.Anime,
-            episodeList
-        )
+        return null
     }
 
     override suspend fun loadLinks(
@@ -60,18 +204,6 @@ class AnimeOnlineProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-
-        callback(
-            ExtractorLink(
-                source = "Uqload",
-                name = "Uqload HLS",
-                url = data,
-                referer = "https://uqload.vc/",
-                quality = Qualities.Unknown.value,
-                type = ExtractorLinkType.M3U8
-            )
-        )
-
-        return true
+        return false
     }
 }
