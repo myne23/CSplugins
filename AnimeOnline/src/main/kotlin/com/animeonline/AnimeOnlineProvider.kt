@@ -40,80 +40,60 @@ class AnimeOnlineProvider : MainAPI() {
             return base
         }
 
-    private fun parseAnimeCard(article: Element): SearchResponse? {
-        val link = article.selectFirst("a[href]")?.attr("href")
-            ?: return null
+    // CATÁLOGO EXPANDIDO: Definimos todas las secciones dinámicas
+    override val mainPage = mainPageOf(
+        "$mainUrl/tendencias/page/" to "Tendencias 🔥",
+        "$mainUrl/episodios/page/" to "Últimos Episodios ⚡",
+        "$mainUrl/animes/page/" to "Animes Agregados 💥",
+        "$mainUrl/peliculas/page/" to "Películas 🎬",
+        "$mainUrl/genero/accion/page/" to "Acción",
+        "$mainUrl/genero/comedia/page/" to "Comedia",
+        "$mainUrl/genero/romance/page/" to "Romance",
+        "$mainUrl/genero/isekai/page/" to "Isekai"
+    )
 
-        val title = article.selectFirst(".data h3")?.text()?.trim()
-            ?: return null
-
-        val image = article.selectFirst("img")
-        val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() }
-            ?: image?.attr("src")?.takeIf { it.isNotBlank() }
-
-        return newAnimeSearchResponse(
-            title,
-            fixUrl(link),
-            TvType.Anime
-        ) {
-            this.posterUrl = poster
-            this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
-        }
-    }
-
-    private fun parseEpisodeCard(article: Element): SearchResponse? {
-        val link = article.selectFirst("a[href*='/episodio/']")?.attr("href")
-            ?: return null
-
-        val title = article.selectFirst(".data h3")?.text()?.trim()
-            ?: return null
-
-        val image = article.selectFirst("img")
-        val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() }
-            ?: image?.attr("src")?.takeIf { it.isNotBlank() }
-
-        val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
-
-        return newAnimeSearchResponse(
-            if (!episodeTitle.isNullOrBlank()) {
-                "$title - $episodeTitle"
-            } else {
-                title
-            },
-            fixUrl(link),
-            TvType.Anime
-        ) {
-            this.posterUrl = poster
-            this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
-        }
-    }
-
+    // CATÁLOGO DINÁMICO: Carga los items con paginación
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val response = app.get("$mainUrl/inicio/", referer = "$mainUrl/", interceptor = cloudflareKiller)
-        val document = response.document
-        val sections = ArrayList<HomePageList>()
+        val url = request.data + page.toString()
+        val document = app.get(url, referer = "$mainUrl/", interceptor = cloudflareKiller).document
 
-        val latestEpisodes = document.select("div.items article.item.se.episodes").mapNotNull { parseEpisodeCard(it) }
-        if (latestEpisodes.isNotEmpty()) sections.add(HomePageList("Últimos episodios ⚡", latestEpisodes))
-
-        val latestAnimeHeader = document.select("header").firstOrNull { it.text().contains("ÚLTIMOS ANIMES AGREGADOS") }
-        val latestAnime = latestAnimeHeader?.nextElementSibling()?.nextElementSibling()?.select("article.item")?.mapNotNull { parseAnimeCard(it) } ?: emptyList()
-        if (latestAnime.isNotEmpty()) sections.add(HomePageList("Últimos animes agregados 💥", latestAnime))
-
-        val latestMoviesHeader = document.select("header").firstOrNull { it.text().contains("ÚLTIMAS PELICULAS AGREGADAS") }
-        val latestMovies = latestMoviesHeader?.nextElementSibling()?.nextElementSibling()?.select("article.item")?.mapNotNull { article ->
+        val items = document.select("article.item").mapNotNull { article ->
             val link = article.selectFirst("a[href]")?.attr("href") ?: return@mapNotNull null
-            val title = article.selectFirst(".data h3")?.text()?.trim() ?: return@mapNotNull null
-            val image = article.selectFirst("img")
-            val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
-            newMovieSearchResponse(title, fixUrl(link), TvType.Movie) {
-                this.posterUrl = poster
-                this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
-            }
-        } ?: emptyList()
-        if (latestMovies.isNotEmpty()) sections.add(HomePageList("Últimas peliculas agregadas 🎬", latestMovies))
+            val title = article.selectFirst(".data h3")?.text()?.trim()
+                ?: article.selectFirst(".title")?.text()?.trim()
+                ?: return@mapNotNull null
 
-        return newHomePageResponse(sections, hasNext = false)
+            val image = article.selectFirst("img")
+            val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() }
+                ?: image?.attr("data-lazy-src")?.takeIf { it.isNotBlank() }
+                ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+
+            val fixedLink = fixUrl(link)
+            val type = if (fixedLink.contains("/pelicula/")) TvType.Movie else TvType.Anime
+            
+            val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
+            val finalTitle = if (!episodeTitle.isNullOrBlank()) "$title - $episodeTitle" else title
+
+            if (type == TvType.Movie) {
+                newMovieSearchResponse(finalTitle, fixedLink, TvType.Movie) {
+                    this.posterUrl = poster
+                    this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
+                }
+            } else {
+                newAnimeSearchResponse(finalTitle, fixedLink, TvType.Anime) {
+                    this.posterUrl = poster
+                    this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
+                }
+            }
+        }
+
+        return newHomePageResponse(
+            list = HomePageList(
+                name = request.name,
+                list = items
+            ),
+            hasNext = items.isNotEmpty()
+        )
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
@@ -146,14 +126,12 @@ class AnimeOnlineProvider : MainAPI() {
                         this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                     }
                 }
-
                 fixedLink.contains("/episodio/") -> {
                     newAnimeSearchResponse(title, fixedLink, TvType.Anime) {
                         this.posterUrl = poster
                         this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                     }
                 }
-
                 else -> {
                     newAnimeSearchResponse(title, fixedLink, TvType.Anime) {
                         this.posterUrl = poster
@@ -257,7 +235,6 @@ class AnimeOnlineProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        println("=== ANIMEONLINE ALL SOURCES EXTRACTOR TEST ===")
         val document = app.get(data, referer = "$mainUrl/", interceptor = cloudflareKiller).document
         val postId = document.selectFirst("[data-post]")?.attr("data-post")?.trim()
         if (postId.isNullOrBlank()) return false
@@ -280,18 +257,17 @@ class AnimeOnlineProvider : MainAPI() {
 
             block.select("li[onclick*='go_to_player']").forEach { item ->
                 val server = item.selectFirst("span")?.text()?.trim() ?: "Servidor"
-                val itemText = item.text().trim().ifBlank { server }
-                val descriptiveName = "${server.uppercase()} · $blockLang"
-
                 val sourceUrl = Regex("""go_to_player\(['"]([^'"]+)['"]\)""").find(item.attr("onclick"))?.groupValues?.getOrNull(1)
                 
                 if (sourceUrl.isNullOrBlank()) return@forEach
 
+                // RESTAURACIÓN DEL BYPASS: Saltamos Filemoon instantáneamente para evitar la espera
                 if (sourceUrl.contains("uqload", ignoreCase = true)) {
                     if (resolveUqload(sourceUrl, data, server, blockLang, callback)) linkCount++
+                } else if (sourceUrl.contains("filemo", ignoreCase = true)) {
+                    return@forEach 
                 } else {
                     loadExtractor(url = sourceUrl, referer = data, subtitleCallback = subtitleCallback, callback = { link ->
-                        // Creamos un nuevo ExtractorLink manteniendo los datos del original pero cambiando el nombre
                         val modifiedLink = ExtractorLink(
                             source = link.source,
                             name = "${link.name.substringBefore(" · ").substringBefore(" (").trim().uppercase()} · $blockLang",
