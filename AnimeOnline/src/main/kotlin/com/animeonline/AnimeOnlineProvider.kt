@@ -206,34 +206,19 @@ class AnimeOnlineProvider : MainAPI() {
         val seasons = document.select("#seasons > .se-c").mapIndexedNotNull { index, seasonElement ->
             val seasonNumber = seasonElement.selectFirst(".se-q .se-t")?.text()?.trim()?.toIntOrNull() ?: (index + 1)
             val episodeLinks = seasonElement.select(".episodios a[href]")
-            val episodeImages = seasonElement.select(".episodios img")
 
             val episodes = episodeLinks.mapIndexedNotNull { episodeIndex, element ->
                 val href = element.attr("href").trim()
                 if (href.isBlank()) return@mapIndexedNotNull null
                 val name = element.text().trim().ifBlank { "Episodio" }
                 val episodeNumber = episodeIndex + 1
-                var episodePoster: String? = null
 
-                if (episodeIndex < episodeImages.size) {
-                    val image = episodeImages[episodeIndex]
-                    val dataSrc = image.attr("data-src")
-                    val lazySrc = image.attr("data-lazy-src")
-                    val src = image.attr("src")
-                    val srcset = image.attr("srcset")
-                    episodePoster = when {
-                        dataSrc.isNotBlank() -> dataSrc
-                        lazySrc.isNotBlank() -> lazySrc
-                        src.isNotBlank() -> src
-                        srcset.isNotBlank() -> srcset.substringBefore(",").trim().substringBefore(" ")
-                        else -> null
-                    }
-                }
+                // Usamos el póster principal del anime de manera segura para cada episodio
                 newEpisode(fixUrl(href)) {
                     this.name = name
                     this.season = seasonNumber
                     this.episode = episodeNumber
-                    this.posterUrl = episodePoster
+                    this.posterUrl = poster
                 }
             }
             if (episodes.isEmpty()) null else seasonNumber to episodes
