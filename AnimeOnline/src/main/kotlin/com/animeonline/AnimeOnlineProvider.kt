@@ -40,13 +40,20 @@ class AnimeOnlineProvider : MainAPI() {
             return base
         }
 
+    // --- MAGIA: PROXY PARA EVITAR BLOQUEO DE IMÁGENES EN COIL ---
+    private fun getProxyUrl(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        val fixed = fixUrl(url)
+        return "https://wsrv.nl/?url=$fixed"
+    }
+
     private fun parseAnimeCard(article: Element): SearchResponse? {
         val link = article.selectFirst("a[href]")?.attr("href") ?: return null
         val title = article.selectFirst(".data h3")?.text()?.trim() ?: return null
         val image = article.selectFirst("img")
         val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
         return newAnimeSearchResponse(title, fixUrl(link), TvType.Anime) {
-            this.posterUrl = poster
+            this.posterUrl = getProxyUrl(poster)
             this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
         }
     }
@@ -58,12 +65,11 @@ class AnimeOnlineProvider : MainAPI() {
         val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
         val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
         return newAnimeSearchResponse(if (!episodeTitle.isNullOrBlank()) "$title - $episodeTitle" else title, fixUrl(link), TvType.Anime) {
-            this.posterUrl = poster
+            this.posterUrl = getProxyUrl(poster)
             this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
         }
     }
 
-    // CATÁLOGO MIXTO: "Inicio" usa tu lógica original, el resto usa scroll infinito
     override val mainPage = mainPageOf(
         "$mainUrl/inicio/" to "Inicio", 
         "$mainUrl/tendencias/page/" to "Tendencias 🔥",
@@ -74,7 +80,6 @@ class AnimeOnlineProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // SI ES LA PORTADA: Devolvemos tus 3 filas originales (Episodios, Animes, Películas)
         if (request.name == "Inicio") {
             if (page > 1) return newHomePageResponse(emptyList(), hasNext = false)
             
@@ -96,7 +101,7 @@ class AnimeOnlineProvider : MainAPI() {
                 val image = article.selectFirst("img")
                 val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
                 newMovieSearchResponse(title, fixUrl(link), TvType.Movie) {
-                    this.posterUrl = poster
+                    this.posterUrl = getProxyUrl(poster)
                     this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                 }
             } ?: emptyList()
@@ -105,7 +110,6 @@ class AnimeOnlineProvider : MainAPI() {
             return newHomePageResponse(sections, hasNext = false)
         }
 
-        // SI SON OTRAS CATEGORÍAS: Usamos la paginación infinita
         val url = request.data + page.toString()
         val document = app.get(url, referer = "$mainUrl/", interceptor = cloudflareKiller).document
 
@@ -128,12 +132,12 @@ class AnimeOnlineProvider : MainAPI() {
 
             if (type == TvType.Movie) {
                 newMovieSearchResponse(finalTitle, fixedLink, TvType.Movie) {
-                    this.posterUrl = poster
+                    this.posterUrl = getProxyUrl(poster)
                     this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                 }
             } else {
                 newAnimeSearchResponse(finalTitle, fixedLink, TvType.Anime) {
-                    this.posterUrl = poster
+                    this.posterUrl = getProxyUrl(poster)
                     this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                 }
             }
@@ -166,19 +170,19 @@ class AnimeOnlineProvider : MainAPI() {
             when {
                 fixedLink.contains("/pelicula/") -> {
                     newMovieSearchResponse(title, fixedLink, TvType.Movie) {
-                        this.posterUrl = poster
+                        this.posterUrl = getProxyUrl(poster)
                         this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                     }
                 }
                 fixedLink.contains("/episodio/") -> {
                     newAnimeSearchResponse(title, fixedLink, TvType.Anime) {
-                        this.posterUrl = poster
+                        this.posterUrl = getProxyUrl(poster)
                         this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                     }
                 }
                 else -> {
                     newAnimeSearchResponse(title, fixedLink, TvType.Anime) {
-                        this.posterUrl = poster
+                        this.posterUrl = getProxyUrl(poster)
                         this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                     }
                 }
@@ -236,7 +240,7 @@ class AnimeOnlineProvider : MainAPI() {
                     this.name = name
                     this.season = seasonNumber
                     this.episode = episodeNumber
-                    this.posterUrl = episodePoster
+                    this.posterUrl = getProxyUrl(episodePoster)
                 }
             }
             if (episodes.isEmpty()) null else seasonNumber to episodes
@@ -244,7 +248,7 @@ class AnimeOnlineProvider : MainAPI() {
 
         if (seasons.isEmpty()) return null
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            posterUrl = poster
+            posterUrl = getProxyUrl(poster)
             posterHeaders = this@AnimeOnlineProvider.posterHeaders
             this.plot = description
             seasons.forEach { (_, episodeList) -> addEpisodes(DubStatus.Subbed, episodeList) }
@@ -305,7 +309,6 @@ class AnimeOnlineProvider : MainAPI() {
                 
                 if (sourceUrl.isNullOrBlank()) return@forEach
 
-                // BYPASS Y RENOMBRAMIENTO
                 if (sourceUrl.contains("uqload", ignoreCase = true)) {
                     if (resolveUqload(sourceUrl, data, server, blockLang, callback)) linkCount++
                 } else if (sourceUrl.contains("filemo", ignoreCase = true)) {
