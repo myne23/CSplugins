@@ -40,20 +40,13 @@ class AnimeOnlineProvider : MainAPI() {
             return base
         }
 
-    // --- MAGIA: PROXY PARA EVITAR BLOQUEO DE IMÁGENES EN COIL ---
-    private fun getProxyUrl(url: String?): String? {
-        if (url.isNullOrBlank()) return null
-        val fixed = fixUrl(url)
-        return "https://wsrv.nl/?url=$fixed"
-    }
-
     private fun parseAnimeCard(article: Element): SearchResponse? {
         val link = article.selectFirst("a[href]")?.attr("href") ?: return null
         val title = article.selectFirst(".data h3")?.text()?.trim() ?: return null
         val image = article.selectFirst("img")
         val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
         return newAnimeSearchResponse(title, fixUrl(link), TvType.Anime) {
-            this.posterUrl = getProxyUrl(poster)
+            this.posterUrl = poster
             this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
         }
     }
@@ -65,7 +58,7 @@ class AnimeOnlineProvider : MainAPI() {
         val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
         val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
         return newAnimeSearchResponse(if (!episodeTitle.isNullOrBlank()) "$title - $episodeTitle" else title, fixUrl(link), TvType.Anime) {
-            this.posterUrl = getProxyUrl(poster)
+            this.posterUrl = poster
             this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
         }
     }
@@ -101,7 +94,7 @@ class AnimeOnlineProvider : MainAPI() {
                 val image = article.selectFirst("img")
                 val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
                 newMovieSearchResponse(title, fixUrl(link), TvType.Movie) {
-                    this.posterUrl = getProxyUrl(poster)
+                    this.posterUrl = poster
                     this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                 }
             } ?: emptyList()
@@ -132,12 +125,12 @@ class AnimeOnlineProvider : MainAPI() {
 
             if (type == TvType.Movie) {
                 newMovieSearchResponse(finalTitle, fixedLink, TvType.Movie) {
-                    this.posterUrl = getProxyUrl(poster)
+                    this.posterUrl = poster
                     this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                 }
             } else {
                 newAnimeSearchResponse(finalTitle, fixedLink, TvType.Anime) {
-                    this.posterUrl = getProxyUrl(poster)
+                    this.posterUrl = poster
                     this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                 }
             }
@@ -170,19 +163,19 @@ class AnimeOnlineProvider : MainAPI() {
             when {
                 fixedLink.contains("/pelicula/") -> {
                     newMovieSearchResponse(title, fixedLink, TvType.Movie) {
-                        this.posterUrl = getProxyUrl(poster)
+                        this.posterUrl = poster
                         this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                     }
                 }
                 fixedLink.contains("/episodio/") -> {
                     newAnimeSearchResponse(title, fixedLink, TvType.Anime) {
-                        this.posterUrl = getProxyUrl(poster)
+                        this.posterUrl = poster
                         this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                     }
                 }
                 else -> {
                     newAnimeSearchResponse(title, fixedLink, TvType.Anime) {
-                        this.posterUrl = getProxyUrl(poster)
+                        this.posterUrl = poster
                         this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                     }
                 }
@@ -240,7 +233,7 @@ class AnimeOnlineProvider : MainAPI() {
                     this.name = name
                     this.season = seasonNumber
                     this.episode = episodeNumber
-                    this.posterUrl = getProxyUrl(episodePoster)
+                    this.posterUrl = episodePoster
                 }
             }
             if (episodes.isEmpty()) null else seasonNumber to episodes
@@ -248,7 +241,7 @@ class AnimeOnlineProvider : MainAPI() {
 
         if (seasons.isEmpty()) return null
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            posterUrl = getProxyUrl(poster)
+            posterUrl = poster
             posterHeaders = this@AnimeOnlineProvider.posterHeaders
             this.plot = description
             seasons.forEach { (_, episodeList) -> addEpisodes(DubStatus.Subbed, episodeList) }
