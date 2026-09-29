@@ -40,20 +40,72 @@ class AnimeOnlineProvider : MainAPI() {
             return base
         }
 
-    // CATÁLOGO EXPANDIDO: Definimos todas las secciones dinámicas
+    private fun parseAnimeCard(article: Element): SearchResponse? {
+        val link = article.selectFirst("a[href]")?.attr("href") ?: return null
+        val title = article.selectFirst(".data h3")?.text()?.trim() ?: return null
+        val image = article.selectFirst("img")
+        val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+        return newAnimeSearchResponse(title, fixUrl(link), TvType.Anime) {
+            this.posterUrl = poster
+            this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
+        }
+    }
+
+    private fun parseEpisodeCard(article: Element): SearchResponse? {
+        val link = article.selectFirst("a[href*='/episodio/']")?.attr("href") ?: return null
+        val title = article.selectFirst(".data h3")?.text()?.trim() ?: return null
+        val image = article.selectFirst("img")
+        val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+        val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
+        return newAnimeSearchResponse(if (!episodeTitle.isNullOrBlank()) "$title - $episodeTitle" else title, fixUrl(link), TvType.Anime) {
+            this.posterUrl = poster
+            this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
+        }
+    }
+
+    // CATÁLOGO MIXTO: "Inicio" usa tu lógica original, el resto usa scroll infinito
     override val mainPage = mainPageOf(
+        "$mainUrl/inicio/" to "Inicio", 
         "$mainUrl/tendencias/page/" to "Tendencias 🔥",
-        "$mainUrl/episodios/page/" to "Últimos Episodios ⚡",
-        "$mainUrl/animes/page/" to "Animes Agregados 💥",
-        "$mainUrl/peliculas/page/" to "Películas 🎬",
         "$mainUrl/genero/accion/page/" to "Acción",
         "$mainUrl/genero/comedia/page/" to "Comedia",
         "$mainUrl/genero/romance/page/" to "Romance",
-        "$mainUrl/genero/isekai/page/" to "Isekai"
+        "$mainUrl/genero/aventura/page/" to "Aventura"
     )
 
-    // CATÁLOGO DINÁMICO: Carga los items con paginación
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // SI ES LA PORTADA: Devolvemos tus 3 filas originales (Episodios, Animes, Películas)
+        if (request.name == "Inicio") {
+            if (page > 1) return newHomePageResponse(emptyList(), hasNext = false)
+            
+            val response = app.get(request.data, referer = "$mainUrl/", interceptor = cloudflareKiller)
+            val document = response.document
+            val sections = ArrayList<HomePageList>()
+
+            val latestEpisodes = document.select("div.items article.item.se.episodes").mapNotNull { parseEpisodeCard(it) }
+            if (latestEpisodes.isNotEmpty()) sections.add(HomePageList("Últimos episodios ⚡", latestEpisodes))
+
+            val latestAnimeHeader = document.select("header").firstOrNull { it.text().contains("ÚLTIMOS ANIMES AGREGADOS") }
+            val latestAnime = latestAnimeHeader?.nextElementSibling()?.nextElementSibling()?.select("article.item")?.mapNotNull { parseAnimeCard(it) } ?: emptyList()
+            if (latestAnime.isNotEmpty()) sections.add(HomePageList("Últimos animes agregados 💥", latestAnime))
+
+            val latestMoviesHeader = document.select("header").firstOrNull { it.text().contains("ÚLTIMAS PELICULAS AGREGADAS") }
+            val latestMovies = latestMoviesHeader?.nextElementSibling()?.nextElementSibling()?.select("article.item")?.mapNotNull { article ->
+                val link = article.selectFirst("a[href]")?.attr("href") ?: return@mapNotNull null
+                val title = article.selectFirst(".data h3")?.text()?.trim() ?: return@mapNotNull null
+                val image = article.selectFirst("img")
+                val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+                newMovieSearchResponse(title, fixUrl(link), TvType.Movie) {
+                    this.posterUrl = poster
+                    this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
+                }
+            } ?: emptyList()
+            if (latestMovies.isNotEmpty()) sections.add(HomePageList("Últimas peliculas agregadas 🎬", latestMovies))
+
+            return newHomePageResponse(sections, hasNext = false)
+        }
+
+        // SI SON OTRAS CATEGORÍAS: Usamos la paginación infinita
         val url = request.data + page.toString()
         val document = app.get(url, referer = "$mainUrl/", interceptor = cloudflareKiller).document
 
@@ -105,18 +157,10 @@ class AnimeOnlineProvider : MainAPI() {
         ).document
 
         return document.select(".result-item").mapNotNull { item ->
-            val link = item.selectFirst("a[href]")?.attr("href")
-                ?: return@mapNotNull null
-
-            val title = item.selectFirst("h3")?.text()?.trim()
-                ?: item.selectFirst(".title")?.text()?.trim()
-                ?: return@mapNotNull null
-
+            val link = item.selectFirst("a[href]")?.attr("href") ?: return@mapNotNull null
+            val title = item.selectFirst("h3")?.text()?.trim() ?: item.selectFirst(".title")?.text()?.trim() ?: return@mapNotNull null
             val image = item.selectFirst("img")
-            val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() }
-                ?: image?.attr("data-lazy-src")?.takeIf { it.isNotBlank() }
-                ?: image?.attr("src")?.takeIf { it.isNotBlank() }
-
+            val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("data-lazy-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
             val fixedLink = fixUrl(link)
 
             when {
@@ -261,7 +305,7 @@ class AnimeOnlineProvider : MainAPI() {
                 
                 if (sourceUrl.isNullOrBlank()) return@forEach
 
-                // RESTAURACIÓN DEL BYPASS: Saltamos Filemoon instantáneamente para evitar la espera
+                // BYPASS Y RENOMBRAMIENTO
                 if (sourceUrl.contains("uqload", ignoreCase = true)) {
                     if (resolveUqload(sourceUrl, data, server, blockLang, callback)) linkCount++
                 } else if (sourceUrl.contains("filemo", ignoreCase = true)) {
