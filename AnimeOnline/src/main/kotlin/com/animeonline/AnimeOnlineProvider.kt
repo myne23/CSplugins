@@ -20,25 +20,17 @@ class AnimeOnlineProvider : MainAPI() {
     override var lang = "es"
     override val hasMainPage = true
 
+    // Esta es la clase nativa que lanza el menú de Bypass por WebView
     private val cloudflareKiller by lazy { CloudflareKiller() }
 
+    // Cabeceras limpias, sin forzar cookies manuales para no romper las miniaturas
     private val posterHeaders: Map<String, String>
-        get() {
-            val base = mutableMapOf(
-                "Referer" to "$mainUrl/",
-                "User-Agent" to "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
-                    "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-                "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-            )
-
-            runCatching {
-                cloudflareKiller.getCookieHeaders(mainUrl).toMap()
-            }.getOrNull()?.forEach { (k, v) ->
-                base[k] = v
-            }
-
-            return base
-        }
+        get() = mapOf(
+            "Referer" to "$mainUrl/",
+            "User-Agent" to "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+            "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        )
 
     private fun parseAnimeCard(article: Element): SearchResponse? {
         val link = article.selectFirst("a[href]")?.attr("href") ?: return null
@@ -213,7 +205,6 @@ class AnimeOnlineProvider : MainAPI() {
                 val name = element.text().trim().ifBlank { "Episodio" }
                 val episodeNumber = episodeIndex + 1
 
-                // Usamos el póster principal del anime de manera segura para cada episodio
                 newEpisode(fixUrl(href)) {
                     this.name = name
                     this.season = seasonNumber
