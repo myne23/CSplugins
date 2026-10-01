@@ -30,7 +30,6 @@ class AnimeOnlineProvider : MainAPI() {
             "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
         )
 
-    // Función auxiliar para esquivar placeholders base64 (causantes de las miniaturas grises)
     private fun Element.getImageUrl(): String? {
         val img = this.selectFirst("img") ?: return null
         return img.attr("data-src").takeIf { it.isNotBlank() }
@@ -199,15 +198,12 @@ class AnimeOnlineProvider : MainAPI() {
                 val name = linkElement.text().trim().ifBlank { "Episodio" }
                 val episodeNumber = episodeIndex + 1
 
-                // Extrae la imagen asegurándose de que es válida, o usa mainPoster como respaldo
-                val rawImage = element.getImageUrl()
-                val finalEpisodePoster = rawImage?.let { fixUrl(it) } ?: mainPoster?.let { fixUrl(it) }
-
                 newEpisode(fixUrl(href)) {
                     this.name = name
                     this.season = seasonNumber
                     this.episode = episodeNumber
-                    this.posterUrl = finalEpisodePoster
+                    // Asignación estricta de la carátula principal
+                    this.posterUrl = mainPoster?.let { fixUrl(it) }
                 }
             }
             if (episodes.isEmpty()) null else seasonNumber to episodes
