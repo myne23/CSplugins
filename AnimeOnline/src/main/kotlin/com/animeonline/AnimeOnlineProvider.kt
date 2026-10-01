@@ -20,10 +20,8 @@ class AnimeOnlineProvider : MainAPI() {
     override var lang = "es"
     override val hasMainPage = true
 
-    // Esta es la clase nativa que lanza el menú de Bypass por WebView
     private val cloudflareKiller by lazy { CloudflareKiller() }
 
-    // Cabeceras limpias, sin forzar cookies manuales para no romper las miniaturas
     private val posterHeaders: Map<String, String>
         get() = mapOf(
             "Referer" to "$mainUrl/",
@@ -197,19 +195,35 @@ class AnimeOnlineProvider : MainAPI() {
 
         val seasons = document.select("#seasons > .se-c").mapIndexedNotNull { index, seasonElement ->
             val seasonNumber = seasonElement.selectFirst(".se-q .se-t")?.text()?.trim()?.toIntOrNull() ?: (index + 1)
-            val episodeLinks = seasonElement.select(".episodios a[href]")
+            
+            // Analiza la estructura completa de los episodios (li) o fallback a (a)
+            val episodeElements = seasonElement.select(".episodios li")
+            val fallbackElements = seasonElement.select(".episodios a[href]")
+            val elementsToParse = if (episodeElements.isNotEmpty()) episodeElements else fallbackElements
 
-            val episodes = episodeLinks.mapIndexedNotNull { episodeIndex, element ->
-                val href = element.attr("href").trim()
-                if (href.isBlank()) return@mapIndexedNotNull null
-                val name = element.text().trim().ifBlank { "Episodio" }
+            val episodes = elementsToParse.mapIndexedNotNull { episodeIndex, element ->
+                val aTag = if (element.tagName() == "a") element else element.selectFirst("a[href]")
+                val href = aTag?.attr("href")?.trim()
+                if (href.isNullOrBlank()) return@mapIndexedNotNull null
+                
+                // Extraer título del episodio
+                val name = element.selectFirst(".episodiotitle a")?.text()?.trim() 
+                    ?: aTag.text().trim().ifBlank { "Episodio" }
+                
+                // Extraer imagen de la miniatura específica del episodio
+                val img = element.selectFirst("img")
+                val episodePoster = img?.attr("data-src")?.takeIf { it.isNotBlank() }
+                    ?: img?.attr("data-lazy-src")?.takeIf { it.isNotBlank() }
+                    ?: img?.attr("src")?.takeIf { it.isNotBlank() }
+                    ?: poster // <-- Si no hay miniatura, usamos el póster del anime
+
                 val episodeNumber = episodeIndex + 1
 
                 newEpisode(fixUrl(href)) {
                     this.name = name
                     this.season = seasonNumber
                     this.episode = episodeNumber
-                    this.posterUrl = poster
+                    this.posterUrl = episodePoster
                 }
             }
             if (episodes.isEmpty()) null else seasonNumber to episodes
