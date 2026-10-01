@@ -30,11 +30,18 @@ class AnimeOnlineProvider : MainAPI() {
             "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
         )
 
+    // Función auxiliar para esquivar placeholders base64 (causantes de las miniaturas grises)
+    private fun Element.getImageUrl(): String? {
+        val img = this.selectFirst("img") ?: return null
+        return img.attr("data-src").takeIf { it.isNotBlank() }
+            ?: img.attr("data-lazy-src").takeIf { it.isNotBlank() }
+            ?: img.attr("src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
+    }
+
     private fun parseAnimeCard(article: Element): SearchResponse? {
         val link = article.selectFirst("a[href]")?.attr("href") ?: return null
         val title = article.selectFirst(".data h3")?.text()?.trim() ?: return null
-        val image = article.selectFirst("img")
-        val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+        val poster = article.getImageUrl()?.let { fixUrl(it) }
         return newAnimeSearchResponse(title, fixUrl(link), TvType.Anime) {
             this.posterUrl = poster
             this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
@@ -44,8 +51,7 @@ class AnimeOnlineProvider : MainAPI() {
     private fun parseEpisodeCard(article: Element): SearchResponse? {
         val link = article.selectFirst("a[href*='/episodio/']")?.attr("href") ?: return null
         val title = article.selectFirst(".data h3")?.text()?.trim() ?: return null
-        val image = article.selectFirst("img")
-        val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+        val poster = article.getImageUrl()?.let { fixUrl(it) }
         val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
         return newAnimeSearchResponse(if (!episodeTitle.isNullOrBlank()) "$title - $episodeTitle" else title, fixUrl(link), TvType.Anime) {
             this.posterUrl = poster
@@ -81,8 +87,7 @@ class AnimeOnlineProvider : MainAPI() {
             val latestMovies = latestMoviesHeader?.nextElementSibling()?.nextElementSibling()?.select("article.item")?.mapNotNull { article ->
                 val link = article.selectFirst("a[href]")?.attr("href") ?: return@mapNotNull null
                 val title = article.selectFirst(".data h3")?.text()?.trim() ?: return@mapNotNull null
-                val image = article.selectFirst("img")
-                val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+                val poster = article.getImageUrl()?.let { fixUrl(it) }
                 newMovieSearchResponse(title, fixUrl(link), TvType.Movie) {
                     this.posterUrl = poster
                     this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
@@ -102,11 +107,7 @@ class AnimeOnlineProvider : MainAPI() {
                 ?: article.selectFirst(".title")?.text()?.trim()
                 ?: return@mapNotNull null
 
-            val image = article.selectFirst("img")
-            val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() }
-                ?: image?.attr("data-lazy-src")?.takeIf { it.isNotBlank() }
-                ?: image?.attr("src")?.takeIf { it.isNotBlank() }
-
+            val poster = article.getImageUrl()?.let { fixUrl(it) }
             val fixedLink = fixUrl(link)
             val type = if (fixedLink.contains("/pelicula/")) TvType.Movie else TvType.Anime
             
@@ -146,19 +147,12 @@ class AnimeOnlineProvider : MainAPI() {
         return document.select(".result-item").mapNotNull { item ->
             val link = item.selectFirst("a[href]")?.attr("href") ?: return@mapNotNull null
             val title = item.selectFirst("h3")?.text()?.trim() ?: item.selectFirst(".title")?.text()?.trim() ?: return@mapNotNull null
-            val image = item.selectFirst("img")
-            val poster = image?.attr("data-src")?.takeIf { it.isNotBlank() } ?: image?.attr("data-lazy-src")?.takeIf { it.isNotBlank() } ?: image?.attr("src")?.takeIf { it.isNotBlank() }
+            val poster = item.getImageUrl()?.let { fixUrl(it) }
             val fixedLink = fixUrl(link)
 
             when {
                 fixedLink.contains("/pelicula/") -> {
                     newMovieSearchResponse(title, fixedLink, TvType.Movie) {
-                        this.posterUrl = poster
-                        this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
-                    }
-                }
-                fixedLink.contains("/episodio/") -> {
-                    newAnimeSearchResponse(title, fixedLink, TvType.Anime) {
                         this.posterUrl = poster
                         this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                     }
@@ -176,7 +170,7 @@ class AnimeOnlineProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, referer = "$mainUrl/", interceptor = cloudflareKiller).document
         val title = document.select("h1").lastOrNull()?.text()?.trim() ?: return null
-        val poster = document.selectFirst("meta[property='og:image']")?.attr("content")?.takeIf { it.isNotBlank() }
+        val mainPoster = document.selectFirst("meta[property='og:image']")?.attr("content")?.takeIf { it.isNotBlank() }
         var description: String? = null
 
         for (heading in document.select("h2")) {
@@ -195,35 +189,25 @@ class AnimeOnlineProvider : MainAPI() {
 
         val seasons = document.select("#seasons > .se-c").mapIndexedNotNull { index, seasonElement ->
             val seasonNumber = seasonElement.selectFirst(".se-q .se-t")?.text()?.trim()?.toIntOrNull() ?: (index + 1)
-            
-            // Analiza la estructura completa de los episodios (li) o fallback a (a)
             val episodeElements = seasonElement.select(".episodios li")
-            val fallbackElements = seasonElement.select(".episodios a[href]")
-            val elementsToParse = if (episodeElements.isNotEmpty()) episodeElements else fallbackElements
 
-            val episodes = elementsToParse.mapIndexedNotNull { episodeIndex, element ->
-                val aTag = if (element.tagName() == "a") element else element.selectFirst("a[href]")
-                val href = aTag?.attr("href")?.trim()
+            val episodes = episodeElements.mapIndexedNotNull { episodeIndex, element ->
+                val linkElement = element.selectFirst("a[href]")
+                val href = linkElement?.attr("href")?.trim()
                 if (href.isNullOrBlank()) return@mapIndexedNotNull null
                 
-                // Extraer título del episodio
-                val name = element.selectFirst(".episodiotitle a")?.text()?.trim() 
-                    ?: aTag.text().trim().ifBlank { "Episodio" }
-                
-                // Extraer imagen de la miniatura específica del episodio
-                val img = element.selectFirst("img")
-                val episodePoster = img?.attr("data-src")?.takeIf { it.isNotBlank() }
-                    ?: img?.attr("data-lazy-src")?.takeIf { it.isNotBlank() }
-                    ?: img?.attr("src")?.takeIf { it.isNotBlank() }
-                    ?: poster // <-- Si no hay miniatura, usamos el póster del anime
-
+                val name = linkElement.text().trim().ifBlank { "Episodio" }
                 val episodeNumber = episodeIndex + 1
+
+                // Extrae la imagen asegurándose de que es válida, o usa mainPoster como respaldo
+                val rawImage = element.getImageUrl()
+                val finalEpisodePoster = rawImage?.let { fixUrl(it) } ?: mainPoster?.let { fixUrl(it) }
 
                 newEpisode(fixUrl(href)) {
                     this.name = name
                     this.season = seasonNumber
                     this.episode = episodeNumber
-                    this.posterUrl = episodePoster
+                    this.posterUrl = finalEpisodePoster
                 }
             }
             if (episodes.isEmpty()) null else seasonNumber to episodes
@@ -231,7 +215,7 @@ class AnimeOnlineProvider : MainAPI() {
 
         if (seasons.isEmpty()) return null
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            posterUrl = poster
+            posterUrl = mainPoster?.let { fixUrl(it) }
             posterHeaders = this@AnimeOnlineProvider.posterHeaders
             this.plot = description
             seasons.forEach { (_, episodeList) -> addEpisodes(DubStatus.Subbed, episodeList) }
