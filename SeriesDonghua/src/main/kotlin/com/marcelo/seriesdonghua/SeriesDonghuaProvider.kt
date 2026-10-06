@@ -453,10 +453,29 @@ class SeriesDonghuaProvider : MainAPI() {
             "SeriesDonghua: Dailymotion embed HTML length=${html.length}"
         )
 
-        val normalizedHtml = html.replace("\\\\/", "/")
+        val normalizedHtml = html
+            .replace("\\\\/", "/")
+            .replace("\\\\\\\\/", "/")
 
         val manifestMarker = "/cdn/manifest/video/"
         val manifestMarkerIndex = normalizedHtml.indexOf(manifestMarker)
+
+        println(
+            "SeriesDonghua: Dailymotion manifestMarkerIndex=$manifestMarkerIndex"
+        )
+
+        if (manifestMarkerIndex >= 0) {
+            val debugStart = maxOf(0, manifestMarkerIndex - 1000)
+            val debugEnd = minOf(
+                normalizedHtml.length,
+                manifestMarkerIndex + 2500
+            )
+
+            println(
+                "SeriesDonghua: Dailymotion MANIFEST DEBUG=" +
+                    normalizedHtml.substring(debugStart, debugEnd)
+            )
+        }
 
         val manifestUrl = if (manifestMarkerIndex >= 0) {
             val protocolStart = normalizedHtml.lastIndexOf(
@@ -464,8 +483,19 @@ class SeriesDonghuaProvider : MainAPI() {
                 manifestMarkerIndex
             )
 
+            println(
+                "SeriesDonghua: Dailymotion protocolStart=$protocolStart"
+            )
+
             if (protocolStart >= 0) {
-                val urlEnd = normalizedHtml.indexOf('"', manifestMarkerIndex)
+                val urlEnd = normalizedHtml.indexOf(
+                    '"',
+                    manifestMarkerIndex
+                )
+
+                println(
+                    "SeriesDonghua: Dailymotion urlEnd=$urlEnd"
+                )
 
                 if (urlEnd > manifestMarkerIndex) {
                     normalizedHtml.substring(
