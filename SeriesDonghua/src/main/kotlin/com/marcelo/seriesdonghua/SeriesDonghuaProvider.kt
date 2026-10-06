@@ -425,248 +425,95 @@ class SeriesDonghuaProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit
     ): List<ExtractorLink> {
         println(
-            "SeriesDonghua: Dailymotion manual GET embed=$embedUrl"
+            "SeriesDonghua: Dailymotion resolving metadata endpoint=$embedUrl"
         )
 
-        val embedResponse = try {
+        val videoId = embedUrl
+            .substringAfter("video=", "")
+            .substringBefore("&")
+            .takeIf { it.isNotBlank() }
+
+        if (videoId == null) {
+            println(
+                "SeriesDonghua: Dailymotion could not extract video id"
+            )
+            return emptyList()
+        }
+
+        println(
+            "SeriesDonghua: Dailymotion access_id=$videoId"
+        )
+
+        val metadataUrl = "https://geo.dailymotion.com/videos/$videoId"
+
+        val response = try {
             app.get(
-                embedUrl,
+                metadataUrl,
                 headers = mapOf(
+                    "Accept" to "application/json",
+                    "Referer" to embedUrl,
                     "User-Agent" to
-                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-                    "Referer" to "$mainUrl/",
-                    "Accept" to
-                        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language" to
-                        "es-AR,es;q=0.9,en;q=0.8",
-                    "Upgrade-Insecure-Requests" to "1",
-                    "Sec-Fetch-Dest" to "iframe",
-                    "Sec-Fetch-Mode" to "navigate",
-                    "Sec-Fetch-Site" to "cross-site"
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
                 )
             )
         } catch (e: Exception) {
             println(
-                "SeriesDonghua: Dailymotion embed ERROR -> " +
+                "SeriesDonghua: Dailymotion metadata ERROR -> " +
                     "${e.javaClass.simpleName}: ${e.message}"
             )
             return emptyList()
         }
 
-        val html = embedResponse.text
-
         println(
-            "SeriesDonghua: Dailymotion embed HTML length=${html.length}"
+            "SeriesDonghua: Dailymotion metadata status=${response.code}"
         )
 
-        val normalizedHtml = html
-            .replace("\\\\/", "/")
-            .replace("\\\\\\\\/", "/")
-
-        val manifestMarker = "/cdn/manifest/video/"
-        val manifestMarkerIndex = normalizedHtml.indexOf(manifestMarker)
-
-        println(
-            "SeriesDonghua: Dailymotion manifestMarkerIndex=$manifestMarkerIndex"
-        )
-
-        val manifestWordIndex = normalizedHtml.indexOf("manifest")
-        println(
-            "SeriesDonghua: Dailymotion manifestWordIndex=$manifestWordIndex"
-        )
-
-        val criticalIndex = normalizedHtml.indexOf("criticalMetadata")
-        println(
-            "SeriesDonghua: Dailymotion criticalMetadataIndex=$criticalIndex"
-        )
-
-        val streamIndex = normalizedHtml.indexOf("stream")
-        println(
-            "SeriesDonghua: Dailymotion streamIndex=$streamIndex"
-        )
-
-        val debugTerms = listOf(
-            "endpoints",
-            "embed_url",
-            "lib_url",
-            "metadata",
-            "access_id",
-            "video_id",
-            "player_id",
-            "api",
-            "graphql",
-            "dmp_fetchAndStoreMetadata"
-        )
-
-        for (term in debugTerms) {
-            var searchFrom = 0
-            var count = 0
-
-            while (true) {
-                val found = normalizedHtml.indexOf(term, searchFrom)
-
-                if (found < 0 || count >= 5) {
-                    break
-                }
-
-                println(
-                    "SeriesDonghua: Dailymotion TERM=$term INDEX=$found"
-                )
-
-                val debugStart = maxOf(0, found - 500)
-                val debugEnd = minOf(
-                    normalizedHtml.length,
-                    found + 2500
-                )
-
-                println(
-                    "SeriesDonghua: Dailymotion TERM_DEBUG=$term " +
-                        normalizedHtml.substring(debugStart, debugEnd)
-                )
-
-                searchFrom = found + term.length
-                count++
-            }
+        val json = try {
+            JSONObject(response.text)
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: Dailymotion metadata JSON ERROR -> " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
+            return emptyList()
         }
 
-        val manifestUrl = if (manifestMarkerIndex >= 0) {
-            val protocolStart = normalizedHtml.lastIndexOf(
-                "https://",
-                manifestMarkerIndex
-            )
-
-            println(
-                "SeriesDonghua: Dailymotion protocolStart=$protocolStart"
-            )
-
-            if (protocolStart >= 0) {
-                val urlEnd = normalizedHtml.indexOf(
-                    '"',
-                    manifestMarkerIndex
-                )
-
-                println(
-                    "SeriesDonghua: Dailymotion urlEnd=$urlEnd"
-                )
-
-                if (urlEnd > manifestMarkerIndex) {
-                    normalizedHtml.substring(
-                        protocolStart,
-                        urlEnd
-                    ).trim()
-                } else {
-                    null
-                }
-            } else {
-                null
-            }
-        } else {
+        val streamUrl = try {
+            json
+                .getJSONObject("stream")
+                .optString("url")
+                .takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
             null
         }
 
-        if (manifestUrl.isNullOrBlank()) {
+        if (streamUrl == null) {
             println(
-                "SeriesDonghua: Dailymotion ERROR no se encontró manifest"
+                "SeriesDonghua: Dailymotion stream.url not found"
             )
             return emptyList()
         }
 
         println(
-            "SeriesDonghua: Dailymotion manifest=$manifestUrl"
-        )
-
-        val manifestText = try {
-            app.get(
-                manifestUrl,
-                headers = mapOf(
-                    "User-Agent" to
-                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-                    "Referer" to "https://geo.dailymotion.com/",
-                    "Origin" to "https://geo.dailymotion.com/"
-                )
-            ).text
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: Dailymotion manifest ERROR -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
-            return emptyList()
-        }
-
-        println(
-            "SeriesDonghua: Dailymotion manifest length=${manifestText.length}"
+            "SeriesDonghua: Dailymotion stream.url=$streamUrl"
         )
 
         val links = mutableListOf<ExtractorLink>()
 
-        val lines = manifestText.lines()
-
-        for (index in lines.indices) {
-            val line = lines[index].trim()
-
-            if (!line.startsWith("#EXT-X-STREAM-INF:")) {
-                continue
+        links.add(
+            newExtractorLink(
+                name = "Dailymotion",
+                source = "Dailymotion",
+                url = streamUrl,
+                type = ExtractorLinkType.M3U8
+            ) {
+                referer = "https://geo.dailymotion.com/"
+                quality = 0
             }
-
-            val streamUrl = lines
-                .drop(index + 1)
-                .firstOrNull { it.trim().startsWith("http") }
-                ?.trim()
-                ?.substringBefore("#")
-                ?.trim()
-
-            if (streamUrl.isNullOrBlank()) {
-                continue
-            }
-
-            val resolution = Regex(
-                """RESOLUTION=(\d+)x(\d+)"""
-            )
-                .find(line)
-
-            val height = resolution
-                ?.groupValues
-                ?.getOrNull(2)
-                ?.toIntOrNull()
-                ?: 0
-
-            val name = Regex(
-                """NAME="([^"]+)"""
-            )
-                .find(line)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
-                ?: if (height > 0) "${height}p" else "Auto"
-
-            val qualityValue = when {
-                height >= 1080 -> 1080
-                height >= 720 -> 720
-                height >= 480 -> 480
-                height >= 360 -> 360
-                else -> 0
-            }
-
-              links.add(
-                  newExtractorLink(
-                      name = "Dailymotion · $name",
-                      source = "Dailymotion",
-                      url = streamUrl,
-                      type = ExtractorLinkType.M3U8
-                  ) {
-                      referer = "https://geo.dailymotion.com/"
-                      quality = qualityValue
-                  }
-              )
-
-            println(
-                "SeriesDonghua: Dailymotion variant $name -> $streamUrl"
-            )
-        }
+        )
 
         println(
-            "SeriesDonghua: Dailymotion manual variants=${links.size}"
+            "SeriesDonghua: Dailymotion manual linkCount=${links.size}"
         )
 
         return links
