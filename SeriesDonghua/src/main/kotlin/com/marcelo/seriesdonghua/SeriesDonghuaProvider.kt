@@ -453,6 +453,20 @@ class SeriesDonghuaProvider : MainAPI() {
             "SeriesDonghua: Dailymotion embed HTML length=${html.length}"
         )
 
+        val debugDmIndex = html.indexOf("cdndirector")
+        if (debugDmIndex >= 0) {
+            val debugStart = maxOf(0, debugDmIndex - 500)
+            val debugEnd = minOf(html.length, debugDmIndex + 2500)
+            println(
+                "SeriesDonghua: Dailymotion DEBUG fragment=" +
+                    html.substring(debugStart, debugEnd)
+            )
+        } else {
+            println(
+                "SeriesDonghua: Dailymotion DEBUG cdndirector NO APARECE EN HTML"
+            )
+        }
+
         val normalizedHtml = html.replace("\\/", "/")
 
         val manifestPrefix =
