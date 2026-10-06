@@ -481,10 +481,166 @@ class SeriesDonghuaProvider : MainAPI() {
         }
 
         println(
+            "SeriesDonghua: buscando fuente adicional DonghuaWorld"
+        )
+
+        try {
+            val donghuaLinks = loadDonghuaWorldLinks(
+                data = data,
+                subtitleCallback = subtitleCallback
+            )
+
+            donghuaLinks.forEach { link ->
+                val modifiedLink = ExtractorLink(
+                    source = "DonghuaWorld",
+                    name = "DonghuaWorld · Dailymotion",
+                    url = link.url,
+                    referer = link.referer,
+                    quality = link.quality,
+                    type = link.type
+                )
+
+                linkCount++
+                callback(modifiedLink)
+
+                println(
+                    "SeriesDonghua: LINK DonghuaWorld Dailymotion -> ${link.url}"
+                )
+            }
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: ERROR DonghuaWorld -> " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
+        }
+
+        println(
             "SeriesDonghua: loadLinks final linkCount=$linkCount"
         )
 
         return linkCount > 0
+    }
+
+    private suspend fun loadDonghuaWorldLinks(
+        data: String,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ): List<ExtractorLink> {
+        val match = Regex(
+            "/([^/]+)-episodio-(\\d+)/?$"
+        ).find(data)
+
+        if (match == null) {
+            println(
+                "SeriesDonghua: DonghuaWorld no pudo interpretar data=$data"
+            )
+            return emptyList()
+        }
+
+        val seriesSlug = match.groupValues[1]
+        val episodeNumber = match.groupValues[2]
+
+        val searchQuery = seriesSlug
+            .replace("-", " ")
+            .trim()
+
+        println(
+            "SeriesDonghua: DonghuaWorld búsqueda='$searchQuery' episodio=$episodeNumber"
+        )
+
+        val encodedQuery = URLEncoder
+            .encode(searchQuery, "UTF-8")
+            .replace("+", "+")
+
+        val searchUrl = "https://donghuaworld.com/?s=$encodedQuery"
+
+        val searchResponse = app.get(searchUrl)
+
+        val seriesUrl = searchResponse.document
+            .select("a[href*='/anime/']")
+            .mapNotNull { element ->
+                element.attr("href")
+                    .takeIf { it.isNotBlank() }
+                    ?.let { fixUrl(it) }
+            }
+            .distinct()
+            .firstOrNull()
+
+        if (seriesUrl == null) {
+            println(
+                "SeriesDonghua: DonghuaWorld no encontró serie para '$searchQuery'"
+            )
+            return emptyList()
+        }
+
+        println(
+            "SeriesDonghua: DonghuaWorld serie -> $seriesUrl"
+        )
+
+        val seriesResponse = app.get(seriesUrl)
+
+        val episodeUrl = seriesResponse.document
+            .select("a[href]")
+            .mapNotNull { element ->
+                val href = element.attr("href").trim()
+
+                if (href.isBlank()) {
+                    return@mapNotNull null
+                }
+
+                val normalized = href
+                    .substringBefore("?")
+                    .substringBefore("#")
+
+                val episodeRegex = Regex(
+                    "/episode-$episodeNumber(?:-|/)"
+                )
+
+                if (episodeRegex.containsMatchIn(normalized)) {
+                    fixUrl(href)
+                } else {
+                    null
+                }
+            }
+            .distinct()
+            .firstOrNull()
+
+        if (episodeUrl == null) {
+            println(
+                "SeriesDonghua: DonghuaWorld no encontró episodio $episodeNumber"
+            )
+            return emptyList()
+        }
+
+        println(
+            "SeriesDonghua: DonghuaWorld episodio -> $episodeUrl"
+        )
+
+        val episodeResponse = app.get(episodeUrl)
+
+        val embedUrl = episodeResponse.document
+            .select("iframe[src*='geo.dailymotion.com'][src*='video=']")
+            .mapNotNull { iframe ->
+                iframe.attr("src")
+                    .trim()
+                    .takeIf { it.isNotBlank() }
+            }
+            .firstOrNull()
+
+        if (embedUrl == null) {
+            println(
+                "SeriesDonghua: DonghuaWorld no encontró DM Player"
+            )
+            return emptyList()
+        }
+
+        println(
+            "SeriesDonghua: DonghuaWorld DM Player -> $embedUrl"
+        )
+
+        return loadDailymotionLinks(
+            embedUrl = embedUrl,
+            subtitleCallback = subtitleCallback
+        )
     }
 
     private suspend fun loadDailymotionLinks(
