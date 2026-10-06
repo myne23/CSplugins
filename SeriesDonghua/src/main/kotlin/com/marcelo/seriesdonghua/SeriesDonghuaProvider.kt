@@ -486,13 +486,16 @@ class SeriesDonghuaProvider : MainAPI() {
         )
 
         val debugTerms = listOf(
-            "criticalMetadata",
-            "dmp_fetchAndStoreMetadata",
-            "fetchMetadata",
+            "endpoints",
+            "embed_url",
+            "lib_url",
             "metadata",
-            "manifest",
-            "stream",
-            "playback"
+            "access_id",
+            "video_id",
+            "player_id",
+            "api",
+            "graphql",
+            "dmp_fetchAndStoreMetadata"
         )
 
         for (term in debugTerms) {
@@ -502,7 +505,7 @@ class SeriesDonghuaProvider : MainAPI() {
             while (true) {
                 val found = normalizedHtml.indexOf(term, searchFrom)
 
-                if (found < 0 || count >= 8) {
+                if (found < 0 || count >= 5) {
                     break
                 }
 
@@ -510,10 +513,10 @@ class SeriesDonghuaProvider : MainAPI() {
                     "SeriesDonghua: Dailymotion TERM=$term INDEX=$found"
                 )
 
-                val debugStart = maxOf(0, found - 300)
+                val debugStart = maxOf(0, found - 500)
                 val debugEnd = minOf(
                     normalizedHtml.length,
-                    found + 1200
+                    found + 2500
                 )
 
                 println(
