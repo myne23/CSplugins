@@ -2,6 +2,11 @@ package com.marcelo.seriesdonghua
 
 import com.lagradost.cloudstream3.*
 import org.jsoup.nodes.Element
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.loadExtractor
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLEncoder
 
 class SeriesDonghuaProvider : MainAPI() {
@@ -179,5 +184,216 @@ class SeriesDonghuaProvider : MainAPI() {
                 episodes
             )
         }
+    }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        println("SeriesDonghua: loadLinks data=$data")
+
+        val pageResponse = try {
+            app.get(data)
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: ERROR obteniendo episodio -> " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
+            return false
+        }
+
+        val document = pageResponse.document
+
+        val videoId = document
+            .selectFirst("[data-video-id]")
+            ?.attr("data-video-id")
+            ?.trim()
+
+        val csrf = document
+            .selectFirst("meta[name=csrf-token]")
+            ?.attr("content")
+            ?.trim()
+
+        if (videoId.isNullOrBlank()) {
+            println("SeriesDonghua: ERROR no se encontró data-video-id")
+            return false
+        }
+
+        if (csrf.isNullOrBlank()) {
+            println("SeriesDonghua: ERROR no se encontró CSRF")
+            return false
+        }
+
+        val cookies = pageResponse.cookies.entries
+            .joinToString("; ") { (cookieName, cookieValue) ->
+                "$cookieName=$cookieValue"
+            }
+
+        println(
+            "SeriesDonghua: videoId=$videoId cookies=${pageResponse.cookies.keys}"
+        )
+
+        val servers = listOf(
+            "Dailymotion" to 0,
+            "OK.ru" to 1,
+            "Rumble" to 2,
+            "Filemoon" to 3,
+            "VOE" to 4
+        )
+
+        var linkCount = 0
+
+        for ((serverName, serverIndex) in servers) {
+            try {
+                println(
+                    "SeriesDonghua: solicitando $serverName index=$serverIndex"
+                )
+
+                val connection = URL(
+                    "$mainUrl/api/player/get-server"
+                ).openConnection() as HttpURLConnection
+
+                connection.requestMethod = "POST"
+                connection.doOutput = true
+
+                connection.setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+                )
+                connection.setRequestProperty(
+                    "Referer",
+                    data
+                )
+                connection.setRequestProperty(
+                    "Origin",
+                    mainUrl
+                )
+                connection.setRequestProperty(
+                    "Cookie",
+                    cookies
+                )
+                connection.setRequestProperty(
+                    "Content-Type",
+                    "application/json"
+                )
+                connection.setRequestProperty(
+                    "Accept",
+                    "application/json, text/plain, */*"
+                )
+                connection.setRequestProperty(
+                    "X-CSRF-TOKEN",
+                    csrf
+                )
+                connection.setRequestProperty(
+                    "X-Requested-With",
+                    "XMLHttpRequest"
+                )
+
+                val requestBody = JSONObject()
+                    .put("video_id", videoId.toInt())
+                    .put("server_index", serverIndex)
+                    .toString()
+
+                connection.outputStream.use { output ->
+                    output.write(
+                        requestBody.toByteArray(Charsets.UTF_8)
+                    )
+                }
+
+                val responseCode = connection.responseCode
+
+                val responseText = try {
+                    if (responseCode in 200..299) {
+                        connection.inputStream
+                            .bufferedReader()
+                            .use { it.readText() }
+                    } else {
+                        connection.errorStream
+                            ?.bufferedReader()
+                            ?.use { it.readText() }
+                            ?: ""
+                    }
+                } finally {
+                    connection.disconnect()
+                }
+
+                println(
+                    "SeriesDonghua: $serverName HTTP=$responseCode " +
+                        "response=${responseText.take(300)}"
+                )
+
+                if (responseCode !in 200..299) {
+                    continue
+                }
+
+                val json = try {
+                    JSONObject(responseText)
+                } catch (e: Exception) {
+                    println(
+                        "SeriesDonghua: $serverName JSON inválido -> " +
+                            "${e.message}"
+                    )
+                    continue
+                }
+
+                if (!json.optBoolean("success", false)) {
+                    println(
+                        "SeriesDonghua: $serverName API success=false"
+                    )
+                    continue
+                }
+
+                val embedUrl = json
+                    .optString("embed_url")
+                    .trim()
+
+                if (embedUrl.isBlank()) {
+                    println(
+                        "SeriesDonghua: $serverName sin embed_url"
+                    )
+                    continue
+                }
+
+                println(
+                    "SeriesDonghua: $serverName embed=$embedUrl"
+                )
+
+                loadExtractor(
+                    url = embedUrl,
+                    referer = data,
+                    subtitleCallback = subtitleCallback,
+                    callback = { link ->
+                        val modifiedLink = ExtractorLink(
+                            source = link.source,
+                            name = "${link.name} · $serverName",
+                            url = link.url,
+                            referer = link.referer,
+                            quality = link.quality,
+                            type = link.type
+                        )
+
+                        linkCount++
+                        callback(modifiedLink)
+
+                        println(
+                            "SeriesDonghua: LINK $serverName -> ${link.url}"
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                println(
+                    "SeriesDonghua: ERROR $serverName -> " +
+                        "${e.javaClass.simpleName}: ${e.message}"
+                )
+            }
+        }
+
+        println(
+            "SeriesDonghua: loadLinks final linkCount=$linkCount"
+        )
+
+        return linkCount > 0
     }
 }
