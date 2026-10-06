@@ -1,10 +1,12 @@
 package com.marcelo.seriesdonghua
 
 import com.lagradost.cloudstream3.*
-import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.json.JSONObject
+import org.jsoup.nodes.Element
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -37,9 +39,6 @@ class SeriesDonghuaProvider : MainAPI() {
         val document = app.get(url).document
         val items = mutableListOf<HomePageList>()
 
-        // Destacados: usamos los donghuas actualmente en emisión.
-        // La portada actual no entrega el antiguo slider como HTML estático,
-        // por lo que usamos contenido real y estable del sitio.
         if (page == 1 && request.name == "Nuevos Episodios") {
             val featuredDocument = app.get("$mainUrl/donghuas-en-emision/").document
             val featured = featuredDocument
@@ -360,6 +359,30 @@ class SeriesDonghuaProvider : MainAPI() {
                     "SeriesDonghua: $serverName embed=$embedUrl"
                 )
 
+                if (serverName == "Dailymotion") {
+                    val dailymotionLinks = loadDailymotionLinks(
+                        embedUrl = embedUrl,
+                        subtitleCallback = subtitleCallback
+                    )
+
+                    if (dailymotionLinks.isNotEmpty()) {
+                        dailymotionLinks.forEach { link ->
+                            linkCount++
+                            callback(link)
+
+                            println(
+                                "SeriesDonghua: LINK Dailymotion -> ${link.url}"
+                            )
+                        }
+                    } else {
+                        println(
+                            "SeriesDonghua: Dailymotion manual sin links"
+                        )
+                    }
+
+                    continue
+                }
+
                 loadExtractor(
                     url = embedUrl,
                     referer = data,
@@ -395,5 +418,154 @@ class SeriesDonghuaProvider : MainAPI() {
         )
 
         return linkCount > 0
+    }
+
+    private suspend fun loadDailymotionLinks(
+        embedUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ): List<ExtractorLink> {
+        println(
+            "SeriesDonghua: Dailymotion manual GET embed=$embedUrl"
+        )
+
+        val embedResponse = try {
+            app.get(
+                embedUrl,
+                headers = mapOf(
+                    "User-Agent" to
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                    "Referer" to "$mainUrl/",
+                    "Accept" to
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                )
+            )
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: Dailymotion embed ERROR -> " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
+            return emptyList()
+        }
+
+        val html = embedResponse.text
+
+        println(
+            "SeriesDonghua: Dailymotion embed HTML length=${html.length}"
+        )
+
+        val manifestUrl = Regex(
+            """https://cdndirector\.dailymotion\.com/cdn/manifest/video/[^"\\]+"""
+        )
+            .find(html)
+            ?.value
+            ?.replace("\\/", "/")
+            ?.trim()
+
+        if (manifestUrl.isNullOrBlank()) {
+            println(
+                "SeriesDonghua: Dailymotion ERROR no se encontró manifest"
+            )
+            return emptyList()
+        }
+
+        println(
+            "SeriesDonghua: Dailymotion manifest=$manifestUrl"
+        )
+
+        val manifestText = try {
+            app.get(
+                manifestUrl,
+                headers = mapOf(
+                    "User-Agent" to
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                    "Referer" to "https://geo.dailymotion.com/",
+                    "Origin" to "https://geo.dailymotion.com/"
+                )
+            ).text
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: Dailymotion manifest ERROR -> " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
+            return emptyList()
+        }
+
+        println(
+            "SeriesDonghua: Dailymotion manifest length=${manifestText.length}"
+        )
+
+        val links = mutableListOf<ExtractorLink>()
+
+        val lines = manifestText.lines()
+
+        for (index in lines.indices) {
+            val line = lines[index].trim()
+
+            if (!line.startsWith("#EXT-X-STREAM-INF:")) {
+                continue
+            }
+
+            val streamUrl = lines
+                .drop(index + 1)
+                .firstOrNull { it.trim().startsWith("http") }
+                ?.trim()
+                ?.substringBefore("#")
+                ?.trim()
+
+            if (streamUrl.isNullOrBlank()) {
+                continue
+            }
+
+            val resolution = Regex(
+                """RESOLUTION=(\d+)x(\d+)"""
+            )
+                .find(line)
+
+            val height = resolution
+                ?.groupValues
+                ?.getOrNull(2)
+                ?.toIntOrNull()
+                ?: 0
+
+            val name = Regex(
+                """NAME="([^"]+)"""
+            )
+                .find(line)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: if (height > 0) "${height}p" else "Auto"
+
+            val qualityValue = when {
+                height >= 1080 -> 1080
+                height >= 720 -> 720
+                height >= 480 -> 480
+                height >= 360 -> 360
+                else -> 0
+            }
+
+              links.add(
+                  newExtractorLink(
+                      name = "Dailymotion · $name",
+                      source = "Dailymotion",
+                      url = streamUrl,
+                      type = ExtractorLinkType.M3U8
+                  ) {
+                      referer = "https://geo.dailymotion.com/"
+                      quality = qualityValue
+                  }
+              )
+
+            println(
+                "SeriesDonghua: Dailymotion variant $name -> $streamUrl"
+            )
+        }
+
+        println(
+            "SeriesDonghua: Dailymotion manual variants=${links.size}"
+        )
+
+        return links
     }
 }
