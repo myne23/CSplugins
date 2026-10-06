@@ -436,7 +436,13 @@ class SeriesDonghuaProvider : MainAPI() {
                         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
                     "Referer" to "$mainUrl/",
                     "Accept" to
-                        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language" to
+                        "es-AR,es;q=0.9,en;q=0.8",
+                    "Upgrade-Insecure-Requests" to "1",
+                    "Sec-Fetch-Dest" to "iframe",
+                    "Sec-Fetch-Mode" to "navigate",
+                    "Sec-Fetch-Site" to "cross-site"
                 )
             )
         } catch (e: Exception) {
