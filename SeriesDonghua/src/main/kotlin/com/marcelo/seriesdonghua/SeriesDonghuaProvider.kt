@@ -388,21 +388,30 @@ class SeriesDonghuaProvider : MainAPI() {
                     referer = data,
                     subtitleCallback = subtitleCallback,
                     callback = { link ->
-                        val modifiedLink = ExtractorLink(
-                            source = link.source,
-                            name = "${link.name} · $serverName",
-                            url = link.url,
-                            referer = link.referer,
-                            quality = link.quality,
-                            type = link.type
-                        )
+                        if (
+                            serverName == "Rumble" &&
+                            !link.url.contains("rumble.com/hls-vod/")
+                        ) {
+                            println(
+                                "SeriesDonghua: Rumble descartado -> ${link.url}"
+                            )
+                        } else {
+                            val modifiedLink = ExtractorLink(
+                                source = link.source,
+                                name = "${link.name} · $serverName",
+                                url = link.url,
+                                referer = link.referer,
+                                quality = link.quality,
+                                type = link.type
+                            )
 
-                        linkCount++
-                        callback(modifiedLink)
+                            linkCount++
+                            callback(modifiedLink)
 
-                        println(
-                            "SeriesDonghua: LINK $serverName -> ${link.url}"
-                        )
+                            println(
+                                "SeriesDonghua: LINK $serverName -> ${link.url}"
+                            )
+                        }
                     }
                 )
             } catch (e: Exception) {
