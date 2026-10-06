@@ -25,7 +25,8 @@ class SeriesDonghuaProvider : MainAPI() {
         val url = if (page == 1) {
             request.data
         } else {
-            "${request.data}page/$page/"
+            val separator = if (request.data.contains("?")) "&" else "?"
+            "${request.data}${separator}page=$page"
         }
 
         val document = app.get(url).document
