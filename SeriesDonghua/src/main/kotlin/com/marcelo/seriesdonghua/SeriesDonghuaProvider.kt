@@ -453,41 +453,31 @@ class SeriesDonghuaProvider : MainAPI() {
             "SeriesDonghua: Dailymotion embed HTML length=${html.length}"
         )
 
-        val debugDmIndex = html.indexOf("cdndirector")
-        if (debugDmIndex >= 0) {
-            val debugStart = maxOf(0, debugDmIndex - 500)
-            val debugEnd = minOf(html.length, debugDmIndex + 2500)
-            println(
-                "SeriesDonghua: Dailymotion DEBUG fragment=" +
-                    html.substring(debugStart, debugEnd)
+        val normalizedHtml = html.replace("\\\\/", "/")
+
+        val manifestMarker = "/cdn/manifest/video/"
+        val manifestMarkerIndex = normalizedHtml.indexOf(manifestMarker)
+
+        val manifestUrl = if (manifestMarkerIndex >= 0) {
+            val protocolStart = normalizedHtml.lastIndexOf(
+                "https://",
+                manifestMarkerIndex
             )
-        } else {
-            println(
-                "SeriesDonghua: Dailymotion DEBUG cdndirector NO APARECE EN HTML"
-            )
-        }
 
-        val normalizedHtml = html.replace("\\/", "/")
+            if (protocolStart >= 0) {
+                val urlEnd = normalizedHtml.indexOf('"', manifestMarkerIndex)
 
-        val manifestPrefix =
-            "https://cdndirector.dailymotion.com/cdn/manifest/video/"
-
-        val manifestStart = normalizedHtml.indexOf(manifestPrefix)
-
-        val manifestEnd = if (manifestStart >= 0) {
-            normalizedHtml.indexOf('"', manifestStart)
-        } else {
-            -1
-        }
-
-        val manifestUrl = if (
-            manifestStart >= 0 &&
-            manifestEnd > manifestStart
-        ) {
-            normalizedHtml.substring(
-                manifestStart,
-                manifestEnd
-            ).trim()
+                if (urlEnd > manifestMarkerIndex) {
+                    normalizedHtml.substring(
+                        protocolStart,
+                        urlEnd
+                    ).trim()
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
         } else {
             null
         }
