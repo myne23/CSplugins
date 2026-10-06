@@ -453,13 +453,30 @@ class SeriesDonghuaProvider : MainAPI() {
             "SeriesDonghua: Dailymotion embed HTML length=${html.length}"
         )
 
-        val manifestUrl = Regex(
-            """https://cdndirector\.dailymotion\.com/cdn/manifest/video/[^"\\]+"""
-        )
-            .find(html)
-            ?.value
-            ?.replace("\\/", "/")
-            ?.trim()
+        val normalizedHtml = html.replace("\\/", "/")
+
+        val manifestPrefix =
+            "https://cdndirector.dailymotion.com/cdn/manifest/video/"
+
+        val manifestStart = normalizedHtml.indexOf(manifestPrefix)
+
+        val manifestEnd = if (manifestStart >= 0) {
+            normalizedHtml.indexOf('"', manifestStart)
+        } else {
+            -1
+        }
+
+        val manifestUrl = if (
+            manifestStart >= 0 &&
+            manifestEnd > manifestStart
+        ) {
+            normalizedHtml.substring(
+                manifestStart,
+                manifestEnd
+            ).trim()
+        } else {
+            null
+        }
 
         if (manifestUrl.isNullOrBlank()) {
             println(
