@@ -464,15 +464,37 @@ class SeriesDonghuaProvider : MainAPI() {
             "SeriesDonghua: Dailymotion manifestMarkerIndex=$manifestMarkerIndex"
         )
 
-        if (manifestMarkerIndex >= 0) {
-            val debugStart = maxOf(0, manifestMarkerIndex - 1000)
+        val manifestWordIndex = normalizedHtml.indexOf("manifest")
+        println(
+            "SeriesDonghua: Dailymotion manifestWordIndex=$manifestWordIndex"
+        )
+
+        val criticalIndex = normalizedHtml.indexOf("criticalMetadata")
+        println(
+            "SeriesDonghua: Dailymotion criticalMetadataIndex=$criticalIndex"
+        )
+
+        val streamIndex = normalizedHtml.indexOf("stream")
+        println(
+            "SeriesDonghua: Dailymotion streamIndex=$streamIndex"
+        )
+
+        val debugIndex = when {
+            criticalIndex >= 0 -> criticalIndex
+            manifestWordIndex >= 0 -> manifestWordIndex
+            streamIndex >= 0 -> streamIndex
+            else -> -1
+        }
+
+        if (debugIndex >= 0) {
+            val debugStart = maxOf(0, debugIndex - 1500)
             val debugEnd = minOf(
                 normalizedHtml.length,
-                manifestMarkerIndex + 2500
+                debugIndex + 5000
             )
 
             println(
-                "SeriesDonghua: Dailymotion MANIFEST DEBUG=" +
+                "SeriesDonghua: Dailymotion STRUCTURE DEBUG=" +
                     normalizedHtml.substring(debugStart, debugEnd)
             )
         }
