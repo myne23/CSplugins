@@ -383,6 +383,54 @@ class SeriesDonghuaProvider : MainAPI() {
                     continue
                 }
 
+                if (serverName == "OK.ru") {
+                    val okLink = loadOkRuLinks(embedUrl)
+
+                    if (okLink != null) {
+                        linkCount++
+                        callback(okLink)
+
+                        println(
+                            "SeriesDonghua: LINK OK.ru -> ${okLink.url}"
+                        )
+                    } else {
+                        println(
+                            "SeriesDonghua: OK.ru sin HLS"
+                        )
+                    }
+
+                    continue
+                }
+
+                if (serverName == "VOE") {
+                    val voeUrl = extractVoeLink(embedUrl)
+
+                    if (voeUrl != null) {
+                        val voeLink = newExtractorLink(
+                            source = "VOE",
+                            name = "VOE",
+                            url = voeUrl,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            referer = embedUrl
+                            quality = 0
+                        }
+
+                        linkCount++
+                        callback(voeLink)
+
+                        println(
+                            "SeriesDonghua: LINK VOE -> $voeUrl"
+                        )
+                    } else {
+                        println(
+                            "SeriesDonghua: VOE sin HLS"
+                        )
+                    }
+
+                    continue
+                }
+
                 loadExtractor(
                     url = embedUrl,
                     referer = data,
@@ -527,4 +575,545 @@ class SeriesDonghuaProvider : MainAPI() {
 
         return links
     }
+
+    private suspend fun loadOkRuLinks(
+        embedUrl: String
+    ): ExtractorLink? {
+        return try {
+            println(
+                "SeriesDonghua: OK.ru GET $embedUrl"
+            )
+
+            val response = app.get(
+                embedUrl,
+                headers = mapOf(
+                    "User-Agent" to
+                        "Mozilla/5.0 (X11; Linux x86_64) " +
+                        "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+                )
+            )
+
+            println(
+                "SeriesDonghua: OK.ru HTTP=${response.code} " +
+                "size=${response.text.length}"
+            )
+
+            if (!response.isSuccessful) {
+                println(
+                    "SeriesDonghua: OK.ru HTTP no exitoso"
+                )
+                return null
+            }
+
+            val normalized = response.text
+                .replace("&quot;", "\"")
+                .replace("&amp;", "&")
+                .replace("\\u0026", "&")
+                .replace("\\u003D", "=")
+                .replace("\\\\/", "/")
+                .replace("\\\\", "\\")
+
+            val hlsMatch = Regex(
+                """"hlsManifestUrl":"([^"]+)"""",
+                RegexOption.IGNORE_CASE
+            ).find(normalized)
+
+            if (hlsMatch == null) {
+                println(
+                    "SeriesDonghua: OK.ru hlsManifestUrl NO encontrado"
+                )
+                return null
+            }
+
+            val hlsUrl = hlsMatch.groupValues[1]
+                .replace("\\u0026", "&")
+                .replace("\\u003D", "=")
+
+            println(
+                "SeriesDonghua: OK.ru HLS encontrado -> $hlsUrl"
+            )
+
+            newExtractorLink(
+                source = "OK.ru",
+                name = "OK.ru",
+                url = hlsUrl,
+                type = ExtractorLinkType.M3U8
+            ) {
+                referer = embedUrl
+                quality = 0
+            }
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: OK.ru ERROR -> " +
+                "${e.javaClass.simpleName}: ${e.message}"
+            )
+            null
+        }
+    }
+
+    private suspend fun extractVoeLink(
+        embedUrl: String
+    ): String? {
+        return try {
+            println(
+                "SeriesDonghua: VOE directo GET $embedUrl"
+            )
+
+            val firstResponse = app.get(
+                embedUrl,
+                headers = mapOf(
+                    "User-Agent" to
+                        "Mozilla/5.0 (X11; Linux x86_64) " +
+                        "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+                )
+            )
+
+            if (!firstResponse.isSuccessful) {
+                println(
+                    "SeriesDonghua: VOE HTTP inicial ${firstResponse.code}"
+                )
+                return null
+            }
+
+            var html = firstResponse.text
+
+            val redirectUrl = Regex(
+                """window\.location\.href\s*=\s*['"]([^'"]+/e/[^'"]+)['"]"""
+            ).find(html)?.groupValues?.getOrNull(1)
+
+            val realUrl = redirectUrl ?: embedUrl
+
+            println(
+                "SeriesDonghua: VOE URL real -> $realUrl"
+            )
+
+            val pageResponse = if (realUrl != embedUrl) {
+                app.get(
+                    realUrl,
+                    headers = mapOf(
+                        "User-Agent" to
+                            "Mozilla/5.0 (X11; Linux x86_64) " +
+                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+                    )
+                )
+            } else {
+                firstResponse
+            }
+
+            html = pageResponse.text
+
+            println(
+                "SeriesDonghua: VOE página size=${html.length}"
+            )
+
+            var encodedConfig = Regex(
+                """<script[^>]+type=["']application/json["'][^>]*>\s*(?:\[\s*)?["']([^"']+)["']"""
+            ).find(html)?.groupValues?.getOrNull(1)
+
+            if (encodedConfig.isNullOrBlank()) {
+                println(
+                    "SeriesDonghua: VOE ALTCHA requerido"
+                )
+
+                val csrf = Regex(
+                    """name=["']_token["'][^>]+value=["']([^"']+)["']"""
+                ).find(html)?.groupValues?.getOrNull(1)
+
+                val challengeUrl = Regex(
+                    """<altcha-widget[^>]+challenge=["']([^"']+)["']"""
+                ).find(html)?.groupValues?.getOrNull(1)
+
+                if (
+                    csrf.isNullOrBlank() ||
+                    challengeUrl.isNullOrBlank()
+                ) {
+                    println(
+                        "SeriesDonghua: VOE no se encontró CSRF o challenge"
+                    )
+                    return null
+                }
+
+                println(
+                    "SeriesDonghua: VOE ALTCHA challenge -> $challengeUrl"
+                )
+
+                val challengeResponse = app.get(
+                    challengeUrl,
+                    headers = mapOf(
+                        "User-Agent" to
+                            "Mozilla/5.0 (X11; Linux x86_64) " +
+                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                        "Referer" to realUrl
+                    )
+                )
+
+                if (!challengeResponse.isSuccessful) {
+                    println(
+                        "SeriesDonghua: VOE ALTCHA challenge HTTP " +
+                        "${challengeResponse.code}"
+                    )
+                    return null
+                }
+
+                val challengeJson = challengeResponse.text
+
+                val algorithm = Regex(
+                    """"algorithm"\s*:\s*"([^"]+)""""
+                ).find(challengeJson)?.groupValues?.getOrNull(1)
+
+                val cost = Regex(
+                    """"cost"\s*:\s*(\d+)"""
+                ).find(challengeJson)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.toIntOrNull()
+
+                val keyLength = Regex(
+                    """"keyLength"\s*:\s*(\d+)"""
+                ).find(challengeJson)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.toIntOrNull()
+
+                val keyPrefix = Regex(
+                    """"keyPrefix"\s*:\s*"([^"]+)""""
+                ).find(challengeJson)?.groupValues?.getOrNull(1)
+
+                val nonce = Regex(
+                    """"nonce"\s*:\s*"([^"]+)""""
+                ).find(challengeJson)?.groupValues?.getOrNull(1)
+
+                val salt = Regex(
+                    """"salt"\s*:\s*"([^"]+)""""
+                ).find(challengeJson)?.groupValues?.getOrNull(1)
+
+                if (
+                    algorithm.isNullOrBlank() ||
+                    cost == null ||
+                    keyLength == null ||
+                    keyPrefix.isNullOrBlank() ||
+                    nonce.isNullOrBlank() ||
+                    salt.isNullOrBlank()
+                ) {
+                    println(
+                        "SeriesDonghua: VOE ALTCHA parámetros incompletos"
+                    )
+                    return null
+                }
+
+                println(
+                    "SeriesDonghua: VOE ALTCHA " +
+                    "algorithm=$algorithm cost=$cost " +
+                    "keyLength=$keyLength prefix=$keyPrefix"
+                )
+
+                var solvedCounter = -1
+                var solvedKey = ""
+
+                val saltBytes = hexToBytes(salt)
+                val nonceBytes = hexToBytes(nonce)
+
+                val powStart = System.nanoTime()
+
+                for (counter in 0 until 1_000_000) {
+                    val counterBytes = byteArrayOf(
+                        ((counter ushr 24) and 0xff).toByte(),
+                        ((counter ushr 16) and 0xff).toByte(),
+                        ((counter ushr 8) and 0xff).toByte(),
+                        (counter and 0xff).toByte()
+                    )
+
+                    val passwordBytes =
+                        nonceBytes + counterBytes
+
+                    val derived = pbkdf2Sha256(
+                        passwordBytes,
+                        saltBytes,
+                        cost,
+                        keyLength
+                    )
+
+                    val hex = derived.joinToString("") {
+                        "%02x".format(it.toInt() and 0xff)
+                    }
+
+                    if (hex.startsWith(keyPrefix)) {
+                        solvedCounter = counter
+                        solvedKey = hex
+                        break
+                    }
+                }
+
+                if (solvedCounter < 0) {
+                    println(
+                        "SeriesDonghua: VOE ALTCHA PoW no resuelto"
+                    )
+                    return null
+                }
+
+                val powElapsedMs =
+                    (System.nanoTime() - powStart) / 1_000_000.0
+
+                println(
+                    "SeriesDonghua: VOE ALTCHA resuelto " +
+                    "counter=$solvedCounter time=${powElapsedMs}ms"
+                )
+
+                val altchaPayload = """
+                    {"challenge":$challengeJson,"solution":{"counter":$solvedCounter,"derivedKey":"$solvedKey","time":$powElapsedMs}}
+                """.trimIndent()
+
+                val payloadB64 = java.util.Base64
+                    .getEncoder()
+                    .encodeToString(
+                        altchaPayload.toByteArray(Charsets.UTF_8)
+                    )
+
+                val voeCookies = pageResponse.cookies.entries
+                    .joinToString("; ") { (name, value) ->
+                        "$name=$value"
+                    }
+
+                val postResponse = app.post(
+                    realUrl,
+                    headers = mapOf(
+                        "User-Agent" to
+                            "Mozilla/5.0 (X11; Linux x86_64) " +
+                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                        "Referer" to realUrl,
+                        "Origin" to "https://katherineschoolphone.com",
+                        "Cookie" to voeCookies,
+                        "Content-Type" to
+                            "application/x-www-form-urlencoded"
+                    ),
+                    data = mapOf(
+                        "_token" to csrf,
+                        "access" to "0",
+                        "altcha" to payloadB64
+                    )
+                )
+
+                if (!postResponse.isSuccessful) {
+                    println(
+                        "SeriesDonghua: VOE ALTCHA POST HTTP " +
+                        "${postResponse.code}"
+                    )
+                    return null
+                }
+
+                html = postResponse.text
+
+                println(
+                    "SeriesDonghua: VOE página después ALTCHA " +
+                    "size=${html.length}"
+                )
+
+                encodedConfig = Regex(
+                    """<script[^>]+type=["']application/json["'][^>]*>\s*\[\s*["']([^"']+)["']\s*\]\s*</script>"""
+                ).find(html)?.groupValues?.getOrNull(1)
+            }
+
+            if (encodedConfig.isNullOrBlank()) {
+                println(
+                    "SeriesDonghua: VOE config JSON no encontrada"
+                )
+                return null
+            }
+
+            println(
+                "SeriesDonghua: VOE config encontrada " +
+                "${encodedConfig.length} chars"
+            )
+
+            val decodedConfig = decodeVoeConfig(encodedConfig)
+
+            if (decodedConfig.isNullOrBlank()) {
+                println(
+                    "SeriesDonghua: VOE no se pudo decodificar config"
+                )
+                return null
+            }
+
+            val source = Regex(
+                """"source"\s*:\s*"([^"]+)""""
+            ).find(decodedConfig)
+                ?.groupValues
+                ?.getOrNull(1)
+
+            if (source.isNullOrBlank()) {
+                println(
+                    "SeriesDonghua: VOE source HLS no encontrada"
+                )
+                return null
+            }
+
+            val result = source
+                .replace("\\\\/", "/")
+                .replace("\\u0026", "&")
+
+            println(
+                "SeriesDonghua: VOE HLS encontrado -> $result"
+            )
+
+            result
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: VOE directo ERROR -> " +
+                "${e.javaClass.simpleName}: ${e.message}"
+            )
+            null
+        }
+    }
+
+    private fun decodeVoeConfig(
+        encoded: String
+    ): String? {
+        return try {
+            var value = buildString {
+                for (char in encoded) {
+                    append(
+                        when (char) {
+                            in 'A'..'Z' ->
+                                (
+                                    (char.code - 'A'.code + 13) % 26 +
+                                    'A'.code
+                                ).toChar()
+
+                            in 'a'..'z' ->
+                                (
+                                    (char.code - 'a'.code + 13) % 26 +
+                                    'a'.code
+                                ).toChar()
+
+                            else -> char
+                        }
+                    )
+                }
+            }
+
+            val separators = listOf(
+                "@$",
+                "^^",
+                "~@",
+                "%?",
+                "*~",
+                "!!",
+                "#&"
+            )
+
+            for (separator in separators) {
+                value = value.replace(separator, "_")
+            }
+
+            value = value.replace("_", "")
+
+            var bytes = java.util.Base64
+                .getDecoder()
+                .decode(value)
+
+            bytes = bytes.map {
+                (it.toInt() - 3).toByte()
+            }.toByteArray()
+
+            bytes.reverse()
+
+            val decoded = java.util.Base64
+                .getDecoder()
+                .decode(
+                    String(bytes, Charsets.UTF_8)
+                )
+
+            String(decoded, Charsets.UTF_8)
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: VOE decode ERROR -> ${e.message}"
+            )
+            null
+        }
+    }
+
+    private fun pbkdf2Sha256(
+        password: ByteArray,
+        salt: ByteArray,
+        iterations: Int,
+        keyLength: Int
+    ): ByteArray {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+
+        val blockCount =
+            (keyLength + mac.macLength - 1) / mac.macLength
+
+        val output =
+            ByteArray(blockCount * mac.macLength)
+
+        var outputOffset = 0
+
+        for (block in 1..blockCount) {
+            mac.init(
+                javax.crypto.spec.SecretKeySpec(
+                    password,
+                    "HmacSHA256"
+                )
+            )
+
+            val blockSalt = salt + byteArrayOf(
+                ((block ushr 24) and 0xff).toByte(),
+                ((block ushr 16) and 0xff).toByte(),
+                ((block ushr 8) and 0xff).toByte(),
+                (block and 0xff).toByte()
+            )
+
+            var u = mac.doFinal(blockSalt)
+            val t = u.copyOf()
+
+            for (i in 1 until iterations) {
+                mac.init(
+                    javax.crypto.spec.SecretKeySpec(
+                        password,
+                        "HmacSHA256"
+                    )
+                )
+
+                u = mac.doFinal(u)
+
+                for (j in t.indices) {
+                    t[j] = (
+                        t[j].toInt() xor u[j].toInt()
+                    ).toByte()
+                }
+            }
+
+            System.arraycopy(
+                t,
+                0,
+                output,
+                outputOffset,
+                t.size
+            )
+
+            outputOffset += t.size
+        }
+
+        return output.copyOf(keyLength)
+    }
+
+    private fun hexToBytes(
+        value: String
+    ): ByteArray {
+        val clean = value.trim()
+
+        if (clean.length % 2 != 0) {
+            throw IllegalArgumentException(
+                "Hex inválido: longitud impar"
+            )
+        }
+
+        return ByteArray(clean.length / 2) { index ->
+            clean.substring(
+                index * 2,
+                index * 2 + 2
+            ).toInt(16).toByte()
+        }
+    }
+
 }
