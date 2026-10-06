@@ -443,7 +443,17 @@ class SeriesDonghuaProvider : MainAPI() {
                             println(
                                 "SeriesDonghua: Rumble descartado -> ${link.url}"
                             )
-                        } else {
+                        } else if (
+                    serverName == "Filemoon" &&
+                    (
+                        link.type != ExtractorLinkType.M3U8 ||
+                        !link.url.contains("master.m3u8")
+                    )
+                ) {
+                    println(
+                        "SeriesDonghua: Filemoon descartado -> ${link.url}"
+                    )
+                } else {
                             val modifiedLink = ExtractorLink(
                                 source = link.source,
                                 name = "${link.name} · $serverName",
