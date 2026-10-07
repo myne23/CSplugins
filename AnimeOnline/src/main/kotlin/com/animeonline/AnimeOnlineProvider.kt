@@ -22,14 +22,6 @@ class AnimeOnlineProvider : MainAPI() {
 
     private val cloudflareKiller by lazy { CloudflareKiller() }
 
-    private val posterHeaders: Map<String, String>
-        get() = mapOf(
-            "Referer" to "$mainUrl/",
-            "User-Agent" to "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-            "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        )
-
     private fun Element.getImageUrl(): String? {
         val img = this.selectFirst("img") ?: return null
         return img.attr("data-src").takeIf { it.isNotBlank() }
@@ -43,7 +35,6 @@ class AnimeOnlineProvider : MainAPI() {
         val poster = article.getImageUrl()?.let { fixUrl(it) }
         return newAnimeSearchResponse(title, fixUrl(link), TvType.Anime) {
             this.posterUrl = poster
-            this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
         }
     }
 
@@ -54,7 +45,6 @@ class AnimeOnlineProvider : MainAPI() {
         val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
         return newAnimeSearchResponse(if (!episodeTitle.isNullOrBlank()) "$title - $episodeTitle" else title, fixUrl(link), TvType.Anime) {
             this.posterUrl = poster
-            this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
         }
     }
 
@@ -89,7 +79,6 @@ class AnimeOnlineProvider : MainAPI() {
                 val poster = article.getImageUrl()?.let { fixUrl(it) }
                 newMovieSearchResponse(title, fixUrl(link), TvType.Movie) {
                     this.posterUrl = poster
-                    this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                 }
             } ?: emptyList()
             if (latestMovies.isNotEmpty()) sections.add(HomePageList("Últimas peliculas agregadas 🎬", latestMovies))
@@ -116,12 +105,10 @@ class AnimeOnlineProvider : MainAPI() {
             if (type == TvType.Movie) {
                 newMovieSearchResponse(finalTitle, fixedLink, TvType.Movie) {
                     this.posterUrl = poster
-                    this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                 }
             } else {
                 newAnimeSearchResponse(finalTitle, fixedLink, TvType.Anime) {
                     this.posterUrl = poster
-                    this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                 }
             }
         }
@@ -153,13 +140,11 @@ class AnimeOnlineProvider : MainAPI() {
                 fixedLink.contains("/pelicula/") -> {
                     newMovieSearchResponse(title, fixedLink, TvType.Movie) {
                         this.posterUrl = poster
-                        this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                     }
                 }
                 else -> {
                     newAnimeSearchResponse(title, fixedLink, TvType.Anime) {
                         this.posterUrl = poster
-                        this.posterHeaders = this@AnimeOnlineProvider.posterHeaders
                     }
                 }
             }
@@ -308,7 +293,6 @@ class AnimeOnlineProvider : MainAPI() {
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             posterUrl = mainPoster?.let { fixUrl(it) }
-            posterHeaders = this@AnimeOnlineProvider.posterHeaders
             this.plot = description
             seasons.forEach { (_, episodeList) ->
                 addEpisodes(DubStatus.Subbed, episodeList)
