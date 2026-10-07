@@ -112,9 +112,99 @@ class SeriesDonghuaProvider : MainAPI() {
             "$mainUrl/buscar.php?s=$encodedQuery"
         ).document
 
-        return document
+        val results = document
             .select("article.donghua-card")
             .mapNotNull { it.toSearchResult() }
+            .toMutableList()
+
+        try {
+            val donghuaWorldDocument = app.get(
+                "https://donghuaworld.com/?s=$encodedQuery"
+            ).document
+
+            val normalizedQuery = query
+                .trim()
+                .lowercase()
+                .replace(Regex("[^a-z0-9]+"), " ")
+                .trim()
+
+            val donghuaWorldResult = donghuaWorldDocument
+                .select("a[href*='/anime/'][itemprop='url'][title]")
+                .mapNotNull { element ->
+                    val href = element
+                        .attr("href")
+                        .trim()
+
+                    val title = element
+                        .attr("title")
+                        .trim()
+
+                    if (
+                        href.isBlank() ||
+                        title.isBlank() ||
+                        href.contains("/anime/?")
+                    ) {
+                        return@mapNotNull null
+                    }
+
+                    val normalizedTitle = title
+                        .lowercase()
+                        .replace(Regex("[^a-z0-9]+"), " ")
+                        .trim()
+
+                    if (normalizedTitle.contains(" movie ")) {
+                        return@mapNotNull null
+                    }
+
+                    val score = when {
+                        normalizedTitle == normalizedQuery -> 100
+                        normalizedTitle.startsWith("$normalizedQuery ") -> 95
+                        normalizedTitle.contains(normalizedQuery) -> 90
+                        normalizedQuery.contains(normalizedTitle) -> 80
+                        else -> 0
+                    }
+
+                    if (score > 0) {
+                        Triple(
+                            score,
+                            title,
+                            fixUrl(href)
+                        )
+                    } else {
+                        null
+                    }
+                }
+                .distinctBy { it.third }
+                .sortedByDescending { it.first }
+                .firstOrNull()
+
+            if (donghuaWorldResult != null) {
+                val (_, title, href) = donghuaWorldResult
+
+                println(
+                    "SeriesDonghua: DonghuaWorld search -> $title | $href"
+                )
+
+                results.add(
+                    newAnimeSearchResponse(
+                        "$title · DonghuaWorld",
+                        href,
+                        TvType.Anime
+                    )
+                )
+            } else {
+                println(
+                    "SeriesDonghua: DonghuaWorld no encontró resultado para '$query'"
+                )
+            }
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: ERROR búsqueda DonghuaWorld -> " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
+        }
+
+        return results
     }
 
     override suspend fun load(url: String): LoadResponse? {
