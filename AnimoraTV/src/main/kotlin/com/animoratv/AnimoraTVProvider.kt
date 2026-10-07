@@ -1425,41 +1425,98 @@ class AnimoraTVProvider : MainAPI() {
                         var handle = ""
                         var key = ""
 
-                        val modernMatch =
+                        /*
+                         * Mega puede entregar distintos formatos de embed:
+                         *
+                         *   /embed/HANDLE#KEY
+                         *   /embed/#!HANDLE!KEY
+                         *   /embed/!HANDLE!KEY
+                         *
+                         * Extraemos primero todo lo que venga después de
+                         * /embed/ y luego detectamos cómo están separados
+                         * el handle y la key.
+                         */
+
+                        val megaPart =
                             Regex(
-                                """mega\.nz/embed/([^#!?]+)#(.+)""",
+                                """mega\.nz/[^?#]*embed/([^?#]+)""",
                                 RegexOption.IGNORE_CASE
-                            ).find(urlVideo)
+                            )
+                                .find(urlVideo)
+                                ?.groupValues
+                                ?.getOrNull(1)
+                                ?.trim()
+                                ?.trimEnd('/')
 
-                        if (modernMatch != null) {
+                        if (!megaPart.isNullOrBlank()) {
 
-                            handle =
-                                modernMatch
-                                    .groupValues[1]
-                                    .trim()
+                            val fragment =
+                                megaPart
+                                    .trimStart('!', '#')
 
-                            key =
-                                modernMatch
-                                    .groupValues[2]
-                                    .trim()
+                            val hashIndex =
+                                fragment.indexOf('#')
 
-                        } else {
-
-                            val oldMatch =
-                                Regex(
-                                    """mega\.nz/embed/#!([^!]+)!(.+)""",
-                                    RegexOption.IGNORE_CASE
-                                ).find(urlVideo)
-
-                            if (oldMatch != null) {
+                            if (hashIndex > 0) {
 
                                 handle =
-                                    oldMatch
-                                        .groupValues[1]
+                                    fragment
+                                        .substring(0, hashIndex)
                                         .trim()
+                                        .trimStart('!', '#')
 
                                 key =
-                                    oldMatch
+                                    fragment
+                                        .substring(hashIndex + 1)
+                                        .trim()
+
+                            } else {
+
+                                val bangIndex =
+                                    fragment.indexOf('!')
+
+                                if (bangIndex > 0) {
+
+                                    handle =
+                                        fragment
+                                            .substring(0, bangIndex)
+                                            .trim()
+
+                                    key =
+                                        fragment
+                                            .substring(bangIndex + 1)
+                                            .trim()
+                                }
+                            }
+                        }
+
+                        /*
+                         * Fallback para pequeñas variaciones futuras de Mega:
+                         * si no encontramos los datos usando /embed/, buscamos
+                         * directamente el patrón HANDLE + separador + KEY.
+                         */
+                        if (
+                            handle.isBlank() ||
+                            key.isBlank()
+                        ) {
+
+                            val fallback =
+                                Regex(
+                                    """(?:embed/|/)([^#!?/\s]+)[#!]([^#!?\s]+)""",
+                                    RegexOption.IGNORE_CASE
+                                )
+                                    .find(urlVideo)
+
+                            if (fallback != null) {
+
+                                handle =
+                                    fallback
+                                        .groupValues[1]
+                                        .trim()
+                                        .trimStart('!', '#')
+
+                                key =
+                                    fallback
                                         .groupValues[2]
                                         .trim()
                             }
