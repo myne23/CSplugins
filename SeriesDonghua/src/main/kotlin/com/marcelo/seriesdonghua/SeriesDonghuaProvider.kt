@@ -472,6 +472,8 @@ class SeriesDonghuaProvider : MainAPI() {
             return false
         }
 
+        var linkCount = 0
+
         val embedUrl = document
             .select("iframe[src*='geo.dailymotion.com'][src*='video=']")
             .mapNotNull { iframe ->
@@ -485,43 +487,232 @@ class SeriesDonghuaProvider : MainAPI() {
             println(
                 "SeriesDonghua: DonghuaWorld no encontró DM Player"
             )
-            return false
+        } else {
+            println(
+                "SeriesDonghua: DonghuaWorld DM Player -> $embedUrl"
+            )
+
+            val links = loadDailymotionLinks(
+                embedUrl = embedUrl,
+                subtitleCallback = subtitleCallback
+            )
+
+            if (links.isEmpty()) {
+                println(
+                    "SeriesDonghua: DonghuaWorld Dailymotion sin links"
+                )
+            } else {
+                links.forEach { link ->
+                    val modifiedLink = ExtractorLink(
+                        source = "DonghuaWorld",
+                        name = "DonghuaWorld · Dailymotion",
+                        url = link.url,
+                        referer = link.referer,
+                        quality = link.quality,
+                        type = link.type
+                    )
+
+                    callback(modifiedLink)
+                    linkCount++
+
+                    println(
+                        "SeriesDonghua: LINK DonghuaWorld Dailymotion -> ${link.url}"
+                    )
+                }
+            }
+        }
+
+        try {
+            val darkServer = document
+                .select(".server-item a")
+                .firstOrNull { element ->
+                    element.text()
+                        .trim()
+                        .equals("Dark Server", ignoreCase = true)
+                }
+
+            if (darkServer == null) {
+                println(
+                    "SeriesDonghua: DonghuaWorld Dark Server no encontrado"
+                )
+            } else {
+                val encodedHash = darkServer
+                    .attr("data-hash")
+                    .trim()
+
+                if (encodedHash.isBlank()) {
+                    println(
+                        "SeriesDonghua: DonghuaWorld Dark Server sin data-hash"
+                    )
+                } else {
+                    val decodedEmbed = try {
+                        String(
+                            java.util.Base64.getDecoder().decode(encodedHash),
+                            Charsets.UTF_8
+                        )
+                    } catch (e: Exception) {
+                        println(
+                            "SeriesDonghua: Dark Server Base64 ERROR -> " +
+                                "${e.javaClass.simpleName}: ${e.message}"
+                        )
+                        ""
+                    }
+
+                    val darkServerUrl = Regex(
+                        """src="([^"]+)""""
+                    )
+                        .find(decodedEmbed)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.trim()
+
+                    if (darkServerUrl.isNullOrBlank()) {
+                        println(
+                            "SeriesDonghua: Dark Server iframe no encontrado"
+                        )
+                    } else {
+                        println(
+                            "SeriesDonghua: Dark Server Player -> $darkServerUrl"
+                        )
+
+                        val darkServerResponse = app.get(
+                            darkServerUrl,
+                            headers = mapOf(
+                                "Referer" to data,
+                                "User-Agent" to
+                                    "Mozilla/5.0 (X11; Linux x86_64) " +
+                                        "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+                            )
+                        )
+
+                        val darkServerHtml = darkServerResponse.text
+
+                        val tracksStart =
+                            darkServerHtml.indexOf("const tracks = [")
+
+                        val tracksEnd = if (tracksStart >= 0) {
+                            darkServerHtml.indexOf("]", tracksStart)
+                        } else {
+                            -1
+                        }
+
+                        if (tracksStart >= 0 && tracksEnd > tracksStart) {
+                            val tracksText = darkServerHtml.substring(
+                                tracksStart,
+                                tracksEnd + 1
+                            )
+
+                            val trackRegex = Regex(
+                                """\{"file":"([^"]+)"\,"label":"([^"]+)"\}"""
+                            )
+
+                            trackRegex.findAll(tracksText).forEach { match ->
+                                val subtitleUrl = match.groupValues[1]
+                                    .replace(Char(92).toString(), "")
+
+                                val subtitleLabel = match.groupValues[2]
+
+                                subtitleCallback(
+                                    SubtitleFile(
+                                        lang = subtitleLabel,
+                                        url = subtitleUrl
+                                    )
+                                )
+
+                                println(
+                                    "SeriesDonghua: Dark Server subtitle -> " +
+                                        "$subtitleLabel | $subtitleUrl"
+                                )
+                            }
+                        } else {
+                            println(
+                                "SeriesDonghua: Dark Server tracks no encontrados"
+                            )
+                        }
+
+                        val rumbleMarker = "rumble.com"
+                        val rumbleStart =
+                            darkServerHtml.indexOf(rumbleMarker)
+
+                        val rumblePlaylist = if (rumbleStart >= 0) {
+                            val urlStart =
+                                darkServerHtml.lastIndexOf(
+                                    "https",
+                                    rumbleStart
+                                )
+
+                            val playlistEndMarker = "playlist.m3u8"
+
+                            val playlistEnd =
+                                darkServerHtml.indexOf(
+                                    playlistEndMarker,
+                                    rumbleStart
+                                )
+
+                            val end = if (playlistEnd >= 0) {
+                                playlistEnd +
+                                    playlistEndMarker.length
+                            } else {
+                                -1
+                            }
+
+                            if (urlStart >= 0 && end > urlStart) {
+                                darkServerHtml
+                                    .substring(urlStart, end)
+                                    .replace(
+                                        Char(92).toString(),
+                                        ""
+                                    )
+                            } else {
+                                null
+                            }
+                        } else {
+                            null
+                        }
+
+                        if (rumblePlaylist.isNullOrBlank()) {
+                            println(
+                                "SeriesDonghua: Dark Server Rumble playlist no encontrada"
+                            )
+                        } else {
+                            println(
+                                "SeriesDonghua: Dark Server Rumble playlist -> " +
+                                    rumblePlaylist
+                            )
+
+                            val darkServerLink = newExtractorLink(
+                                name = "DonghuaWorld · Dark Server",
+                                source = "DonghuaWorld",
+                                url = rumblePlaylist,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                referer = darkServerUrl
+                                quality = 0
+                            }
+
+                            callback(darkServerLink)
+                            linkCount++
+
+                            println(
+                                "SeriesDonghua: LINK DonghuaWorld Dark Server -> " +
+                                    rumblePlaylist
+                            )
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: ERROR Dark Server -> " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
         }
 
         println(
-            "SeriesDonghua: DonghuaWorld DM Player -> $embedUrl"
+            "SeriesDonghua: DonghuaWorld direct total links=$linkCount"
         )
 
-        val links = loadDailymotionLinks(
-            embedUrl = embedUrl,
-            subtitleCallback = subtitleCallback
-        )
-
-        if (links.isEmpty()) {
-            println(
-                "SeriesDonghua: DonghuaWorld Dailymotion sin links"
-            )
-            return false
-        }
-
-        links.forEach { link ->
-            val modifiedLink = ExtractorLink(
-                source = "DonghuaWorld",
-                name = "DonghuaWorld · Dailymotion",
-                url = link.url,
-                referer = link.referer,
-                quality = link.quality,
-                type = link.type
-            )
-
-            callback(modifiedLink)
-
-            println(
-                "SeriesDonghua: LINK DonghuaWorld Dailymotion -> ${link.url}"
-            )
-        }
-
-        return true
+        return linkCount > 0
     }
 
     override suspend fun loadLinks(
