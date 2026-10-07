@@ -39,10 +39,14 @@ override suspend fun getMainPage(
         val document = app.get(url).document
 
         val home = document
-            .select("a[href*='/anime/'][itemprop='url'][title]")
-            .mapNotNull { element ->
-                val href = element.attr("href").trim()
-                val title = element.attr("title").trim()
+            .select("article.bs")
+            .mapNotNull { article ->
+                val link = article
+                    .selectFirst("a[href*='/anime/'][itemprop='url'][title]")
+                    ?: return@mapNotNull null
+
+                val href = link.attr("href").trim()
+                val title = link.attr("title").trim()
 
                 if (
                     href.isBlank() ||
@@ -61,22 +65,13 @@ override suspend fun getMainPage(
                     return@mapNotNull null
                 }
 
-                val fixedHref = fixUrl(href)
+                val poster = article
+                    .selectFirst("img[itemprop='image']")
+                    ?.attr("src")
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
 
-                val poster = try {
-                    app.get(fixedHref)
-                        .document
-                        .selectFirst("img.ts-post-image[itemprop='image']")
-                        ?.attr("src")
-                        ?.trim()
-                        ?.takeIf { it.isNotBlank() }
-                } catch (e: Exception) {
-                    println(
-                        "SeriesDonghua: DonghuaWorld poster ERROR -> " +
-                            "$title | ${e.javaClass.simpleName}: ${e.message}"
-                    )
-                    null
-                }
+                val fixedHref = fixUrl(href)
 
                 println(
                     "SeriesDonghua: DonghuaWorld poster -> " +
