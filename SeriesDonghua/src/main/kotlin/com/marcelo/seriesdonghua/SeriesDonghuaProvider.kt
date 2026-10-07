@@ -100,6 +100,78 @@ class SeriesDonghuaProvider : MainAPI() {
         }
     }
 
+    private fun isOneTypoAway(
+        first: String,
+        second: String
+    ): Boolean {
+        val firstTokens = first
+            .split(" ")
+            .filter { it.isNotBlank() }
+
+        val secondTokens = second
+            .split(" ")
+            .filter { it.isNotBlank() }
+
+        if (firstTokens.size != secondTokens.size) {
+            return false
+        }
+
+        var differences = 0
+
+        for (index in firstTokens.indices) {
+            val a = firstTokens[index]
+            val b = secondTokens[index]
+
+            if (a == b) {
+                continue
+            }
+
+            if (kotlin.math.abs(a.length - b.length) > 1) {
+                return false
+            }
+
+            var i = 0
+            var j = 0
+            var edits = 0
+
+            while (i < a.length && j < b.length) {
+                if (a[i] == b[j]) {
+                    i++
+                    j++
+                } else {
+                    edits++
+
+                    if (edits > 1) {
+                        return false
+                    }
+
+                    when {
+                        a.length > b.length -> i++
+                        b.length > a.length -> j++
+                        else -> {
+                            i++
+                            j++
+                        }
+                    }
+                }
+            }
+
+            edits += (a.length - i) + (b.length - j)
+
+            if (edits != 1) {
+                return false
+            }
+
+            differences++
+
+            if (differences > 1) {
+                return false
+            }
+        }
+
+        return differences == 1
+    }
+
     override suspend fun search(
         query: String
     ): List<SearchResponse> {
@@ -161,6 +233,10 @@ class SeriesDonghuaProvider : MainAPI() {
                         normalizedTitle.startsWith("$normalizedQuery ") -> 95
                         normalizedTitle.contains(normalizedQuery) -> 90
                         normalizedQuery.contains(normalizedTitle) -> 80
+                        isOneTypoAway(
+                            normalizedTitle,
+                            normalizedQuery
+                        ) -> 70
                         else -> 0
                     }
 
