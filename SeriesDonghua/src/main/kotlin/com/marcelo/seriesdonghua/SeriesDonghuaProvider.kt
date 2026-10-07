@@ -1069,6 +1069,8 @@ class SeriesDonghuaProvider : MainAPI() {
 
         val episodeResponse = app.get(episodeUrl)
 
+        val links = mutableListOf<ExtractorLink>()
+
         val embedUrl = episodeResponse.document
             .select("iframe[src*='geo.dailymotion.com'][src*='video=']")
             .mapNotNull { iframe ->
@@ -1078,21 +1080,147 @@ class SeriesDonghuaProvider : MainAPI() {
             }
             .firstOrNull()
 
-        if (embedUrl == null) {
+        if (embedUrl != null) {
+            println(
+                "SeriesDonghua: DonghuaWorld DM Player -> $embedUrl"
+            )
+
+            val dailymotionLinks = loadDailymotionLinks(
+                embedUrl = embedUrl,
+                subtitleCallback = subtitleCallback
+            )
+
+            dailymotionLinks.forEach { link ->
+                links.add(
+                    ExtractorLink(
+                        source = "DonghuaWorld",
+                        name = "DonghuaWorld · Dailymotion",
+                        url = link.url,
+                        referer = link.referer,
+                        quality = link.quality,
+                        type = link.type
+                    )
+                )
+            }
+        } else {
             println(
                 "SeriesDonghua: DonghuaWorld no encontró DM Player"
             )
-            return emptyList()
+        }
+
+        try {
+            val darkServer = episodeResponse.document
+                .select(".server-item a")
+                .firstOrNull { element ->
+                    element.text()
+                        .trim()
+                        .equals("Dark Server", ignoreCase = true)
+                }
+
+            if (darkServer == null) {
+                println(
+                    "SeriesDonghua: DonghuaWorld Dark Server no encontrado"
+                )
+            } else {
+                val encodedHash = darkServer
+                    .attr("data-hash")
+                    .trim()
+
+                if (encodedHash.isBlank()) {
+                    println(
+                        "SeriesDonghua: DonghuaWorld Dark Server sin data-hash"
+                    )
+                } else {
+                    val decodedEmbed = try {
+                        String(
+                            java.util.Base64.getDecoder().decode(encodedHash),
+                            Charsets.UTF_8
+                        )
+                    } catch (e: Exception) {
+                        println(
+                            "SeriesDonghua: Dark Server Base64 ERROR -> " +
+                                "${e.javaClass.simpleName}: ${e.message}"
+                        )
+                        ""
+                    }
+
+                    val darkServerUrl = Regex(
+                        """src="([^"]+)""""
+                    )
+                        .find(decodedEmbed)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.trim()
+
+                    if (darkServerUrl.isNullOrBlank()) {
+                        println(
+                            "SeriesDonghua: Dark Server iframe no encontrado"
+                        )
+                    } else {
+                        println(
+                            "SeriesDonghua: Dark Server Player -> $darkServerUrl"
+                        )
+
+                        val darkServerResponse = app.get(
+                            darkServerUrl,
+                            headers = mapOf(
+                                "Referer" to episodeUrl,
+                                "User-Agent" to
+                                    "Mozilla/5.0 (X11; Linux x86_64) " +
+                                        "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+                            )
+                        )
+
+                        val rumblePlaylist = Regex(
+                            """https://rumble\.com/hls-vod/[^"\\]+/playlist\.m3u8"""
+                        )
+                            .find(darkServerResponse.text)
+                            ?.value
+                            ?.replace("\\/", "/")
+                            ?.trim()
+
+                        if (rumblePlaylist.isNullOrBlank()) {
+                            println(
+                                "SeriesDonghua: Dark Server Rumble playlist no encontrada"
+                            )
+                        } else {
+                            println(
+                                "SeriesDonghua: Dark Server Rumble playlist -> " +
+                                    rumblePlaylist
+                            )
+
+                            links.add(
+                                newExtractorLink(
+                                    name = "DonghuaWorld · Dark Server",
+                                    source = "DonghuaWorld",
+                                    url = rumblePlaylist,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    referer = darkServerUrl
+                                    quality = 0
+                                }
+                            )
+
+                            println(
+                                "SeriesDonghua: LINK DonghuaWorld Dark Server -> " +
+                                    rumblePlaylist
+                            )
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: ERROR Dark Server -> " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
         }
 
         println(
-            "SeriesDonghua: DonghuaWorld DM Player -> $embedUrl"
+            "SeriesDonghua: DonghuaWorld total links=${links.size}"
         )
 
-        return loadDailymotionLinks(
-            embedUrl = embedUrl,
-            subtitleCallback = subtitleCallback
-        )
+        return links
     }
 
     private suspend fun loadDailymotionLinks(
