@@ -1171,23 +1171,26 @@ class SeriesDonghuaProvider : MainAPI() {
                             )
                         )
 
-                        val rumbleMarker = "rumble.com/hls-vod/"
-                        val rumbleStart = darkServerResponse.text.indexOf(rumbleMarker)
+        val darkServerHtml = darkServerResponse.text
+            .replace("\\/", "/")
 
-                        val rumblePlaylist = if (rumbleStart >= 0) {
-                            val urlStart = darkServerResponse.text.lastIndexOf("https", rumbleStart)
-                            val end = darkServerResponse.text.indexOf(Char(34), rumbleStart)
+        val rumbleMarker = "rumble.com/hls-vod/"
+        val rumbleStart = darkServerHtml.indexOf(rumbleMarker)
 
-                            if (urlStart >= 0 && end > urlStart) {
-                                darkServerResponse.text.substring(urlStart, end).replace(Char(92).toString(), "")
-                            } else {
-                                null
-                            }
-                        } else {
-                            null
-                        }
+        val rumblePlaylist = if (rumbleStart >= 0) {
+            val urlStart = darkServerHtml.lastIndexOf("https", rumbleStart)
+            val end = darkServerHtml.indexOf(Char(34), rumbleStart)
 
-                        if (rumblePlaylist.isNullOrBlank()) {
+            if (urlStart >= 0 && end > urlStart) {
+                darkServerHtml.substring(urlStart, end)
+            } else {
+                null
+            }
+        } else {
+            null
+        }
+
+        if (rumblePlaylist.isNullOrBlank()) {
                             println(
                                 "SeriesDonghua: Dark Server Rumble playlist no encontrada"
                             )
