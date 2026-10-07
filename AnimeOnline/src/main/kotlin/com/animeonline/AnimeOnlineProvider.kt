@@ -34,7 +34,7 @@ class AnimeOnlineProvider : MainAPI() {
         val title = article.selectFirst(".data h3")?.text()?.trim() ?: return null
         val poster = article.getImageUrl()?.let { fixUrl(it) }
         return newAnimeSearchResponse(title, fixUrl(link), TvType.Anime) {
-            this.posterUrl = poster
+            this.posterUrl = fixUrlNull(poster)
         }
     }
 
@@ -44,7 +44,7 @@ class AnimeOnlineProvider : MainAPI() {
         val poster = article.getImageUrl()?.let { fixUrl(it) }
         val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
         return newAnimeSearchResponse(if (!episodeTitle.isNullOrBlank()) "$title - $episodeTitle" else title, fixUrl(link), TvType.Anime) {
-            this.posterUrl = poster
+            this.posterUrl = fixUrlNull(poster)
         }
     }
 
@@ -78,7 +78,7 @@ class AnimeOnlineProvider : MainAPI() {
                 val title = article.selectFirst(".data h3")?.text()?.trim() ?: return@mapNotNull null
                 val poster = article.getImageUrl()?.let { fixUrl(it) }
                 newMovieSearchResponse(title, fixUrl(link), TvType.Movie) {
-                    this.posterUrl = poster
+                    this.posterUrl = fixUrlNull(poster)
                 }
             } ?: emptyList()
             if (latestMovies.isNotEmpty()) sections.add(HomePageList("Últimas peliculas agregadas 🎬", latestMovies))
@@ -104,11 +104,11 @@ class AnimeOnlineProvider : MainAPI() {
 
             if (type == TvType.Movie) {
                 newMovieSearchResponse(finalTitle, fixedLink, TvType.Movie) {
-                    this.posterUrl = poster
+                    this.posterUrl = fixUrlNull(poster)
                 }
             } else {
                 newAnimeSearchResponse(finalTitle, fixedLink, TvType.Anime) {
-                    this.posterUrl = poster
+                    this.posterUrl = fixUrlNull(poster)
                 }
             }
         }
@@ -139,12 +139,12 @@ class AnimeOnlineProvider : MainAPI() {
             when {
                 fixedLink.contains("/pelicula/") -> {
                     newMovieSearchResponse(title, fixedLink, TvType.Movie) {
-                        this.posterUrl = poster
+                        this.posterUrl = fixUrlNull(poster)
                     }
                 }
                 else -> {
                     newAnimeSearchResponse(title, fixedLink, TvType.Anime) {
-                        this.posterUrl = poster
+                        this.posterUrl = fixUrlNull(poster)
                     }
                 }
             }
@@ -282,7 +282,7 @@ class AnimeOnlineProvider : MainAPI() {
                     this.name = name
                     this.season = seasonNumber
                     this.episode = episodeNumber
-                    this.posterUrl = episodePoster?.let { fixUrl(it) }
+                    this.posterUrl = episodePoster?.let { fixUrlNull(it) }
                 }
             }
 
@@ -292,7 +292,7 @@ class AnimeOnlineProvider : MainAPI() {
         if (seasons.isEmpty()) return null
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            posterUrl = mainPoster?.let { fixUrl(it) }
+            posterUrl = mainPoster?.let { fixUrlNull(it) }
             this.plot = description
             seasons.forEach { (_, episodeList) ->
                 addEpisodes(DubStatus.Subbed, episodeList)
