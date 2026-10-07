@@ -581,10 +581,21 @@ class SeriesDonghuaProvider : MainAPI() {
                     .replace(Regex("[^a-z0-9]+"), " ")
                     .trim()
 
+                val normalizedSlug = href
+                    .substringAfter("/anime/")
+                    .trim('/')
+                    .lowercase()
+
+                val isMovie = normalizedSlug.contains("movie") ||
+                    normalizedTitle.contains(" movie ")
+
                 val score = when {
-                    normalizedTitle == normalizedSearch -> 100
-                    normalizedTitle.startsWith("$normalizedSearch ") -> 90
-                    normalizedTitle.contains(normalizedSearch) -> 80
+                    normalizedTitle == normalizedSearch && !isMovie -> 100
+                    normalizedTitle.startsWith("$normalizedSearch ") && !isMovie -> 95
+                    normalizedTitle.contains(normalizedSearch) && !isMovie -> 90
+                    normalizedTitle == normalizedSearch -> 50
+                    normalizedTitle.startsWith("$normalizedSearch ") -> 40
+                    normalizedTitle.contains(normalizedSearch) -> 30
                     else -> 0
                 }
 
