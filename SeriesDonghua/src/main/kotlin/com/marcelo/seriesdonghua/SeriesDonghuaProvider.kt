@@ -37,7 +37,15 @@ override suspend fun getMainPage(
             "${request.data}?page=$page"
         }
 
-        val document = app.get(url).document
+        val document = try {
+            app.get(url, timeout = 4).document
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: DonghuaWorld catálogo timeout/error -> " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
+            return newHomePageResponse(emptyList(), hasNext = false)
+        }
 
         val home = document
             .select("article.bs")
@@ -318,7 +326,8 @@ override suspend fun getMainPage(
 
         try {
             val donghuaWorldDocument = app.get(
-                "https://donghuaworld.com/?s=$encodedQuery"
+                "https://donghuaworld.com/?s=$encodedQuery",
+                timeout = 4
             ).document
 
             val normalizedQuery = query
@@ -389,7 +398,7 @@ override suspend fun getMainPage(
                 )
 
                 val donghuaWorldPoster = try {
-                    app.get(href).document
+                    app.get(href, timeout = 4).document
                         .selectFirst("img.ts-post-image[itemprop='image']")
                         ?.attr("src")
                         ?.trim()
