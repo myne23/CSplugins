@@ -354,6 +354,77 @@ class SeriesDonghuaProvider : MainAPI() {
         }
     }
 
+    private suspend fun loadDonghuaWorldEpisodeLinks(
+        data: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        println(
+            "SeriesDonghua: DonghuaWorld episodio directo -> $data"
+        )
+
+        val document = try {
+            app.get(data).document
+        } catch (e: Exception) {
+            println(
+                "SeriesDonghua: ERROR obteniendo episodio DonghuaWorld -> " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
+            return false
+        }
+
+        val embedUrl = document
+            .select("iframe[src*='geo.dailymotion.com'][src*='video=']")
+            .mapNotNull { iframe ->
+                iframe.attr("src")
+                    .trim()
+                    .takeIf { it.isNotBlank() }
+            }
+            .firstOrNull()
+
+        if (embedUrl == null) {
+            println(
+                "SeriesDonghua: DonghuaWorld no encontró DM Player"
+            )
+            return false
+        }
+
+        println(
+            "SeriesDonghua: DonghuaWorld DM Player -> $embedUrl"
+        )
+
+        val links = loadDailymotionLinks(
+            embedUrl = embedUrl,
+            subtitleCallback = subtitleCallback
+        )
+
+        if (links.isEmpty()) {
+            println(
+                "SeriesDonghua: DonghuaWorld Dailymotion sin links"
+            )
+            return false
+        }
+
+        links.forEach { link ->
+            val modifiedLink = ExtractorLink(
+                source = "DonghuaWorld",
+                name = "DonghuaWorld · Dailymotion",
+                url = link.url,
+                referer = link.referer,
+                quality = link.quality,
+                type = link.type
+            )
+
+            callback(modifiedLink)
+
+            println(
+                "SeriesDonghua: LINK DonghuaWorld Dailymotion -> ${link.url}"
+            )
+        }
+
+        return true
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -361,6 +432,16 @@ class SeriesDonghuaProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         println("SeriesDonghua: loadLinks data=$data")
+
+        if (data.contains("donghuaworld.com/") &&
+            data.contains("-episode-")
+        ) {
+            return loadDonghuaWorldEpisodeLinks(
+                data = data,
+                subtitleCallback = subtitleCallback,
+                callback = callback
+            )
+        }
 
         val pageResponse = try {
             app.get(data)
