@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.nicehttp.JsonAsString
 import org.json.JSONObject
 import org.jsoup.nodes.Element
 import java.net.HttpURLConnection
@@ -916,73 +917,30 @@ override suspend fun getMainPage(
                     "SeriesDonghua: solicitando $serverName index=$serverIndex"
                 )
 
-                val connection = URL(
-                    "$mainUrl/api/player/get-server"
-                ).openConnection() as HttpURLConnection
-
-                connection.requestMethod = "POST"
-                connection.doOutput = true
-
-                connection.setRequestProperty(
-                    "User-Agent",
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
-                )
-                connection.setRequestProperty(
-                    "Referer",
-                    data
-                )
-                connection.setRequestProperty(
-                    "Origin",
-                    mainUrl
-                )
-                connection.setRequestProperty(
-                    "Cookie",
-                    cookies
-                )
-                connection.setRequestProperty(
-                    "Content-Type",
-                    "application/json"
-                )
-                connection.setRequestProperty(
-                    "Accept",
-                    "application/json, text/plain, */*"
-                )
-                connection.setRequestProperty(
-                    "X-CSRF-TOKEN",
-                    csrf
-                )
-                connection.setRequestProperty(
-                    "X-Requested-With",
-                    "XMLHttpRequest"
-                )
-
                 val requestBody = JSONObject()
                     .put("video_id", videoId.toInt())
                     .put("server_index", serverIndex)
                     .toString()
 
-                connection.outputStream.use { output ->
-                    output.write(
-                        requestBody.toByteArray(Charsets.UTF_8)
-                    )
-                }
+                val postResponse = app.post(
+                    "$mainUrl/api/player/get-server",
+                    headers = mapOf(
+                        "User-Agent" to
+                            "Mozilla/5.0 (X11; Linux x86_64) " +
+                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                        "Referer" to data,
+                        "Origin" to mainUrl,
+                        "Cookie" to cookies,
+                        "Content-Type" to "application/json",
+                        "Accept" to "application/json, text/plain, */*",
+                        "X-CSRF-TOKEN" to csrf,
+                        "X-Requested-With" to "XMLHttpRequest"
+                    ),
+                    json = JsonAsString(requestBody)
+                )
 
-                val responseCode = connection.responseCode
-
-                val responseText = try {
-                    if (responseCode in 200..299) {
-                        connection.inputStream
-                            .bufferedReader()
-                            .use { it.readText() }
-                    } else {
-                        connection.errorStream
-                            ?.bufferedReader()
-                            ?.use { it.readText() }
-                            ?: ""
-                    }
-                } finally {
-                    connection.disconnect()
-                }
+                val responseCode = postResponse.code
+                val responseText = postResponse.text
 
                 println(
                     "SeriesDonghua: $serverName HTTP=$responseCode " +
