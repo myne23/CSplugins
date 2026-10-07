@@ -1171,13 +1171,21 @@ class SeriesDonghuaProvider : MainAPI() {
                             )
                         )
 
-                        val rumblePlaylist = Regex(
-                            """https:\/\/rumble\.com\/hls-vod\/[^"\\]+\/playlist\.m3u8"""
-                        )
-                            .find(darkServerResponse.text)
-                            ?.value
-                            ?.replace("\\/", "/")
-                            ?.trim()
+                        val rumbleMarker = "rumble.com/hls-vod/"
+                        val rumbleStart = darkServerResponse.text.indexOf(rumbleMarker)
+
+                        val rumblePlaylist = if (rumbleStart >= 0) {
+                            val urlStart = darkServerResponse.text.lastIndexOf("https", rumbleStart)
+                            val end = darkServerResponse.text.indexOf(Char(34), rumbleStart)
+
+                            if (urlStart >= 0 && end > urlStart) {
+                                darkServerResponse.text.substring(urlStart, end).replace(Char(92).toString(), "")
+                            } else {
+                                null
+                            }
+                        } else {
+                            null
+                        }
 
                         if (rumblePlaylist.isNullOrBlank()) {
                             println(
