@@ -22,13 +22,69 @@ class SeriesDonghuaProvider : MainAPI() {
     override val mainPage = mainPageOf(
         "$mainUrl/episodios/" to "Nuevos Episodios",
         "$mainUrl/donghuas-en-emision/" to "En Emisión",
-        "$mainUrl/todos-los-donghuas/" to "Catálogo Completo"
+        "$mainUrl/todos-los-donghuas/" to "Catálogo Completo",
+    "https://donghuaworld.com/anime/" to "Series de DonghuaWorld"
     )
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        if (request.name == "Series de DonghuaWorld") {
+            val url = if (page == 1) {
+                request.data
+            } else {
+                "${request.data}?page=$page"
+            }
+
+            val document = app.get(url).document
+
+            val home = document
+                .select("a[href*='/anime/'][itemprop='url'][title]")
+                .mapNotNull { element ->
+                    val href = element.attr("href").trim()
+                    val title = element.attr("title").trim()
+
+                    if (
+                        href.isBlank() ||
+                        title.isBlank() ||
+                        href.contains("/anime/?")
+                    ) {
+                        return@mapNotNull null
+                    }
+
+                    val normalizedTitle = title
+                        .lowercase()
+                        .replace(Regex("[^a-z0-9]+"), " ")
+                        .trim()
+
+                    if (normalizedTitle.contains(" movie ")) {
+                        return@mapNotNull null
+                    }
+
+                    newAnimeSearchResponse(
+                        title,
+                        fixUrl(href),
+                        TvType.Anime
+                    )
+                }
+                .distinctBy { it.url }
+
+            println(
+                "SeriesDonghua: DonghuaWorld Home page=$page items=${home.size}"
+            )
+
+            return newHomePageResponse(
+                listOf(
+                    HomePageList(
+                        request.name,
+                        home
+                    )
+                ),
+                hasNext = home.isNotEmpty()
+            )
+        }
+
         val url = if (page == 1) {
             request.data
         } else {
