@@ -936,7 +936,7 @@ override suspend fun getMainPage(
                     headers = mapOf(
                         "User-Agent" to
                             "Mozilla/5.0 (X11; Linux x86_64) " +
-                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                                "AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
                         "Referer" to data,
                         "Origin" to mainUrl,
                         "Cookie" to cookies,
@@ -988,11 +988,62 @@ override suspend fun getMainPage(
                     continue
                 }
 
+                val embedLower = embedUrl.lowercase()
+
                 println(
-                    "SeriesDonghua: $serverName embed=$embedUrl"
+                    "SeriesDonghua: $serverName index=$serverIndex " +
+                        "embed real=$embedUrl"
                 )
 
-                if (serverName == "Dailymotion") {
+                /*
+                 * IMPORTANTE:
+                 * El server_index/nombre que devuelve la página no siempre
+                 * coincide con el host real del embed. Por eso resolvemos
+                 * según embed_url.
+                 */
+
+                if (embedLower.contains("odysee.com")) {
+                    val odyseeLink = loadOkRuLinks(embedUrl)
+
+                    if (odyseeLink != null) {
+                        linkCount++
+                        callback(odyseeLink)
+
+                        println(
+                            "SeriesDonghua: LINK Odysee -> ${odyseeLink.url}"
+                        )
+                    } else {
+                        println(
+                            "SeriesDonghua: Odysee sin stream"
+                        )
+                    }
+
+                    continue
+                }
+
+                if (embedLower.contains("ok.ru")) {
+                    val okLink = loadOkRuLinks(embedUrl)
+
+                    if (okLink != null) {
+                        linkCount++
+                        callback(okLink)
+
+                        println(
+                            "SeriesDonghua: LINK OK.ru -> ${okLink.url}"
+                        )
+                    } else {
+                        println(
+                            "SeriesDonghua: OK.ru sin HLS"
+                        )
+                    }
+
+                    continue
+                }
+
+                if (
+                    embedLower.contains("dailymotion.com") ||
+                    embedLower.contains("geo.dailymotion.com")
+                ) {
                     val dailymotionLinks = loadDailymotionLinks(
                         embedUrl = embedUrl,
                         subtitleCallback = subtitleCallback
@@ -1016,26 +1067,11 @@ override suspend fun getMainPage(
                     continue
                 }
 
-                if (serverName == "OK.ru") {
-                    val okLink = loadOkRuLinks(embedUrl)
-
-                    if (okLink != null) {
-                        linkCount++
-                        callback(okLink)
-
-                        println(
-                            "SeriesDonghua: LINK OK.ru -> ${okLink.url}"
-                        )
-                    } else {
-                        println(
-                            "SeriesDonghua: OK.ru sin HLS"
-                        )
-                    }
-
-                    continue
-                }
-
-                if (serverName == "VOE") {
+                if (
+                    embedLower.contains("voe.sx") ||
+                    embedLower.contains("voe.to") ||
+                    embedLower.contains("voe")
+                ) {
                     val voeUrl = extractVoeLink(embedUrl)
 
                     if (voeUrl != null) {
@@ -1070,23 +1106,23 @@ override suspend fun getMainPage(
                     subtitleCallback = subtitleCallback,
                     callback = { link ->
                         if (
-                            serverName == "Rumble" &&
+                            embedLower.contains("rumble.com") &&
                             !link.url.contains("rumble.com/hls-vod/")
                         ) {
                             println(
                                 "SeriesDonghua: Rumble descartado -> ${link.url}"
                             )
                         } else if (
-                    serverName == "Filemoon" &&
-                    (
-                        link.type != ExtractorLinkType.M3U8 ||
-                        !link.url.contains("master.m3u8")
-                    )
-                ) {
-                    println(
-                        "SeriesDonghua: Filemoon descartado -> ${link.url}"
-                    )
-                } else {
+                            embedLower.contains("filemoon") &&
+                            (
+                                link.type != ExtractorLinkType.M3U8 ||
+                                !link.url.contains("master.m3u8")
+                            )
+                        ) {
+                            println(
+                                "SeriesDonghua: Filemoon descartado -> ${link.url}"
+                            )
+                        } else {
                             val modifiedLink = ExtractorLink(
                                 source = link.source,
                                 name = "${link.name} · $serverName",
@@ -1125,8 +1161,8 @@ override suspend fun getMainPage(
 
             donghuaLinks.forEach { link ->
                 val modifiedLink = ExtractorLink(
-                  source = link.source,
-                  name = link.name,
+                    source = link.source,
+                    name = link.name,
                     url = link.url,
                     referer = link.referer,
                     quality = link.quality,
@@ -1671,115 +1707,138 @@ override suspend fun getMainPage(
     private suspend fun loadOkRuLinks(
         embedUrl: String
     ): ExtractorLink? {
-        return try {
-            println(
-                "SeriesDonghua: OK.ru GET $embedUrl"
-            )
+        println("SeriesDonghua: OK.ru/Odysee GET $embedUrl")
 
-            val response = app.get(
+        val response = try {
+            app.get(
                 embedUrl,
                 headers = mapOf(
                     "User-Agent" to
                         "Mozilla/5.0 (X11; Linux x86_64) " +
-                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                    "Referer" to embedUrl
                 )
             )
-
+        } catch (e: Exception) {
             println(
-                "SeriesDonghua: OK.ru HTTP=${response.code} " +
-                    "size=${response.text.length}"
+                "SeriesDonghua: OK.ru/Odysee GET error -> " +
+                    "${e.javaClass.simpleName}: ${e.message}"
             )
+            return null
+        }
 
-            if (!response.isSuccessful) {
-                println(
-                    "SeriesDonghua: OK.ru HTTP no exitoso"
-                )
-                return null
-            }
+        println(
+            "SeriesDonghua: OK.ru/Odysee HTTP=${response.code} " +
+                "size=${response.text.length}"
+        )
 
-            /*
-             * Algunos servidores de SeriesDonghua etiquetados como
-             * "OK.ru" realmente devuelven un embed de Odysee.
-             *
-             * Odysee expone directamente el MP4 en JSON-LD:
-             * "contentUrl": "https://player.odycdn.com/api/v3/streams/free/..."
-             */
-            if (embedUrl.contains("odysee.com", ignoreCase = true)) {
-                val contentUrlMatch = Regex(
-                    """"contentUrl"\s*:\s*"([^"]+)"""",
-                    RegexOption.IGNORE_CASE
-                ).find(response.text)
+        if (response.code !in 200..299) {
+            return null
+        }
 
-                if (contentUrlMatch == null) {
-                    println(
-                        "SeriesDonghua: Odysee contentUrl NO encontrado"
-                    )
-                    return null
-                }
+        val normalized = response.text
+            .replace("&quot;", "\"")
+            .replace("&amp;", "&")
+            .replace("\\u0026", "&")
+            .replace("\\u003D", "=")
+            .replace("\\/", "/")
+            .replace("\\\\", "\\")
 
-                val contentUrl = contentUrlMatch.groupValues[1]
-                    .replace("\\u0026", "&")
-                    .replace("\\u003D", "=")
-                    .replace("\\/", "/")
-
-                println(
-                    "SeriesDonghua: Odysee MP4 encontrado -> $contentUrl"
-                )
-
-                return newExtractorLink(
-                    source = "Odysee",
-                    name = "Odysee",
-                    url = contentUrl,
-                    type = ExtractorLinkType.VIDEO
-                ) {
-                    referer = embedUrl
-                    quality = 0
-                }
-            }
-
-            val normalized = response.text
-                .replace("&quot;", "\"")
-                .replace("&amp;", "&")
-                .replace("\\u0026", "&")
-                .replace("\\u003D", "=")
-                .replace("\\\\/", "/")
-                .replace("\\\\", "\\")
-
-            val hlsMatch = Regex(
-                """"hlsManifestUrl":"([^"]+)"""",
+        if (embedUrl.contains("odysee.com", ignoreCase = true)) {
+            val contentUrl = Regex(
+                """"contentUrl"\s*:\s*"([^"]+)"""",
                 RegexOption.IGNORE_CASE
-            ).find(normalized)
+            )
+                .find(normalized)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.replace("\\u0026", "&")
+                ?.replace("\\u003D", "=")
+                ?.replace("\\/", "/")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
 
-            if (hlsMatch == null) {
+            if (contentUrl == null) {
                 println(
-                    "SeriesDonghua: OK.ru hlsManifestUrl NO encontrado"
+                    "SeriesDonghua: Odysee contentUrl NO encontrado"
                 )
                 return null
             }
 
-            val hlsUrl = hlsMatch.groupValues[1]
-                .replace("\\u0026", "&")
-                .replace("\\u003D", "=")
+            val contentLower = contentUrl.lowercase()
+
+            val linkType = when {
+                contentLower.contains(".m3u8") -> {
+                    ExtractorLinkType.M3U8
+                }
+
+                contentLower.contains(".mp4") ||
+                    contentLower.contains(".webm") ||
+                    contentLower.contains(".mkv") ||
+                    contentLower.contains(".mov") ||
+                    contentLower.contains(".m4v") -> {
+                    ExtractorLinkType.VIDEO
+                }
+
+                else -> {
+                    /*
+                     * Odysee puede entregar URLs de vídeo sin una extensión
+                     * explícita. contentUrl ya viene del reproductor como
+                     * recurso de vídeo, así que lo tratamos como VIDEO.
+                     */
+                    ExtractorLinkType.VIDEO
+                }
+            }
 
             println(
-                "SeriesDonghua: OK.ru HLS encontrado -> $hlsUrl"
+                "SeriesDonghua: Odysee contentUrl encontrado " +
+                    "type=$linkType -> $contentUrl"
             )
 
-            newExtractorLink(
-                source = "OK.ru",
-                name = "OK.ru",
-                url = hlsUrl,
-                type = ExtractorLinkType.M3U8
+            return newExtractorLink(
+                source = "Odysee",
+                name = "Odysee",
+                url = contentUrl,
+                type = linkType
             ) {
                 referer = embedUrl
                 quality = 0
             }
-        } catch (e: Exception) {
+        }
+
+        val hlsMatch = Regex(
+            """"hlsManifestUrl":"([^"]+)"""",
+            RegexOption.IGNORE_CASE
+        ).find(normalized)
+
+        val hlsUrl = hlsMatch
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.replace("\\u0026", "&")
+            ?.replace("\\u003D", "=")
+            ?.replace("\\/", "/")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+
+        if (hlsUrl == null) {
             println(
-                "SeriesDonghua: OK.ru ERROR -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
+                "SeriesDonghua: OK.ru hlsManifestUrl NO encontrado"
             )
-            null
+            return null
+        }
+
+        println(
+            "SeriesDonghua: OK.ru HLS encontrado -> $hlsUrl"
+        )
+
+        return newExtractorLink(
+            source = "OK.ru",
+            name = "OK.ru",
+            url = hlsUrl,
+            type = ExtractorLinkType.M3U8
+        ) {
+            referer = embedUrl
+            quality = 0
         }
     }
 
