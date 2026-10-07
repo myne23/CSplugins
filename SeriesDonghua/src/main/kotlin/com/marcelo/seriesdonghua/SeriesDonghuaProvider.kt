@@ -1172,17 +1172,68 @@ class SeriesDonghuaProvider : MainAPI() {
                         )
 
         val darkServerHtml = darkServerResponse.text
-            .replace("\\/", "/")
 
-        val rumbleMarker = "rumble.com/hls-vod/"
+        val tracksStart = darkServerHtml.indexOf("const tracks = [")
+        val tracksEnd = if (tracksStart >= 0) {
+            darkServerHtml.indexOf("]", tracksStart)
+        } else {
+            -1
+        }
+
+        if (tracksStart >= 0 && tracksEnd > tracksStart) {
+            val tracksText = darkServerHtml.substring(
+                tracksStart,
+                tracksEnd + 1
+            )
+
+            val trackRegex = Regex(
+                """\{"file":"([^"]+)"\,"label":"([^"]+)"\}"""
+            )
+
+            trackRegex.findAll(tracksText).forEach { match ->
+                val subtitleUrl = match.groupValues[1]
+                    .replace(Char(92).toString(), "")
+
+                val subtitleLabel = match.groupValues[2]
+
+                subtitleCallback(
+                    SubtitleFile(
+                        lang = subtitleLabel,
+                        url = subtitleUrl
+                    )
+                )
+
+                println(
+                    "SeriesDonghua: Dark Server subtitle -> " +
+                        "$subtitleLabel | $subtitleUrl"
+                )
+            }
+        } else {
+            println(
+                "SeriesDonghua: Dark Server tracks no encontrados"
+            )
+        }
+
+        val rumbleMarker = "rumble.com"
         val rumbleStart = darkServerHtml.indexOf(rumbleMarker)
 
         val rumblePlaylist = if (rumbleStart >= 0) {
             val urlStart = darkServerHtml.lastIndexOf("https", rumbleStart)
-            val end = darkServerHtml.indexOf(Char(34), rumbleStart)
+            val playlistEndMarker = "playlist.m3u8"
+            val playlistEnd = darkServerHtml.indexOf(
+                playlistEndMarker,
+                rumbleStart
+            )
+            val end = if (playlistEnd >= 0) {
+                playlistEnd + playlistEndMarker.length
+            } else {
+                -1
+            }
 
             if (urlStart >= 0 && end > urlStart) {
-                darkServerHtml.substring(urlStart, end)
+                darkServerHtml
+                    .substring(urlStart, end)
+                    .replace(Char(92).toString(), "")
             } else {
                 null
             }
