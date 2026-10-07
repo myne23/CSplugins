@@ -896,72 +896,113 @@ class SeriesDonghuaProvider : MainAPI() {
             "SeriesDonghua: DonghuaWorld búsqueda='$searchQuery' episodio=$episodeNumber"
         )
 
-        val encodedQuery = URLEncoder
-            .encode(searchQuery, "UTF-8")
-            .replace("+", "+")
+        suspend fun findSeriesCandidates(
+            query: String
+        ): List<Triple<Int, String, String>> {
+            val encodedQuery = URLEncoder
+                .encode(query, "UTF-8")
+                .replace("+", "+")
 
-        val searchUrl = "https://donghuaworld.com/?s=$encodedQuery"
+            val searchUrl =
+                "https://donghuaworld.com/?s=$encodedQuery"
 
-        val searchResponse = app.get(searchUrl)
+            val searchResponse = app.get(searchUrl)
 
-        val normalizedSearch = searchQuery
-            .lowercase()
-            .replace(Regex("[^a-z0-9]+"), " ")
-            .trim()
+            val normalizedSearch = query
+                .lowercase()
+                .replace(Regex("[^a-z0-9]+"), " ")
+                .trim()
 
-        val seriesCandidates = searchResponse.document
-            .select("a[href*='/anime/'][itemprop='url']")
-            .mapNotNull { element ->
-                val href = element.attr("href").trim()
-                val title = element
-                    .attr("title")
-                    .trim()
-                    .ifBlank { element.text().trim() }
+            return searchResponse.document
+                .select("a[href*='/anime/'][itemprop='url']")
+                .mapNotNull { element ->
+                    val href = element
+                        .attr("href")
+                        .trim()
 
-                if (
-                    href.isBlank() ||
-                    href.contains("/anime/?")
-                ) {
-                    return@mapNotNull null
+                    val title = element
+                        .attr("title")
+                        .trim()
+                        .ifBlank { element.text().trim() }
+
+                    if (
+                        href.isBlank() ||
+                        href.contains("/anime/?")
+                    ) {
+                        return@mapNotNull null
+                    }
+
+                    val normalizedTitle = title
+                        .lowercase()
+                        .replace(Regex("[^a-z0-9]+"), " ")
+                        .trim()
+
+                    val normalizedSlug = href
+                        .substringAfter("/anime/")
+                        .trim('/')
+                        .lowercase()
+
+                    val isMovie =
+                        normalizedSlug.contains("movie") ||
+                            normalizedTitle.contains(" movie ")
+
+                    if (isMovie) {
+                        return@mapNotNull null
+                    }
+
+                    val score = when {
+                        normalizedTitle == normalizedSearch -> 100
+                        normalizedTitle.startsWith(
+                            "$normalizedSearch "
+                        ) -> 95
+                        normalizedTitle.contains(
+                            normalizedSearch
+                        ) -> 90
+                        isOneTypoAway(
+                            normalizedTitle,
+                            normalizedSearch
+                        ) -> 70
+                        normalizedSearch.contains(
+                            normalizedTitle
+                        ) -> 60
+                        else -> 0
+                    }
+
+                    if (score > 0) {
+                        Triple(
+                            score,
+                            title,
+                            fixUrl(href)
+                        )
+                    } else {
+                        null
+                    }
                 }
+                .distinctBy { it.third }
+                .sortedByDescending { it.first }
+        }
 
-                val normalizedTitle = title
-                    .lowercase()
-                    .replace(Regex("[^a-z0-9]+"), " ")
-                    .trim()
+        var seriesCandidates = findSeriesCandidates(
+            searchQuery
+        )
 
-                val normalizedSlug = href
-                    .substringAfter("/anime/")
-                    .trim('/')
-                    .lowercase()
+        if (seriesCandidates.isEmpty()) {
+            val fallbackQuery = searchQuery
+                .replace(
+                    Regex("(?i)shrouding"),
+                    "shrounding"
+                )
 
-                val isMovie = normalizedSlug.contains("movie") ||
-                    normalizedTitle.contains(" movie ")
+            if (fallbackQuery != searchQuery) {
+                println(
+                    "SeriesDonghua: DonghuaWorld fallback='$fallbackQuery'"
+                )
 
-                if (isMovie) {
-                    return@mapNotNull null
-                }
-
-                val score = when {
-                    normalizedTitle == normalizedSearch -> 100
-                    normalizedTitle.startsWith("$normalizedSearch ") -> 95
-                    normalizedTitle.contains(normalizedSearch) -> 90
-                    isOneTypoAway(
-                        normalizedTitle,
-                        normalizedSearch
-                    ) -> 70
-                    normalizedSearch.contains(normalizedTitle) -> 60
-                    else -> 0
-                }
-
-                if (score > 0) {
-                    Triple(score, title, fixUrl(href))
-                } else {
-                    null
-                }
+                seriesCandidates = findSeriesCandidates(
+                    fallbackQuery
+                )
             }
-            .distinctBy { it.third }
-            .sortedByDescending { it.first }
+        }
 
         val seriesCandidate = seriesCandidates.firstOrNull()
 
