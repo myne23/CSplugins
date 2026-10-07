@@ -70,6 +70,7 @@ class AnimeOnlineProvider : MainAPI() {
         val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
         return newAnimeSearchResponse(if (!episodeTitle.isNullOrBlank()) "$title - $episodeTitle" else title, fixUrl(link), TvType.Anime) {
             this.posterUrl = fixUrlNull(poster)
+            setAnimeOnlinePosterHeaders(this)
         }
     }
 
@@ -183,11 +184,13 @@ class AnimeOnlineProvider : MainAPI() {
                 fixedLink.contains("/pelicula/") -> {
                     newMovieSearchResponse(title, fixedLink, TvType.Movie) {
                         this.posterUrl = fixUrlNull(poster)
+                        setAnimeOnlinePosterHeaders(this)
                     }
                 }
                 else -> {
                     newAnimeSearchResponse(title, fixedLink, TvType.Anime) {
                         this.posterUrl = fixUrlNull(poster)
+                        setAnimeOnlinePosterHeaders(this)
                     }
                 }
             }
@@ -326,6 +329,22 @@ class AnimeOnlineProvider : MainAPI() {
                     this.season = seasonNumber
                     this.episode = episodeNumber
                     this.posterUrl = episodePoster?.let { fixUrlNull(it) }
+
+                    try {
+                        val setter = this.javaClass.methods.firstOrNull {
+                            it.name == "setPosterHeaders" && it.parameterTypes.size == 1
+                        }
+
+                        println(
+                            "AnimeOnline EPISODE_POSTER_HEADERS -> " +
+                            "class=${this.javaClass.simpleName} setter=${setter != null}"
+                        )
+                    } catch (e: Exception) {
+                        println(
+                            "AnimeOnline EPISODE_POSTER_HEADERS ERROR -> " +
+                            "${e.javaClass.simpleName}: ${e.message}"
+                        )
+                    }
                 }
             }
 
@@ -336,6 +355,7 @@ class AnimeOnlineProvider : MainAPI() {
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             posterUrl = mainPoster?.let { fixUrlNull(it) }
+            setAnimeOnlinePosterHeaders(this)
             this.plot = description
             seasons.forEach { (_, episodeList) ->
                 addEpisodes(DubStatus.Subbed, episodeList)
