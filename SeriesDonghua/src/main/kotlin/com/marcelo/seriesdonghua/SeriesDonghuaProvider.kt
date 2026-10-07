@@ -61,11 +61,35 @@ override suspend fun getMainPage(
                     return@mapNotNull null
                 }
 
+                val fixedHref = fixUrl(href)
+
+                val poster = try {
+                    app.get(fixedHref)
+                        .document
+                        .selectFirst("img.ts-post-image[itemprop='image']")
+                        ?.attr("src")
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                } catch (e: Exception) {
+                    println(
+                        "SeriesDonghua: DonghuaWorld poster ERROR -> " +
+                            "$title | ${e.javaClass.simpleName}: ${e.message}"
+                    )
+                    null
+                }
+
+                println(
+                    "SeriesDonghua: DonghuaWorld poster -> " +
+                        "$title | ${poster ?: "NO ENCONTRADO"}"
+                )
+
                 newAnimeSearchResponse(
                     title,
-                    fixUrl(href),
+                    fixedHref,
                     TvType.Anime
-                )
+                ) {
+                    this.posterUrl = fixUrlNull(poster)
+                }
             }
             .distinctBy { it.url }
 
