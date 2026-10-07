@@ -20,106 +20,133 @@ class SeriesDonghuaProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
 
     override val mainPage = mainPageOf(
-        "$mainUrl/episodios/" to "Nuevos Episodios",
-        "$mainUrl/donghuas-en-emision/" to "En Emisión",
-        "$mainUrl/todos-los-donghuas/" to "Catálogo Completo",
+    "$mainUrl/episodios/" to "Nuevos Episodios",
+    "$mainUrl/todos-los-donghuas/" to "Catálogo Completo",
     "https://donghuaworld.com/anime/" to "Series de DonghuaWorld"
-    )
+)
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        if (request.name == "Series de DonghuaWorld") {
-            val url = if (page == 1) {
-                request.data
-            } else {
-                "${request.data}?page=$page"
-            }
-
-            val document = app.get(url).document
-
-            val home = document
-                .select("a[href*='/anime/'][itemprop='url'][title]")
-                .mapNotNull { element ->
-                    val href = element.attr("href").trim()
-                    val title = element.attr("title").trim()
-
-                    if (
-                        href.isBlank() ||
-                        title.isBlank() ||
-                        href.contains("/anime/?")
-                    ) {
-                        return@mapNotNull null
-                    }
-
-                    val normalizedTitle = title
-                        .lowercase()
-                        .replace(Regex("[^a-z0-9]+"), " ")
-                        .trim()
-
-                    if (normalizedTitle.contains(" movie ")) {
-                        return@mapNotNull null
-                    }
-
-                    newAnimeSearchResponse(
-                        title,
-                        fixUrl(href),
-                        TvType.Anime
-                    )
-                }
-                .distinctBy { it.url }
-
-            println(
-                "SeriesDonghua: DonghuaWorld Home page=$page items=${home.size}"
-            )
-
-            return newHomePageResponse(
-                listOf(
-                    HomePageList(
-                        request.name,
-                        home
-                    )
-                ),
-                hasNext = home.isNotEmpty()
-            )
-        }
-
+override suspend fun getMainPage(
+    page: Int,
+    request: MainPageRequest
+): HomePageResponse {
+    if (request.name == "Series de DonghuaWorld") {
         val url = if (page == 1) {
             request.data
         } else {
-            val separator = if (request.data.contains("?")) "&" else "?"
-            "${request.data}${separator}page=$page"
+            "${request.data}?page=$page"
         }
 
         val document = app.get(url).document
-        val items = mutableListOf<HomePageList>()
-
-        if (page == 1 && request.name == "Nuevos Episodios") {
-            val featuredDocument = app.get("$mainUrl/donghuas-en-emision/").document
-            val featured = featuredDocument
-                .select("article.donghua-card")
-                .mapNotNull { it.toSearchResult() }
-                .take(10)
-
-            if (featured.isNotEmpty()) {
-                items.add(HomePageList("Destacados", featured))
-            }
-        }
 
         val home = document
-            .select("article.donghua-card")
-            .mapNotNull { it.toSearchResult() }
+            .select("a[href*='/anime/'][itemprop='url'][title]")
+            .mapNotNull { element ->
+                val href = element.attr("href").trim()
+                val title = element.attr("title").trim()
 
-        if (home.isNotEmpty()) {
-            items.add(HomePageList(request.name, home))
-        }
+                if (
+                    href.isBlank() ||
+                    title.isBlank() ||
+                    href.contains("/anime/?")
+                ) {
+                    return@mapNotNull null
+                }
+
+                val normalizedTitle = title
+                    .lowercase()
+                    .replace(Regex("[^a-z0-9]+"), " ")
+                    .trim()
+
+                if (normalizedTitle.contains(" movie ")) {
+                    return@mapNotNull null
+                }
+
+                newAnimeSearchResponse(
+                    title,
+                    fixUrl(href),
+                    TvType.Anime
+                )
+            }
+            .distinctBy { it.url }
+
+        println(
+            "SeriesDonghua: DonghuaWorld Home page=$page items=${home.size}"
+        )
 
         return newHomePageResponse(
-            items,
+            listOf(
+                HomePageList(
+                    request.name,
+                    home
+                )
+            ),
             hasNext = home.isNotEmpty()
         )
     }
+
+    val url = if (page == 1) {
+        request.data
+    } else {
+        val separator = if (request.data.contains("?")) "&" else "?"
+        "${request.data}${separator}page=$page"
+    }
+
+    val document = app.get(url).document
+
+    val home = if (request.name == "Nuevos Episodios") {
+        document
+            .select("article.donghua-card")
+            .mapNotNull { card ->
+                val episodeUrl = card
+                    .selectFirst("a")
+                    ?.attr("href")
+                    ?.trim()
+                    ?: return@mapNotNull null
+
+                val seriesPath = episodeUrl
+                    .substringBeforeLast("-episodio-")
+                    .trimEnd('/')
+
+                if (seriesPath.isBlank()) {
+                    return@mapNotNull null
+                }
+
+                val title = card
+                    .selectFirst(".card-title")
+                    ?.text()
+                    ?.trim()
+                    ?: return@mapNotNull null
+
+                val poster = card
+                    .selectFirst("img")
+                    ?.attr("src")
+                    ?.trim()
+
+                newAnimeSearchResponse(
+                    title,
+                    fixUrl("$seriesPath/"),
+                    TvType.Anime
+                ) {
+                    this.posterUrl = fixUrlNull(poster)
+                }
+            }
+            .distinctBy { it.url }
+    } else {
+        document
+            .select("article.donghua-card")
+            .mapNotNull { it.toSearchResult() }
+    }
+
+    return newHomePageResponse(
+        listOf(
+            HomePageList(
+                request.name,
+                home
+            )
+        ),
+        hasNext = home.isNotEmpty()
+    )
+}
 
     private fun Element.toSearchResult(): SearchResponse? {
         val link = selectFirst("a")?.attr("href")?.toString()
