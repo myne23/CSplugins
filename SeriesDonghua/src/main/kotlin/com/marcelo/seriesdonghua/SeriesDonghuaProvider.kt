@@ -555,15 +555,60 @@ class SeriesDonghuaProvider : MainAPI() {
 
         val searchResponse = app.get(searchUrl)
 
-        val seriesUrl = searchResponse.document
-            .select("a[href*='/anime/']")
+        val normalizedSearch = searchQuery
+            .lowercase()
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .trim()
+
+        val seriesCandidates = searchResponse.document
+            .select("a[href*='/anime/'][itemprop='url']")
             .mapNotNull { element ->
-                element.attr("href")
-                    .takeIf { it.isNotBlank() }
-                    ?.let { fixUrl(it) }
+                val href = element.attr("href").trim()
+                val title = element
+                    .attr("title")
+                    .trim()
+                    .ifBlank { element.text().trim() }
+
+                if (
+                    href.isBlank() ||
+                    href.contains("/anime/?")
+                ) {
+                    return@mapNotNull null
+                }
+
+                val normalizedTitle = title
+                    .lowercase()
+                    .replace(Regex("[^a-z0-9]+"), " ")
+                    .trim()
+
+                val score = when {
+                    normalizedTitle == normalizedSearch -> 100
+                    normalizedTitle.startsWith("$normalizedSearch ") -> 90
+                    normalizedTitle.contains(normalizedSearch) -> 80
+                    else -> 0
+                }
+
+                if (score > 0) {
+                    Triple(score, title, fixUrl(href))
+                } else {
+                    null
+                }
             }
-            .distinct()
-            .firstOrNull()
+            .distinctBy { it.third }
+            .sortedByDescending { it.first }
+
+        val seriesCandidate = seriesCandidates.firstOrNull()
+
+        if (seriesCandidates.isNotEmpty()) {
+            println(
+                "SeriesDonghua: DonghuaWorld candidatos=" +
+                    seriesCandidates.joinToString(" | ") {
+                        "${it.first}:${it.second}:${it.third}"
+                    }
+            )
+        }
+
+        val seriesUrl = seriesCandidate?.third
 
         if (seriesUrl == null) {
             println(
