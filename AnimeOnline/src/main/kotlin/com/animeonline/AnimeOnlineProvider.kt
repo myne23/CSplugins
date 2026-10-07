@@ -281,11 +281,23 @@ class AnimeOnlineProvider : MainAPI() {
                 val name = linkElement.text().trim().ifBlank { "Episodio" }
                 val episodeNumber = episodeIndex + 1
 
+                val episodeImage: Element? = element.selectFirst("img")
+                val episodePoster = episodeImage?.let { img ->
+                    listOf(
+                        img.attr("src").trim(),
+                        img.attr("data-src").trim(),
+                        img.attr("data-lazy-src").trim(),
+                        img.attr("data-original").trim()
+                    ).firstOrNull { value ->
+                        value.isNotBlank() && !value.startsWith("data:")
+                    }
+                }
+
                 newEpisode(fixUrl(href)) {
                     this.name = name
                     this.season = seasonNumber
                     this.episode = episodeNumber
-                    this.posterUrl = mainPoster?.let { fixUrl(it) }
+                    this.posterUrl = episodePoster?.let { fixUrl(it) }
                 }
             }
 
