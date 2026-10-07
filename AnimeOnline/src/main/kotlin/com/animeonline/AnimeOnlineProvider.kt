@@ -29,6 +29,26 @@ class AnimeOnlineProvider : MainAPI() {
             ?: img.attr("src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
     }
 
+    private fun setAnimeOnlinePosterHeaders(response: Any) {
+        try {
+            val setter = response.javaClass.methods.firstOrNull {
+                it.name == "setPosterHeaders" && it.parameterTypes.size == 1
+            }
+
+            setter?.invoke(
+                response,
+                mapOf(
+                    "Referer" to "$mainUrl/",
+                    "User-Agent" to "Mozilla/5.0"
+                )
+            )
+
+            println("AnimeOnline POSTER_HEADERS -> class=${response.javaClass.simpleName} setter=${setter != null}")
+        } catch (e: Exception) {
+            println("AnimeOnline POSTER_HEADERS ERROR -> ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
     private fun parseAnimeCard(article: Element): SearchResponse? {
         val link = article.selectFirst("a[href]")?.attr("href") ?: return null
         val title = article.selectFirst(".data h3")?.text()?.trim() ?: return null
@@ -37,6 +57,7 @@ class AnimeOnlineProvider : MainAPI() {
         println("AnimeOnline IMAGE anime -> title=$title raw=$rawImage fixed=$poster")
         return newAnimeSearchResponse(title, fixUrl(link), TvType.Anime) {
             this.posterUrl = fixUrlNull(poster)
+            setAnimeOnlinePosterHeaders(this)
         }
     }
 
