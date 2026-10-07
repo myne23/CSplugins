@@ -62,6 +62,24 @@ class AnimeOnlineProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val testImage = "https://ww3.animeonline.ninja/wp-content/uploads/2026/10/6hBvqy6OKi0OcFLQOeulmlC5hr0.jpg"
+
+        try {
+            val noReferer = app.get(testImage)
+            println("AnimeOnline IMGTEST noReferer -> code=${noReferer.code} type=${noReferer.headers["Content-Type"]} bytes=${noReferer.text.length}")
+        } catch (e: Exception) {
+            println("AnimeOnline IMGTEST noReferer ERROR -> ${e.javaClass.simpleName}: ${e.message}")
+        }
+
+        try {
+            val withReferer = app.get(
+                testImage,
+                referer = "$mainUrl/"
+            )
+            println("AnimeOnline IMGTEST withReferer -> code=${withReferer.code} type=${withReferer.headers["Content-Type"]} bytes=${withReferer.text.length}")
+        } catch (e: Exception) {
+            println("AnimeOnline IMGTEST withReferer ERROR -> ${e.javaClass.simpleName}: ${e.message}")
+        }
         if (request.name == "Inicio") {
             if (page > 1) return newHomePageResponse(emptyList(), hasNext = false)
             
