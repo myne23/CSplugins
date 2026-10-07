@@ -841,8 +841,8 @@ class SeriesDonghuaProvider : MainAPI() {
 
             donghuaLinks.forEach { link ->
                 val modifiedLink = ExtractorLink(
-                    source = "DonghuaWorld",
-                    name = "DonghuaWorld · Dailymotion",
+                  source = link.source,
+                  name = link.name,
                     url = link.url,
                     referer = link.referer,
                     quality = link.quality,
@@ -1172,7 +1172,7 @@ class SeriesDonghuaProvider : MainAPI() {
                         )
 
                         val rumblePlaylist = Regex(
-                            """https://rumble\.com/hls-vod/[^"\\]+/playlist\.m3u8"""
+                            """https:\/\/rumble\.com\/hls-vod\/[^"\\]+\/playlist\.m3u8"""
                         )
                             .find(darkServerResponse.text)
                             ?.value
