@@ -938,13 +938,19 @@ class SeriesDonghuaProvider : MainAPI() {
                 val isMovie = normalizedSlug.contains("movie") ||
                     normalizedTitle.contains(" movie ")
 
+                if (isMovie) {
+                    return@mapNotNull null
+                }
+
                 val score = when {
-                    normalizedTitle == normalizedSearch && !isMovie -> 100
-                    normalizedTitle.startsWith("$normalizedSearch ") && !isMovie -> 95
-                    normalizedTitle.contains(normalizedSearch) && !isMovie -> 90
-                    normalizedTitle == normalizedSearch -> 50
-                    normalizedTitle.startsWith("$normalizedSearch ") -> 40
-                    normalizedTitle.contains(normalizedSearch) -> 30
+                    normalizedTitle == normalizedSearch -> 100
+                    normalizedTitle.startsWith("$normalizedSearch ") -> 95
+                    normalizedTitle.contains(normalizedSearch) -> 90
+                    isOneTypoAway(
+                        normalizedTitle,
+                        normalizedSearch
+                    ) -> 70
+                    normalizedSearch.contains(normalizedTitle) -> 60
                     else -> 0
                 }
 
