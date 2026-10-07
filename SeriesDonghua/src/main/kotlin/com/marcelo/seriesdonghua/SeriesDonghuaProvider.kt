@@ -65,11 +65,35 @@ override suspend fun getMainPage(
                     return@mapNotNull null
                 }
 
-                val poster = article
+                val image = article
                     .selectFirst("img[itemprop='image']")
+
+                val src = image
                     ?.attr("src")
                     ?.trim()
-                    ?.takeIf { it.isNotBlank() }
+                    .orEmpty()
+
+                val poster = if (
+                    src.isNotBlank() &&
+                    !src.startsWith("data:image/")
+                ) {
+                    src
+                } else {
+                    listOf(
+                        "data-src",
+                        "data-lazy-src",
+                        "data-original",
+                        "data-url"
+                    )
+                        .asSequence()
+                        .map { attr ->
+                            image?.attr(attr)?.trim().orEmpty()
+                        }
+                        .firstOrNull { value ->
+                            value.isNotBlank() &&
+                                !value.startsWith("data:image/")
+                        }
+                }
 
                 val fixedHref = fixUrl(href)
 
