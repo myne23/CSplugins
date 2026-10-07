@@ -185,12 +185,27 @@ class SeriesDonghuaProvider : MainAPI() {
                     "SeriesDonghua: DonghuaWorld search -> $title | $href"
                 )
 
+                val donghuaWorldPoster = try {
+                    app.get(href).document
+                        .selectFirst("img.ts-post-image[itemprop='image']")
+                        ?.attr("src")
+                        ?.trim()
+                } catch (e: Exception) {
+                    println(
+                        "SeriesDonghua: ERROR obteniendo poster DonghuaWorld -> " +
+                            "${e.javaClass.simpleName}: ${e.message}"
+                    )
+                    null
+                }
+
                 results.add(
                     newAnimeSearchResponse(
                         "$title · DonghuaWorld",
                         href,
                         TvType.Anime
-                    )
+                    ) {
+                        this.posterUrl = fixUrlNull(donghuaWorldPoster)
+                    }
                 )
             } else {
                 println(
@@ -321,20 +336,28 @@ class SeriesDonghuaProvider : MainAPI() {
                     ?.substringBefore("(")
                     ?.trim()
                     ?.toIntOrNull()
+                    ?: return@mapNotNull null
 
                 val episodeTitle = episodeContainer
                     .selectFirst(".epl-title")
                     ?.text()
                     ?.trim()
 
-                newEpisode(fixUrl(episodeUrl)) {
+                Triple(
+                    episodeNumber,
+                    fixUrl(episodeUrl),
+                    episodeTitle
+                )
+            }
+            .distinctBy { it.second }
+            .sortedByDescending { it.first }
+            .map { (episodeNumber, episodeUrl, episodeTitle) ->
+                newEpisode(episodeUrl) {
                     this.name = episodeTitle
                     this.episode = episodeNumber
                     this.posterUrl = fixUrlNull(poster)
                 }
             }
-            .distinctBy { it.data }
-            .reversed()
 
         println(
             "SeriesDonghua: DonghuaWorld load -> " +
