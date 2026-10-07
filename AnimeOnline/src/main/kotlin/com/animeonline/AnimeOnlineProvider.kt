@@ -167,9 +167,77 @@ class AnimeOnlineProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, referer = "$mainUrl/", interceptor = cloudflareKiller).document
+        val document = app.get(
+            url,
+            referer = "$mainUrl/",
+            interceptor = cloudflareKiller
+        ).document
+
         val title = document.select("h1").lastOrNull()?.text()?.trim() ?: return null
-        val mainPoster = document.selectFirst("meta[property='og:image']")?.attr("content")?.takeIf { it.isNotBlank() }
+
+        println("AnimeOnline DEBUG load -> title=$title")
+        println("AnimeOnline DEBUG url -> $url")
+
+        val mainPoster = document
+            .selectFirst("meta[property='og:image']")
+            ?.attr("content")
+            ?.takeIf { it.isNotBlank() }
+
+        println("AnimeOnline DEBUG og:image -> ${mainPoster ?: "NO ENCONTRADO"}")
+
+        val allImages = document.select("img").mapNotNull { img ->
+            val src = img.attr("src").trim()
+            val dataSrc = img.attr("data-src").trim()
+            val lazySrc = img.attr("data-lazy-src").trim()
+            val original = img.attr("data-original").trim()
+
+            val value = when {
+                src.isNotBlank() && !src.startsWith("data:") -> "src=$src"
+                dataSrc.isNotBlank() -> "data-src=$dataSrc"
+                lazySrc.isNotBlank() -> "data-lazy-src=$lazySrc"
+                original.isNotBlank() -> "data-original=$original"
+                else -> null
+            }
+
+            value?.let {
+                val classes = img.className().trim()
+                "class='$classes' $it"
+            }
+        }
+
+        println("AnimeOnline DEBUG images -> count=${allImages.size}")
+
+        allImages.take(30).forEachIndexed { index, image ->
+            println("AnimeOnline DEBUG image[$index] -> $image")
+        }
+
+        val episodeElements = document.select(
+            "#seasons .episodios li, .episodios li, article.episode-card-item"
+        )
+
+        println(
+            "AnimeOnline DEBUG episodeElements -> count=${episodeElements.size}"
+        )
+
+        episodeElements.take(30).forEachIndexed { index, element ->
+            val episodeText = element.text().trim()
+            val episodeImages = element.select("img").mapNotNull { img ->
+                listOf(
+                    img.attr("src").trim(),
+                    img.attr("data-src").trim(),
+                    img.attr("data-lazy-src").trim(),
+                    img.attr("data-original").trim()
+                ).firstOrNull { value ->
+                    value.isNotBlank() && !value.startsWith("data:")
+                }
+            }
+
+            println(
+                "AnimeOnline DEBUG episode[$index] -> " +
+                    "text='$episodeText' images=$episodeImages"
+            )
+        }
+
         var description: String? = null
 
         for (heading in document.select("h2")) {
@@ -179,22 +247,37 @@ class AnimeOnlineProvider : MainAPI() {
                 val markerIndex = headingHtml.indexOf(marker, ignoreCase = true)
                 if (markerIndex >= 0) {
                     val afterMarker = headingHtml.substring(markerIndex + marker.length)
-                    val stripped = afterMarker.replace(Regex("<[^>]*>"), " ").replace(Regex("\\s+"), " ").trim()
-                    if (stripped.isNotBlank()) description = stripped
+                    val stripped = afterMarker
+                        .replace(Regex("<[^>]*>"), " ")
+                        .replace(Regex("\\s+"), " ")
+                        .trim()
+
+                    if (stripped.isNotBlank()) {
+                        description = stripped
+                    }
                 }
                 break
             }
         }
 
         val seasons = document.select("#seasons > .se-c").mapIndexedNotNull { index, seasonElement ->
-            val seasonNumber = seasonElement.selectFirst(".se-q .se-t")?.text()?.trim()?.toIntOrNull() ?: (index + 1)
+            val seasonNumber = seasonElement
+                .selectFirst(".se-q .se-t")
+                ?.text()
+                ?.trim()
+                ?.toIntOrNull()
+                ?: (index + 1)
+
             val episodeElements = seasonElement.select(".episodios li")
 
             val episodes = episodeElements.mapIndexedNotNull { episodeIndex, element ->
                 val linkElement = element.selectFirst("a[href]")
                 val href = linkElement?.attr("href")?.trim()
-                if (href.isNullOrBlank()) return@mapIndexedNotNull null
-                
+
+                if (href.isNullOrBlank()) {
+                    return@mapIndexedNotNull null
+                }
+
                 val name = linkElement.text().trim().ifBlank { "Episodio" }
                 val episodeNumber = episodeIndex + 1
 
@@ -202,19 +285,22 @@ class AnimeOnlineProvider : MainAPI() {
                     this.name = name
                     this.season = seasonNumber
                     this.episode = episodeNumber
-                    // Asignación estricta de la carátula principal
                     this.posterUrl = mainPoster?.let { fixUrl(it) }
                 }
             }
+
             if (episodes.isEmpty()) null else seasonNumber to episodes
         }
 
         if (seasons.isEmpty()) return null
+
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             posterUrl = mainPoster?.let { fixUrl(it) }
             posterHeaders = this@AnimeOnlineProvider.posterHeaders
             this.plot = description
-            seasons.forEach { (_, episodeList) -> addEpisodes(DubStatus.Subbed, episodeList) }
+            seasons.forEach { (_, episodeList) ->
+                addEpisodes(DubStatus.Subbed, episodeList)
+            }
         }
     }
 
