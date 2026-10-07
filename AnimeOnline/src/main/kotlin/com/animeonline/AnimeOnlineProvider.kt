@@ -445,41 +445,11 @@ class AnimeOnlineProvider : MainAPI() {
                     }
                 }
 
-                if (episodeNumber == 1 && !episodePoster.isNullOrBlank()) {
-                    try {
-                        val testUrl = fixUrl(episodePoster)
-                        val testResponse = app.get(
-                            testUrl,
-                            referer = "$mainUrl/",
-                            interceptor = cloudflareKiller
-                        )
-
-                        println(
-                            "AnimeOnline EPISODE_IMAGE_TEST -> " +
-                            "url=$testUrl " +
-                            "status=${testResponse.code} " +
-                            "type=${testResponse.headers["Content-Type"]}"
-                        )
-                    } catch (e: Exception) {
-                        println(
-                            "AnimeOnline EPISODE_IMAGE_TEST_ERROR -> " +
-                            "${e.javaClass.simpleName}: ${e.message}"
-                        )
-                    }
-                }
-
                 newEpisode(fixUrl(href)) {
                     this.name = name
                     this.season = seasonNumber
                     this.episode = episodeNumber
-                    this.posterUrl = episodePoster?.let { fixUrlNull(it) }
-
-                    if (episodeNumber == 1) {
-                        println(
-                            "AnimeOnline EPISODE_IMAGE -> " +
-                            "name=$name poster=$episodePoster"
-                        )
-                    }
+                    this.posterUrl = mainPoster?.let { fixUrlNull(it) }
                 }
             }
 
