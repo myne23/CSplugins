@@ -292,7 +292,7 @@ class AnimeOnlineProvider : MainAPI() {
         if (seasons.isEmpty()) return null
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            posterUrl = mainPoster?.let { fixUrlNull(it) }
+            posterUrl = "https://image.tmdb.org/t/p/w780/lthkKBLe1rX6iThgVFg22O02sJw.jpg"
             this.plot = description
             seasons.forEach { (_, episodeList) ->
                 addEpisodes(DubStatus.Subbed, episodeList)
