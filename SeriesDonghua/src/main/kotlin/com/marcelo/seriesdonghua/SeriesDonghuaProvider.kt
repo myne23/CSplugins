@@ -208,6 +208,12 @@ class SeriesDonghuaProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        if (
+            url.contains("donghuaworld.com/anime/")
+        ) {
+            return loadDonghuaWorldSeries(url)
+        }
+
         val document = app.get(url).document
 
         val title = document
@@ -268,6 +274,79 @@ class SeriesDonghuaProvider : MainAPI() {
             this.posterUrl = fixUrlNull(poster)
             this.plot = plot
             this.tags = tags
+            this.addEpisodes(
+                DubStatus.Subbed,
+                episodes
+            )
+        }
+    }
+
+    private suspend fun loadDonghuaWorldSeries(
+        url: String
+    ): LoadResponse? {
+        val document = app.get(url).document
+
+        val title = document
+            .selectFirst("h1.entry-title[itemprop='name']")
+            ?.text()
+            ?.trim()
+            ?: return null
+
+        val poster = document
+            .selectFirst("img.ts-post-image[itemprop='image']")
+            ?.attr("src")
+            ?.trim()
+
+        val episodes = document
+            .select("a[href*='episode-']")
+            .mapNotNull { episodeElement ->
+                val episodeUrl = episodeElement
+                    .attr("href")
+                    .trim()
+
+                if (episodeUrl.isBlank()) {
+                    return@mapNotNull null
+                }
+
+                val episodeContainer = episodeElement.parent()
+                    ?: return@mapNotNull null
+
+                val episodeNumberText = episodeContainer
+                    .selectFirst(".epl-num")
+                    ?.text()
+                    ?.trim()
+
+                val episodeNumber = episodeNumberText
+                    ?.substringBefore("[")
+                    ?.substringBefore("(")
+                    ?.trim()
+                    ?.toIntOrNull()
+
+                val episodeTitle = episodeContainer
+                    .selectFirst(".epl-title")
+                    ?.text()
+                    ?.trim()
+
+                newEpisode(fixUrl(episodeUrl)) {
+                    this.name = episodeTitle
+                    this.episode = episodeNumber
+                    this.posterUrl = fixUrlNull(poster)
+                }
+            }
+            .distinctBy { it.data }
+            .reversed()
+
+        println(
+            "SeriesDonghua: DonghuaWorld load -> " +
+                "title=$title episodes=${episodes.size}"
+        )
+
+        return newAnimeLoadResponse(
+            "$title · DonghuaWorld",
+            url,
+            TvType.Anime
+        ) {
+            this.posterUrl = fixUrlNull(poster)
             this.addEpisodes(
                 DubStatus.Subbed,
                 episodes
