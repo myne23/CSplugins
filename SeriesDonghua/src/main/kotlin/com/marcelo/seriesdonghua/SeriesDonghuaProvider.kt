@@ -1681,13 +1681,13 @@ override suspend fun getMainPage(
                 headers = mapOf(
                     "User-Agent" to
                         "Mozilla/5.0 (X11; Linux x86_64) " +
-                        "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
                 )
             )
 
             println(
                 "SeriesDonghua: OK.ru HTTP=${response.code} " +
-                "size=${response.text.length}"
+                    "size=${response.text.length}"
             )
 
             if (!response.isSuccessful) {
@@ -1695,6 +1695,46 @@ override suspend fun getMainPage(
                     "SeriesDonghua: OK.ru HTTP no exitoso"
                 )
                 return null
+            }
+
+            /*
+             * Algunos servidores de SeriesDonghua etiquetados como
+             * "OK.ru" realmente devuelven un embed de Odysee.
+             *
+             * Odysee expone directamente el MP4 en JSON-LD:
+             * "contentUrl": "https://player.odycdn.com/api/v3/streams/free/..."
+             */
+            if (embedUrl.contains("odysee.com", ignoreCase = true)) {
+                val contentUrlMatch = Regex(
+                    """"contentUrl"\s*:\s*"([^"]+)"""",
+                    RegexOption.IGNORE_CASE
+                ).find(response.text)
+
+                if (contentUrlMatch == null) {
+                    println(
+                        "SeriesDonghua: Odysee contentUrl NO encontrado"
+                    )
+                    return null
+                }
+
+                val contentUrl = contentUrlMatch.groupValues[1]
+                    .replace("\\u0026", "&")
+                    .replace("\\u003D", "=")
+                    .replace("\\/", "/")
+
+                println(
+                    "SeriesDonghua: Odysee MP4 encontrado -> $contentUrl"
+                )
+
+                return newExtractorLink(
+                    source = "Odysee",
+                    name = "Odysee",
+                    url = contentUrl,
+                    type = ExtractorLinkType.VIDEO
+                ) {
+                    referer = embedUrl
+                    quality = 0
+                }
             }
 
             val normalized = response.text
@@ -1737,7 +1777,7 @@ override suspend fun getMainPage(
         } catch (e: Exception) {
             println(
                 "SeriesDonghua: OK.ru ERROR -> " +
-                "${e.javaClass.simpleName}: ${e.message}"
+                    "${e.javaClass.simpleName}: ${e.message}"
             )
             null
         }
