@@ -32,7 +32,9 @@ class AnimeOnlineProvider : MainAPI() {
     private fun parseAnimeCard(article: Element): SearchResponse? {
         val link = article.selectFirst("a[href]")?.attr("href") ?: return null
         val title = article.selectFirst(".data h3")?.text()?.trim() ?: return null
-        val poster = article.getImageUrl()?.let { fixUrl(it) }
+        val rawImage = article.getImageUrl()
+        val poster = rawImage?.let { fixUrl(it) }
+        println("AnimeOnline IMAGE anime -> title=$title raw=$rawImage fixed=$poster")
         return newAnimeSearchResponse(title, fixUrl(link), TvType.Anime) {
             this.posterUrl = fixUrlNull(poster)
         }
@@ -41,7 +43,9 @@ class AnimeOnlineProvider : MainAPI() {
     private fun parseEpisodeCard(article: Element): SearchResponse? {
         val link = article.selectFirst("a[href*='/episodio/']")?.attr("href") ?: return null
         val title = article.selectFirst(".data h3")?.text()?.trim() ?: return null
-        val poster = article.getImageUrl()?.let { fixUrl(it) }
+        val rawImage = article.getImageUrl()
+        val poster = rawImage?.let { fixUrl(it) }
+        println("AnimeOnline IMAGE episode -> title=$title raw=$rawImage fixed=$poster")
         val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
         return newAnimeSearchResponse(if (!episodeTitle.isNullOrBlank()) "$title - $episodeTitle" else title, fixUrl(link), TvType.Anime) {
             this.posterUrl = fixUrlNull(poster)
@@ -292,7 +296,7 @@ class AnimeOnlineProvider : MainAPI() {
         if (seasons.isEmpty()) return null
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
-            posterUrl = "https://image.tmdb.org/t/p/w780/lthkKBLe1rX6iThgVFg22O02sJw.jpg"
+            posterUrl = mainPoster?.let { fixUrlNull(it) }
             this.plot = description
             seasons.forEach { (_, episodeList) ->
                 addEpisodes(DubStatus.Subbed, episodeList)
