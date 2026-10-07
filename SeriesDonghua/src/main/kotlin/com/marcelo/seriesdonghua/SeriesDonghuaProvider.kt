@@ -648,7 +648,7 @@ class SeriesDonghuaProvider : MainAPI() {
                     .substringBefore("#")
 
                 val episodeRegex = Regex(
-                    "/episode-$episodeNumber(?:-|/)"
+                    "episode-$episodeNumber(?:-|/)"
                 )
 
                 if (episodeRegex.containsMatchIn(normalized)) {
