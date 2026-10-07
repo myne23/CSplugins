@@ -331,17 +331,23 @@ class AnimeOnlineProvider : MainAPI() {
                     this.posterUrl = episodePoster?.let { fixUrlNull(it) }
 
                     try {
-                        val setter = this.javaClass.methods.firstOrNull {
-                            it.name == "setPosterHeaders" && it.parameterTypes.size == 1
-                        }
+                        val methods = this.javaClass.methods
+                            .map { it.name }
+                            .filter {
+                                it.contains("poster", ignoreCase = true) ||
+                                it.contains("image", ignoreCase = true) ||
+                                it.contains("thumb", ignoreCase = true)
+                            }
+                            .distinct()
+                            .sorted()
 
                         println(
-                            "AnimeOnline EPISODE_POSTER_HEADERS -> " +
-                            "class=${this.javaClass.simpleName} setter=${setter != null}"
+                            "AnimeOnline EPISODE_IMAGE_METHODS -> " +
+                            "class=${this.javaClass.simpleName} methods=$methods"
                         )
                     } catch (e: Exception) {
                         println(
-                            "AnimeOnline EPISODE_POSTER_HEADERS ERROR -> " +
+                            "AnimeOnline EPISODE_IMAGE_METHODS ERROR -> " +
                             "${e.javaClass.simpleName}: ${e.message}"
                         )
                     }
