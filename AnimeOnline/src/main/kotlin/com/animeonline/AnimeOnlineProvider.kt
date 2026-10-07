@@ -84,78 +84,199 @@ class AnimeOnlineProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val testImage = "https://ww3.animeonline.ninja/wp-content/uploads/2026/10/6hBvqy6OKi0OcFLQOeulmlC5hr0.jpg"
-
-        try {
-            val noReferer = app.get(testImage)
-            println("AnimeOnline IMGTEST noReferer -> code=${noReferer.code} type=${noReferer.headers["Content-Type"]} bytes=${noReferer.text.length}")
-        } catch (e: Exception) {
-            println("AnimeOnline IMGTEST noReferer ERROR -> ${e.javaClass.simpleName}: ${e.message}")
-        }
-
-        try {
-            val withReferer = app.get(
-                testImage,
-                referer = "$mainUrl/"
-            )
-            println("AnimeOnline IMGTEST withReferer -> code=${withReferer.code} type=${withReferer.headers["Content-Type"]} bytes=${withReferer.text.length}")
-        } catch (e: Exception) {
-            println("AnimeOnline IMGTEST withReferer ERROR -> ${e.javaClass.simpleName}: ${e.message}")
-        }
         if (request.name == "Inicio") {
             if (page > 1) return newHomePageResponse(emptyList(), hasNext = false)
-            
-            val response = app.get(request.data, referer = "$mainUrl/", interceptor = cloudflareKiller)
+
+            val response = app.get(
+                request.data,
+                referer = "$mainUrl/",
+                interceptor = cloudflareKiller
+            )
             val document = response.document
             val sections = ArrayList<HomePageList>()
 
-            val latestEpisodes = document.select("div.items article.item.se.episodes").mapNotNull { parseEpisodeCard(it) }
-            if (latestEpisodes.isNotEmpty()) sections.add(HomePageList("Últimos episodios ⚡", latestEpisodes))
+            val latestEpisodeArticles = document.select("div.items article.item.se.episodes")
+            val latestEpisodes = latestEpisodeArticles.mapNotNull { parseEpisodeCard(it) }
 
-            val latestAnimeHeader = document.select("header").firstOrNull { it.text().contains("ÚLTIMOS ANIMES AGREGADOS") }
-            val latestAnime = latestAnimeHeader?.nextElementSibling()?.nextElementSibling()?.select("article.item")?.mapNotNull { parseAnimeCard(it) } ?: emptyList()
-            if (latestAnime.isNotEmpty()) sections.add(HomePageList("Últimos animes agregados 💥", latestAnime))
+            println(
+                "AnimeOnline HOME -> Últimos episodios: " +
+                    "articles=${latestEpisodeArticles.size} parsed=${latestEpisodes.size}"
+            )
 
-            val latestMoviesHeader = document.select("header").firstOrNull { it.text().contains("ÚLTIMAS PELICULAS AGREGADAS") }
-            val latestMovies = latestMoviesHeader?.nextElementSibling()?.nextElementSibling()?.select("article.item")?.mapNotNull { article ->
-                val link = article.selectFirst("a[href]")?.attr("href") ?: return@mapNotNull null
-                val title = article.selectFirst(".data h3")?.text()?.trim() ?: return@mapNotNull null
-                val poster = article.getImageUrl()?.let { fixUrl(it) }
-                newMovieSearchResponse(title, fixUrl(link), TvType.Movie) {
-                    this.posterUrl = fixUrlNull(poster)
+            if (latestEpisodes.isNotEmpty()) {
+                sections.add(
+                    HomePageList(
+                        "Últimos episodios ⚡",
+                        latestEpisodes
+                    )
+                )
+            }
+
+            val latestAnimeHeader = document.select("header")
+                .firstOrNull {
+                    it.text().contains(
+                        "ÚLTIMOS ANIMES AGREGADOS",
+                        ignoreCase = true
+                    )
                 }
-            } ?: emptyList()
-            if (latestMovies.isNotEmpty()) sections.add(HomePageList("Últimas peliculas agregadas 🎬", latestMovies))
 
-            return newHomePageResponse(sections, hasNext = false)
+            val latestAnimeArticles = latestAnimeHeader
+                ?.nextElementSibling()
+                ?.nextElementSibling()
+                ?.select("article.item")
+                ?: emptyList()
+
+            val latestAnime = latestAnimeArticles.mapNotNull {
+                parseAnimeCard(it)
+            }
+
+            println(
+                "AnimeOnline HOME -> Últimos animes: " +
+                    "header=${latestAnimeHeader != null} " +
+                    "articles=${latestAnimeArticles.size} parsed=${latestAnime.size}"
+            )
+
+            if (latestAnime.isNotEmpty()) {
+                sections.add(
+                    HomePageList(
+                        "Últimos animes agregados 💥",
+                        latestAnime
+                    )
+                )
+            }
+
+            val latestMoviesHeader = document.select("header")
+                .firstOrNull {
+                    it.text().contains(
+                        "ÚLTIMAS PELÍCULAS AGREGADAS",
+                        ignoreCase = true
+                    )
+                }
+
+            val latestMovieArticles = latestMoviesHeader
+                ?.nextElementSibling()
+                ?.nextElementSibling()
+                ?.select("article.item")
+                ?: emptyList()
+
+            val latestMovies = latestMovieArticles.mapNotNull { article ->
+                val link = article.selectFirst("a[href]")
+                    ?.attr("href")
+                    ?: return@mapNotNull null
+
+                val title = article.selectFirst(".data h3")
+                    ?.text()
+                    ?.trim()
+                    ?: return@mapNotNull null
+
+                val poster = article.getImageUrl()?.let { fixUrl(it) }
+
+                newMovieSearchResponse(
+                    title,
+                    fixUrl(link),
+                    TvType.Movie
+                ) {
+                    this.posterUrl = fixUrlNull(poster)
+                    setAnimeOnlinePosterHeaders(this)
+                }
+            }
+
+            println(
+                "AnimeOnline HOME -> Últimas películas: " +
+                    "header=${latestMoviesHeader != null} " +
+                    "articles=${latestMovieArticles.size} parsed=${latestMovies.size}"
+            )
+
+            if (latestMovies.isNotEmpty()) {
+                sections.add(
+                    HomePageList(
+                        "Últimas películas agregadas 🎬",
+                        latestMovies
+                    )
+                )
+            }
+
+            println(
+                "AnimeOnline HOME -> Inicio totalSections=${sections.size}"
+            )
+
+            return newHomePageResponse(
+                sections,
+                hasNext = false
+            )
         }
 
         val url = request.data + page.toString()
-        val document = app.get(url, referer = "$mainUrl/", interceptor = cloudflareKiller).document
 
-        val items = document.select("article.item").mapNotNull { article ->
-            val link = article.selectFirst("a[href]")?.attr("href") ?: return@mapNotNull null
-            val title = article.selectFirst(".data h3")?.text()?.trim()
-                ?: article.selectFirst(".title")?.text()?.trim()
+        val response = app.get(
+            url,
+            referer = "$mainUrl/",
+            interceptor = cloudflareKiller
+        )
+
+        val document = response.document
+        val articles = document.select("article.item")
+
+        val items = articles.mapNotNull { article ->
+            val link = article.selectFirst("a[href]")
+                ?.attr("href")
+                ?: return@mapNotNull null
+
+            val title = article.selectFirst(".data h3")
+                ?.text()
+                ?.trim()
+                ?: article.selectFirst(".title")
+                    ?.text()
+                    ?.trim()
                 ?: return@mapNotNull null
 
             val poster = article.getImageUrl()?.let { fixUrl(it) }
             val fixedLink = fixUrl(link)
-            val type = if (fixedLink.contains("/pelicula/")) TvType.Movie else TvType.Anime
-            
-            val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
-            val finalTitle = if (!episodeTitle.isNullOrBlank()) "$title - $episodeTitle" else title
+
+            val type = if (
+                fixedLink.contains("/pelicula/")
+            ) {
+                TvType.Movie
+            } else {
+                TvType.Anime
+            }
+
+            val episodeTitle = article.selectFirst(".epiposter h4")
+                ?.text()
+                ?.trim()
+
+            val finalTitle =
+                if (!episodeTitle.isNullOrBlank()) {
+                    "$title - $episodeTitle"
+                } else {
+                    title
+                }
 
             if (type == TvType.Movie) {
-                newMovieSearchResponse(finalTitle, fixedLink, TvType.Movie) {
+                newMovieSearchResponse(
+                    finalTitle,
+                    fixedLink,
+                    TvType.Movie
+                ) {
                     this.posterUrl = fixUrlNull(poster)
+                    setAnimeOnlinePosterHeaders(this)
                 }
             } else {
-                newAnimeSearchResponse(finalTitle, fixedLink, TvType.Anime) {
+                newAnimeSearchResponse(
+                    finalTitle,
+                    fixedLink,
+                    TvType.Anime
+                ) {
                     this.posterUrl = fixUrlNull(poster)
+                    setAnimeOnlinePosterHeaders(this)
                 }
             }
         }
+
+        println(
+            "AnimeOnline HOME -> ${request.name}: " +
+                "page=$page url=$url articles=${articles.size} parsed=${items.size}"
+        )
 
         return newHomePageResponse(
             list = HomePageList(
