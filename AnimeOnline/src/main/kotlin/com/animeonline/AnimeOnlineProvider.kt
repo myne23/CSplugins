@@ -451,25 +451,10 @@ class AnimeOnlineProvider : MainAPI() {
                     this.episode = episodeNumber
                     this.posterUrl = episodePoster?.let { fixUrlNull(it) }
 
-                    try {
-                        val methods = this.javaClass.methods
-                            .map { it.name }
-                            .filter {
-                                it.contains("poster", ignoreCase = true) ||
-                                it.contains("image", ignoreCase = true) ||
-                                it.contains("thumb", ignoreCase = true)
-                            }
-                            .distinct()
-                            .sorted()
-
+                    if (episodeNumber == 1) {
                         println(
-                            "AnimeOnline EPISODE_IMAGE_METHODS -> " +
-                            "class=${this.javaClass.simpleName} methods=$methods"
-                        )
-                    } catch (e: Exception) {
-                        println(
-                            "AnimeOnline EPISODE_IMAGE_METHODS ERROR -> " +
-                            "${e.javaClass.simpleName}: ${e.message}"
+                            "AnimeOnline EPISODE_IMAGE -> " +
+                            "name=$name poster=$episodePoster"
                         )
                     }
                 }
