@@ -733,7 +733,7 @@ class MegadedeProvider : MainAPI() {
 
                 if (links.isNotEmpty()) {
                     coroutineScope {
-                        links.map { (serverName, encoded) ->
+                        links.map { (serverName, language, encoded) ->
                             async {
                                 val realUrl = encoded
 
@@ -745,14 +745,20 @@ class MegadedeProvider : MainAPI() {
                                     return@async
                                 }
 
-                                val language = "LAT"
+                                val languageLabel = when (language.uppercase()) {
+                                  "LAT" -> "lat"
+                                  "SUB" -> "sub"
+                                  "ESP" -> "esp"
+                                  else -> language.lowercase()
+                              }
 
-                                val displayName = when {
-                                    serverName.equals("vidhide", true) -> "Vidhide"
-                                    serverName.equals("streamwish", true) -> "Streamwish"
-                                    serverName.equals("voe", true) -> "Voe"
-                                    else -> serverName
-                                }
+                              val displayName = when {
+                                  serverName.equals("vidhide", true) -> "Vidhide"
+                                  serverName.equals("streamwish", true) -> "Streamwish"
+                                  serverName.equals("voe", true) -> "Voe"
+                                  else -> serverName
+                              }
+                              val labeledName = "$displayName $languageLabel"
 
                                 Log.d(
                                     "MegadedeProvider",
@@ -779,7 +785,7 @@ class MegadedeProvider : MainAPI() {
                                             callback(
                                                 newExtractorLink(
                                                     "Vidhide",
-                                                    "Vidhide",
+                                                    labeledName,
                                                     hlsUrl,
                                                     ExtractorLinkType.M3U8
                                                 ) {
@@ -791,7 +797,7 @@ class MegadedeProvider : MainAPI() {
 
                                             Log.d(
                                                 "MegadedeProvider",
-                                                "LINK EMITIDO: source=Vidhide name=Vidhide url=$hlsUrl quality=0"
+                                                "LINK EMITIDO: source=Vidhide name=$labeledName language=$language url=$hlsUrl quality=0"
                                             )
                                         } else {
                                             Log.d(
@@ -832,7 +838,7 @@ class MegadedeProvider : MainAPI() {
                                             callback(
                                                 newExtractorLink(
                                                     "Voe",
-                                                    "Voe",
+                                                    labeledName,
                                                     hlsUrl,
                                                     ExtractorLinkType.M3U8
                                                 ) {
@@ -844,7 +850,7 @@ class MegadedeProvider : MainAPI() {
 
                                             Log.d(
                                                 "MegadedeProvider",
-                                                "LINK EMITIDO: source=Voe name=Voe url=$hlsUrl quality=0"
+                                                "LINK EMITIDO: source=Voe name=$labeledName language=$language url=$hlsUrl quality=0"
                                             )
                                         } else {
                                             Log.d(
@@ -878,7 +884,16 @@ class MegadedeProvider : MainAPI() {
                                                 "LINK EMITIDO: source=${link.source} name=${link.name} url=${link.url} quality=${link.quality}"
                                             )
 
-                                            callback(link)
+                                            callback(
+                                              ExtractorLink(
+                                                  source = displayName,
+                                                  name = labeledName,
+                                                  url = link.url,
+                                                  referer = link.referer,
+                                                  quality = link.quality,
+                                                  type = link.type
+                                              )
+                                          )
                                             extractorFound = true
                                             found = true
                                         }
@@ -915,7 +930,7 @@ class MegadedeProvider : MainAPI() {
                                         callback(
                                             newExtractorLink(
                                                 displayName,
-                                                displayName,
+                                                labeledName,
                                                 realUrl
                                             )
                                         )
@@ -1182,7 +1197,7 @@ class MegadedeProvider : MainAPI() {
 
     private suspend fun extractEmbed69Links(
         vidUrl: String
-    ): List<Pair<String, String>> {
+    ): List<Triple<String, String, String>> {
 
         val response = app.get(
             vidUrl,
@@ -1248,10 +1263,12 @@ class MegadedeProvider : MainAPI() {
         )
 
         val array = JSONArray(dataLinkText)
-        val results = mutableListOf<Pair<String, String>>()
+        val results = mutableListOf<Triple<String, String, String>>()
+        val seenProviders = mutableSetOf<String>()
 
         for (i in 0 until array.length()) {
             val item = array.getJSONObject(i)
+            val language = item.optString("video_language", "UNK").uppercase()
             val embeds = item.optJSONArray("sortedEmbeds")
                 ?: continue
 
@@ -1272,10 +1289,20 @@ class MegadedeProvider : MainAPI() {
                     continue
                 }
 
+                val providerKey = "${serverName.lowercase()}|$language"
+                if (!seenProviders.add(providerKey)) {
+                    Log.d(
+                        "MegadedeProvider",
+                        "Embed69 duplicado omitido: server=$serverName language=$language"
+                    )
+                    continue
+                }
+
                 results.add(
-                    serverName to decryptAes(
-                        encrypted,
-                        keyHash
+                    Triple(
+                        serverName,
+                        language,
+                        decryptAes(encrypted, keyHash)
                     )
                 )
             }
