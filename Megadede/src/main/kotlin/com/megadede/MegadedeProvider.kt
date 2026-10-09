@@ -1997,6 +1997,7 @@ private fun decodeVoeConfig(encoded: String): String? {
 }
 
 
+
 private fun pbkdf2Sha256(
     password: ByteArray,
     salt: ByteArray,
@@ -2004,22 +2005,15 @@ private fun pbkdf2Sha256(
     keyLength: Int
 ): ByteArray {
     val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+    mac.init(
+        javax.crypto.spec.SecretKeySpec(password, "HmacSHA256")
+    )
 
-    val blockCount =
-        (keyLength + mac.macLength - 1) / mac.macLength
-
+    val blockCount = (keyLength + mac.macLength - 1) / mac.macLength
     val output = ByteArray(blockCount * mac.macLength)
-
     var outputOffset = 0
 
     for (block in 1..blockCount) {
-        mac.init(
-            javax.crypto.spec.SecretKeySpec(
-                password,
-                "HmacSHA256"
-            )
-        )
-
         val blockSalt = salt + byteArrayOf(
             ((block ushr 24) and 0xff).toByte(),
             ((block ushr 16) and 0xff).toByte(),
@@ -2031,13 +2025,6 @@ private fun pbkdf2Sha256(
         val t = u.copyOf()
 
         for (i in 1 until iterations) {
-            mac.init(
-                javax.crypto.spec.SecretKeySpec(
-                    password,
-                    "HmacSHA256"
-                )
-            )
-
             u = mac.doFinal(u)
 
             for (j in t.indices) {
@@ -2045,18 +2032,25 @@ private fun pbkdf2Sha256(
             }
         }
 
-        System.arraycopy(
-            t,
-            0,
-            output,
-            outputOffset,
-            t.size
-        )
-
+        System.arraycopy(t, 0, output, outputOffset, t.size)
         outputOffset += t.size
     }
 
     return output.copyOf(keyLength)
+}
+
+private fun bytesToHex(bytes: ByteArray): String {
+    val digits = "0123456789abcdef"
+    val result = CharArray(bytes.size * 2)
+    var index = 0
+
+    for (byte in bytes) {
+        val value = byte.toInt() and 0xff
+        result[index++] = digits[value ushr 4]
+        result[index++] = digits[value and 0x0f]
+    }
+
+    return String(result)
 }
 
 private fun jsonString(value: String): String {
