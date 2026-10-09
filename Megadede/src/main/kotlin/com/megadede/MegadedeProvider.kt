@@ -911,15 +911,10 @@ class MegadedeProvider : MainAPI() {
                                         )
 
                                         if (displayName.equals("Streamwish", ignoreCase = true) && streamwishLinks.isEmpty()) {
-
-                                            Log.d(
-
-                                                "MegadedeProvider",
-
-                                                "LINKS Streamwish: loadExtractor terminó sin devolver enlaces; se necesita investigar fallback"
-
-                                            )
-
+                                            Log.d("MegadedeProvider", "LINKS Streamwish: extractor sin enlaces; intentando URL original como fallback")
+                                            callback(newExtractorLink(displayName, labeledName, realUrl))
+                                            found = true
+                                            Log.d("MegadedeProvider", "LINKS Streamwish: fallback directo agregado tras extractor sin enlaces")
                                         }
 
                                         if (streamwishLinks.isNotEmpty()) {
