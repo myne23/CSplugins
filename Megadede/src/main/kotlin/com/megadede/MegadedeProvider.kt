@@ -877,25 +877,30 @@ class MegadedeProvider : MainAPI() {
                                 try {
                                     val completed = withTimeoutOrNull(20000L) {
                                         var extractorFound = false
+                                        val streamwishLinks = mutableListOf<ExtractorLink>()
 
                                         val extractorCallback: (ExtractorLink) -> Unit = { link ->
-                                            Log.d(
-                                                "MegadedeProvider",
-                                                "LINK EMITIDO: source=${link.source} name=${link.name} url=${link.url} quality=${link.quality}"
-                                            )
+                                            if (displayName.equals("Streamwish", ignoreCase = true)) {
+                                                streamwishLinks.add(link)
+                                            } else {
+                                                Log.d(
+                                                    "MegadedeProvider",
+                                                    "LINK EMITIDO: source=$displayName name=$labeledName url=${link.url} quality=${link.quality}"
+                                                )
 
-                                            callback(
-                                              ExtractorLink(
-                                                  source = displayName,
-                                                  name = labeledName,
-                                                  url = link.url,
-                                                  referer = link.referer,
-                                                  quality = link.quality,
-                                                  type = link.type
-                                              )
-                                          )
-                                            extractorFound = true
-                                            found = true
+                                                callback(
+                                                    ExtractorLink(
+                                                        source = displayName,
+                                                        name = labeledName,
+                                                        url = link.url,
+                                                        referer = link.referer,
+                                                        quality = link.quality,
+                                                        type = link.type
+                                                    )
+                                                )
+                                                extractorFound = true
+                                                found = true
+                                            }
                                         }
 
                                         loadExtractor(
@@ -904,6 +909,50 @@ class MegadedeProvider : MainAPI() {
                                             subtitleCallback,
                                             extractorCallback
                                         )
+
+                                        if (streamwishLinks.isNotEmpty()) {
+                                            val masterLink = streamwishLinks.firstOrNull { link ->
+                                                link.url.substringBefore('?')
+                                                    .substringAfterLast('/')
+                                                    .equals("master.m3u8", ignoreCase = true)
+                                            }
+
+                                            val linksToEmit = if (masterLink != null) {
+                                                Log.d(
+                                                    "MegadedeProvider",
+                                                    "LINKS Streamwish: se conserva master.m3u8 y se descartan ${streamwishLinks.size - 1} variantes redundantes"
+                                                )
+                                                listOf(masterLink)
+                                            } else {
+                                                Log.d(
+                                                    "MegadedeProvider",
+                                                    "LINKS Streamwish: no hay master.m3u8; se conservan las ${streamwishLinks.size} opciones"
+                                                )
+                                                streamwishLinks
+                                            }
+
+                                            linksToEmit.forEach { link ->
+                                                Log.d(
+                                                    "MegadedeProvider",
+                                                    "LINK EMITIDO: source=$displayName name=$labeledName url=${link.url} quality=${link.quality}"
+                                                )
+
+                                                callback(
+                                                    ExtractorLink(
+                                                        source = displayName,
+                                                        name = labeledName,
+                                                        url = link.url,
+                                                        referer = link.referer,
+                                                        quality = link.quality,
+                                                        type = link.type
+                                                    )
+                                                )
+                                            }
+
+                                            extractorFound = true
+                                            found = true
+                                        }
+
 
                                         Log.d(
                                             "MegadedeProvider",
