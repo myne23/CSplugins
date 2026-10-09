@@ -910,23 +910,35 @@ class MegadedeProvider : MainAPI() {
                                             extractorCallback
                                         )
 
+                                        if (displayName.equals("Streamwish", ignoreCase = true) && streamwishLinks.isEmpty()) {
+
+                                            Log.d(
+
+                                                "MegadedeProvider",
+
+                                                "LINKS Streamwish: loadExtractor terminó sin devolver enlaces; se necesita investigar fallback"
+
+                                            )
+
+                                        }
+
                                         if (streamwishLinks.isNotEmpty()) {
                                             val masterLink = streamwishLinks.firstOrNull { link ->
                                                 link.url.substringBefore('?')
                                                     .substringAfterLast('/')
-                                                    .equals("master.m3u8", ignoreCase = true)
+                                                    .let { it.equals("master.m3u8", ignoreCase = true) || it.equals("master.txt", ignoreCase = true) }
                                             }
 
                                             val linksToEmit = if (masterLink != null) {
                                                 Log.d(
                                                     "MegadedeProvider",
-                                                    "LINKS Streamwish: se conserva master.m3u8 y se descartan ${streamwishLinks.size - 1} variantes redundantes"
+                                                    "LINKS Streamwish: se conserva la playlist master y se descartan ${streamwishLinks.size - 1} variantes redundantes"
                                                 )
                                                 listOf(masterLink)
                                             } else {
                                                 Log.d(
                                                     "MegadedeProvider",
-                                                    "LINKS Streamwish: no hay master.m3u8; se conservan las ${streamwishLinks.size} opciones"
+                                                    "LINKS Streamwish: no hay playlist master; se conservan las ${streamwishLinks.size} opciones"
                                                 )
                                                 streamwishLinks
                                             }
@@ -965,7 +977,7 @@ class MegadedeProvider : MainAPI() {
                                     if (completed == null) {
                                         Log.d(
                                             "MegadedeProvider",
-                                            "LINKS EXTRACTOR TIMEOUT: name=$displayName limite=7000ms"
+                                            "LINKS EXTRACTOR TIMEOUT: name=$displayName limite=20000ms"
                                         )
                                     }
                                 } catch (e: Exception) {
@@ -1050,7 +1062,7 @@ class MegadedeProvider : MainAPI() {
                                 if (completed == null) {
                                     Log.d(
                                         "MegadedeProvider",
-                                        "LINKS EXTRACTOR TIMEOUT servidor directo: $serverUrl limite=7000ms"
+                                        "LINKS EXTRACTOR TIMEOUT servidor directo: $serverUrl limite=20000ms"
                                     )
                                 }
                             } catch (e: Exception) {
