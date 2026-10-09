@@ -1739,6 +1739,11 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                 return null
             }
 
+            if (!algorithm.equals("PBKDF2/SHA-256", ignoreCase = true)) {
+                    Log.d("MegadedeProvider", "Voe ALTCHA: algoritmo no compatible")
+                    return null
+                }
+
             Log.d(
                 "MegadedeProvider",
                 "Voe ALTCHA: algorithm=$algorithm cost=$cost keyLength=$keyLength prefix=$keyPrefix"
@@ -1750,6 +1755,8 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
             val saltBytes = hexToBytes(salt)
             val nonceBytes = hexToBytes(nonce)
             val powMac = javax.crypto.Mac.getInstance("HmacSHA256")
+            val passwordBytes = ByteArray(nonceBytes.size + 4)
+            System.arraycopy(nonceBytes, 0, passwordBytes, 0, nonceBytes.size)
 
             val powStart = System.nanoTime()
 
@@ -1757,15 +1764,12 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                 if (counter % 100 == 0) {
                     currentCoroutineContext().ensureActive()
                 }
-                val counterBytes = byteArrayOf(
-                    ((counter ushr 24) and 0xff).toByte(),
-                    ((counter ushr 16) and 0xff).toByte(),
-                    ((counter ushr 8) and 0xff).toByte(),
-                    (counter and 0xff).toByte()
-                )
 
-                val passwordBytes =
-                    nonceBytes + counterBytes
+                val offset = nonceBytes.size
+                passwordBytes[offset] = (counter ushr 24).toByte()
+                passwordBytes[offset + 1] = (counter ushr 16).toByte()
+                passwordBytes[offset + 2] = (counter ushr 8).toByte()
+                passwordBytes[offset + 3] = counter.toByte()
 
                 val derived = pbkdf2Sha256(
                     passwordBytes,
@@ -1795,7 +1799,7 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
 
             Log.d(
                 "MegadedeProvider",
-                "Voe ALTCHA resuelto: counter=$solvedCounter key=$solvedKey time=${powElapsedMs}ms"
+                "Voe ALTCHA resuelto: counter=$solvedCounter time=${powElapsedMs}ms"
             )
 
             // ALTCHA v2 espera el challenge como objeto JSON,
@@ -1918,6 +1922,8 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
         )
 
         result
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
     } catch (e: Exception) {
         Log.e(
             "MegadedeProvider",
