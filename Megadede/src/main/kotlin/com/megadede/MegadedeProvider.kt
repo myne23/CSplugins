@@ -1773,13 +1773,9 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                     keyLength
                 )
 
-                val hex = derived.joinToString("") {
-                    "%02x".format(it.toInt() and 0xff)
-                }
-
-                if (hex.startsWith(keyPrefix)) {
+                if (matchesHexPrefix(derived, keyPrefix)) {
                     solvedCounter = counter
-                    solvedKey = hex
+                    solvedKey = bytesToHex(derived)
                     break
                 }
             }
@@ -2051,6 +2047,16 @@ private fun bytesToHex(bytes: ByteArray): String {
     }
 
     return String(result)
+}
+
+private fun matchesHexPrefix(bytes: ByteArray, prefix: String): Boolean {
+    if (prefix.length > bytes.size * 2) return false
+    for (i in prefix.indices) {
+        val value = bytes[i / 2].toInt() and 0xff
+        val nibble = if (i % 2 == 0) value ushr 4 else value and 0x0f
+        if (Character.digit(prefix[i], 16) != nibble) return false
+    }
+    return true
 }
 
 private fun jsonString(value: String): String {
