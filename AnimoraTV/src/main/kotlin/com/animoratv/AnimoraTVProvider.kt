@@ -2,1091 +2,463 @@ package com.animoratv
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.json.JSONObject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
+import org.json.JSONObject
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.text.Normalizer
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+
+/* ====================================================================
+ * Config
+ * ==================================================================== */
+
+// Poné true para ver los logs (println) mientras debuggeás.
+private const val DEBUG = false
+
+// Si es true, los links que salen de extractores se etiquetan con su origen
+// ("Voe · Animora" / "Voe · AnimeAV") para distinguir los que parecen repetidos.
+private const val TAG_LINKS = true
+
+private const val UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0"
+
+private const val AV_BASE = "https://animeav1.com"
+private const val UPN_BASE = "https://animeav1.uns.bio"
+private const val UPN_KEY = "kiemtienmua911ca"
+private const val UPN_IV = "1234567890oiuytr"
+
+private const val EXTRACTOR_TIMEOUT_MS = 7_000L
+private const val ANIMEAV_TIMEOUT_MS = 12_000L
+private const val ANIMORA_API_TIMEOUT_MS = 10_000L
+private const val HOME_CACHE_MS = 180_000L
+
+private const val TAG_ANIMORA = "Animora"
+private const val TAG_ANIMEAV = "AnimeAV"
+
+private const val SECTION_RECENT = "Últimos episodios"
+private const val SECTION_EXPLORE = "Explorar"
+
+private fun log(msg: String) {
+    if (DEBUG) println("AnimoraTV: $msg")
+}
+
+/* ====================================================================
+ * Regex precompilados (antes se recompilaban en cada llamada)
+ * ==================================================================== */
+
+private val NON_ALNUM = Regex("""[^\p{L}\p{N}]+""")
+private val DIACRITICS = Regex("""\p{M}+""")
+private val HTML_TAG = Regex("<[^>]+>")
+
+private val AV_CARD = Regex(
+    """<h3[^>]*>(.*?)</h3>[\s\S]*?<a[^>]+href="(/media/[^"]+)"""",
+    RegexOption.IGNORE_CASE
+)
+private val AV_EMBEDS = Regex("""embeds:\{(.*?)\},downloads""", RegexOption.DOT_MATCHES_ALL)
+private val AV_SERVER = Regex("""server:"([^"]+)",url:"([^"]+)"""")
+
+private val MEGA_EMBED = Regex("""mega\.nz/[^?#]*embed/([^?#]+)""", RegexOption.IGNORE_CASE)
+private val MEGA_FALLBACK =
+    Regex("""(?:embed/|/)([^#!?/\s]+)[#!]([^#!?\s]+)""", RegexOption.IGNORE_CASE)
+
+/* ====================================================================
+ * Helpers de título (para encontrar el anime en AnimeAV)
+ * ==================================================================== */
+
+private val STOPWORDS = setOf(
+    "no", "wa", "ga", "to", "wo", "ni", "na", "the", "of", "and", "in",
+    "de", "la", "el", "los", "las", "y", "a"
+)
+
+// Si el candidato tiene una de estas palabras y lo pedido NO, se penaliza.
+private val MARKERS = setOf(
+    "ova", "ovas", "oav", "recap", "special", "specials", "especial",
+    "movie", "film", "pelicula", "2nd", "3rd", "4th", "5th"
+)
+
+private fun normalizeTitle(value: String): String =
+    Normalizer.normalize(value.lowercase(), Normalizer.Form.NFD)
+        .replace(DIACRITICS, "")
+        .replace(NON_ALNUM, " ")
+        .trim()
+
+private fun titleWords(normalized: String): Set<String> =
+    normalized
+        .split(" ")
+        .filter { (it.length >= 2 || (it.isNotEmpty() && it.all(Char::isDigit))) && it !in STOPWORDS }
+        .toSet()
+
+private fun animeTitleScore(requested: String, candidate: String): Int {
+    val r = normalizeTitle(requested)
+    val c = normalizeTitle(candidate)
+
+    if (r == c) return 10_000
+
+    val rw = titleWords(r)
+    val cw = titleWords(c)
+    if (rw.isEmpty() || cw.isEmpty()) return 0
+
+    val common = rw.intersect(cw).size
+    if (common == 0) return 0
+
+    // Tiene que coincidir al menos la mitad de lo pedido
+    if (common.toFloat() / rw.size < 0.5f) return 0
+
+    var score = common * 100
+    score -= (cw.size - common) * 10 // desempata a favor del título más parecido
+    for (m in MARKERS) {
+        if (m in cw && m !in rw) score -= 150
+    }
+    return score
+}
+
+/* ====================================================================
+ * Dedupe
+ * ==================================================================== */
+
+// Parámetros que cambian en cada request pero no cambian el video.
+private val VOLATILE_PARAMS = setOf(
+    "token", "tok", "expires", "expire", "exp", "sig", "signature",
+    "ts", "t", "e", "st", "md5", "ref", "referer", "_"
+)
+
+/**
+ * Clave para detectar "el mismo" link/embed:
+ * sin esquema, sin www, sin "/" final y sin parámetros volátiles.
+ * El fragmento (#...) se conserva porque ahí viajan los IDs (UPNShare, Mega).
+ */
+private fun dedupeKey(url: String): String {
+    val u = url.trim().substringAfter("://").removePrefix("www.")
+    val fragment = u.substringAfter("#", "")
+    val noFrag = u.substringBefore("#")
+    val path = noFrag.substringBefore("?").trimEnd('/')
+    val host = path.substringBefore("/").lowercase()
+    val rest = path.substringAfter("/", "")
+    val query = noFrag
+        .substringAfter("?", "")
+        .split("&")
+        .filter { it.isNotBlank() && it.substringBefore("=").lowercase() !in VOLATILE_PARAMS }
+        .sorted()
+        .joinToString("&")
+
+    return buildString {
+        append(host)
+        if (rest.isNotEmpty()) append('/').append(rest)
+        if (query.isNotEmpty()) append('?').append(query)
+        if (fragment.isNotEmpty()) append('#').append(fragment)
+    }
+}
+
+private fun isMegaServer(provider: String, url: String): Boolean =
+    provider.equals("mega", ignoreCase = true) || url.contains("mega.nz/", ignoreCase = true)
+
+private fun isHlsServer(provider: String, url: String): Boolean =
+    provider.equals("hls", ignoreCase = true) ||
+        url.substringBefore("?").endsWith(".m3u8", ignoreCase = true)
+
+private suspend fun safely(label: String, block: suspend () -> Unit) {
+    try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        log("ERROR $label -> ${e.javaClass.simpleName}: ${e.message}")
+    }
+}
+
+/**
+ * Punto único de salida de links: deduplica, cuenta y serializa el callback.
+ * `count` es lo que decide el return de loadLinks (ya no depende de flags sueltos).
+ */
+private class LinkSink(private val callback: (ExtractorLink) -> Unit) {
+
+    private val seen = ConcurrentHashMap.newKeySet<String>()
+    private val lock = Any()
+    private val emitted = AtomicInteger(0)
+
+    val megaClaimed = AtomicBoolean(false)
+    val count: Int get() = emitted.get()
+
+    /** true si es la primera vez que vemos este embed (entre Animora y AnimeAV). */
+    fun claimEmbed(url: String): Boolean = seen.add("embed:" + dedupeKey(url))
+
+    suspend fun emit(link: ExtractorLink, tag: String?): Boolean {
+        if (!seen.add("link:" + dedupeKey(link.url))) {
+            log("link duplicado ignorado: ${link.url}")
+            return false
+        }
+
+        val out =
+            if (tag == null || !TAG_LINKS) {
+                link
+            } else {
+                newExtractorLink(
+                    source = link.source,
+                    name = "${link.name} · $tag",
+                    url = link.url,
+                    type = link.type
+                ) {
+                    this.referer = link.referer
+                    this.quality = link.quality
+                    this.headers = link.headers
+                    this.extractorData = link.extractorData
+                }
+            }
+
+        emitted.incrementAndGet()
+        synchronized(lock) { callback(out) }
+        log("LINK ${out.name} q=${out.quality} ${out.url}")
+        return true
+    }
+}
+
+private fun JSONArray.objects(): List<JSONObject> =
+    (0 until length()).mapNotNull { optJSONObject(it) }
+
+/* ====================================================================
+ * Provider
+ * ==================================================================== */
 
 class AnimoraTVProvider : MainAPI() {
 
     override var mainUrl = "https://www.animoratv.com"
     override var name = "AnimoraTV"
 
-    override val supportedTypes = setOf(
-        TvType.Anime,
-        TvType.TvSeries
-    )
+    override val supportedTypes = setOf(TvType.Anime, TvType.TvSeries)
 
     override var lang = "es"
-
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
-        "$mainUrl/api/episodios/recientes?limite=36" to "Últimos episodios",
+        "$mainUrl/api/episodios/recientes?limite=36" to SECTION_RECENT,
         "$mainUrl/api/animes/populares" to "Populares",
-        "$mainUrl/api/animes?limite=24&pagina=1&sort=recientes" to "Explorar"
+        "$mainUrl/api/animes?limite=24&pagina=1&sort=recientes" to SECTION_EXPLORE
     )
 
-    private suspend fun getJson(url: String): JSONObject {
-        return JSONObject(app.get(url).text)
-    }
+    private val apiHeaders: Map<String, String>
+        get() = mapOf(
+            "User-Agent" to UA,
+            "Accept" to "application/json, text/plain, */*",
+            "Referer" to "$mainUrl/",
+            "Origin" to mainUrl
+        )
 
-    private fun parseAnimeList(json: JSONObject): List<SearchResponse> {
-        val results = ArrayList<SearchResponse>()
-        val animes = json.getJSONObject("data").getJSONArray("animes")
+    private val jsonCache = ConcurrentHashMap<String, Pair<Long, JSONObject>>()
 
-        for (i in 0 until animes.length()) {
-            val anime = animes.getJSONObject(i)
+    // título normalizado -> slug de AnimeAV (evita repetir la búsqueda en cada episodio)
+    private val animeAvSlugCache = ConcurrentHashMap<String, String>()
 
-            val title = anime.optString("titulo")
-                .ifBlank { anime.optString("tituloIngles") }
+    /* ------------------------------------------------------------
+     * HTTP / JSON
+     * ------------------------------------------------------------ */
 
-            val slug = anime.optString("slug")
+    /**
+     * GET JSON con headers, reintentos y caché opcional.
+     * Devuelve null si falla (antes un 403/429/HTML rompía todo con una excepción,
+     * que es la causa más probable de que la página principal a veces no cargue).
+     */
+    private suspend fun getJson(
+        url: String,
+        cacheMs: Long = 0L,
+        retries: Int = 2
+    ): JSONObject? {
 
-            if (title.isBlank() || slug.isBlank()) continue
-
-            val response = newAnimeSearchResponse(
-                title,
-                "$mainUrl/anime/$slug",
-                TvType.Anime
-            )
-
-            response.posterUrl =
-                anime.optString("portada").ifBlank { null }
-
-            results.add(response)
+        if (cacheMs > 0) {
+            val cached = jsonCache[url]
+            if (cached != null && System.currentTimeMillis() - cached.first < cacheMs) {
+                return cached.second
+            }
         }
 
-        return results
-    }
+        for (attempt in 0..retries) {
+            try {
+                val res = app.get(url, headers = apiHeaders)
 
-    private fun parseRecentEpisodes(json: JSONObject): List<SearchResponse> {
-        val results = ArrayList<SearchResponse>()
+                if (res.isSuccessful) {
+                    val json = JSONObject(res.text)
+                    if (cacheMs > 0) jsonCache[url] = System.currentTimeMillis() to json
+                    return json
+                }
 
-        val episodes =
-            json.optJSONArray("data")
-                ?: return results
+                log("HTTP ${res.code} en $url (intento ${attempt + 1})")
+                if (res.code == 404) return null
 
-        for (i in 0 until episodes.length()) {
-
-            val episode =
-                episodes.optJSONObject(i)
-                    ?: continue
-
-            val anime =
-                episode.optJSONObject("anime")
-                    ?: continue
-
-            val title =
-                anime.optString("titulo")
-                    .ifBlank {
-                        anime.optString("tituloIngles")
-                    }
-
-            val slug =
-                anime.optString("slug")
-
-            val number =
-                episode.optInt("numero", 0)
-
-            if (
-                title.isBlank() ||
-                slug.isBlank() ||
-                number <= 0
-            ) {
-                continue
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("getJson ERROR $url -> ${e.javaClass.simpleName}: ${e.message}")
             }
 
-            val response =
+            if (attempt < retries) delay(400L * (attempt + 1))
+        }
+
+        return null
+    }
+
+    /* ------------------------------------------------------------
+     * Parsers (tolerantes a cambios de forma en la respuesta)
+     * ------------------------------------------------------------ */
+
+    private fun animeArray(json: JSONObject): JSONArray? =
+        when (val data = json.opt("data")) {
+            is JSONArray -> data
+            is JSONObject -> data.optJSONArray("animes")
+            else -> json.optJSONArray("animes")
+        }
+
+    private fun parseAnimeList(json: JSONObject): List<SearchResponse> =
+        (animeArray(json)?.objects() ?: emptyList())
+            .mapNotNull { anime ->
+                val title = anime.optString("titulo").ifBlank { anime.optString("tituloIngles") }
+                val slug = anime.optString("slug")
+                if (title.isBlank() || slug.isBlank()) return@mapNotNull null
+
+                newAnimeSearchResponse(title, "$mainUrl/anime/$slug", TvType.Anime) {
+                    posterUrl = anime.optString("portada").ifBlank { null }
+                }
+            }
+            .distinctBy { it.url }
+
+    private fun parseRecentEpisodes(json: JSONObject): List<SearchResponse> =
+        (json.optJSONArray("data")?.objects() ?: emptyList())
+            .mapNotNull { episode ->
+                val anime = episode.optJSONObject("anime") ?: return@mapNotNull null
+
+                val title = anime.optString("titulo").ifBlank { anime.optString("tituloIngles") }
+                val slug = anime.optString("slug")
+                val number = episode.optInt("numero", 0)
+                if (title.isBlank() || slug.isBlank() || number <= 0) return@mapNotNull null
+
                 newAnimeSearchResponse(
                     "$title - Episodio $number",
                     "$mainUrl/anime/$slug/episodio/$number",
                     TvType.Anime
-                )
+                ) {
+                    posterUrl = episode.optString("miniatura")
+                        .ifBlank { anime.optString("portada") }
+                        .ifBlank { null }
+                }
+            }
+            .distinctBy { it.url }
 
-            response.posterUrl =
-                episode
-                    .optString("miniatura")
-                    .ifBlank {
-                        anime.optString("portada")
-                    }
-                    .ifBlank { null }
-
-            results.add(response)
-        }
-
-        return results
-    }
+    /* ------------------------------------------------------------
+     * Main page / search / load
+     * ------------------------------------------------------------ */
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
 
-        val requestUrl =
-            if (request.name == "Explorar") {
-                "$mainUrl/api/animes?limite=24&pagina=$page&sort=recientes"
-            } else {
-                request.data
-            }
+        val isExplore = request.name == SECTION_EXPLORE
 
-        val results =
-            if (request.name == "Últimos episodios") {
-                parseRecentEpisodes(
-                    getJson(requestUrl)
-                )
-            } else {
-                parseAnimeList(
-                    getJson(requestUrl)
-                )
-            }
+        val url =
+            if (isExplore) "$mainUrl/api/animes?limite=24&pagina=$page&sort=recientes"
+            else request.data
+
+        val json = getJson(url, cacheMs = HOME_CACHE_MS)
+
+        val items = when {
+            json == null -> emptyList()
+            request.name == SECTION_RECENT -> parseRecentEpisodes(json)
+            else -> parseAnimeList(json)
+        }
 
         return newHomePageResponse(
             request.name,
-            results,
-            hasNext = request.name == "Explorar" &&
-                results.size >= 24
+            items,
+            hasNext = isExplore && items.size >= 24
         )
     }
 
-    override suspend fun search(
-        query: String
-    ): List<SearchResponse>? {
-
-        val encodedQuery =
-            URLEncoder.encode(
-                query,
-                "UTF-8"
-            )
-
-        val json =
-            getJson(
-                "$mainUrl/api/busqueda" +
-                    "?termino=$encodedQuery" +
-                    "&pagina=1&limite=30"
-            )
-
+    override suspend fun search(query: String): List<SearchResponse>? {
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        val json = getJson("$mainUrl/api/busqueda?termino=$encoded&pagina=1&limite=30")
+            ?: return emptyList()
         return parseAnimeList(json)
     }
 
-    override suspend fun load(
-        url: String
-    ): LoadResponse? {
+    override suspend fun load(url: String): LoadResponse? {
 
-        val animePart =
-            url
-                .substringAfter("/anime/", "")
-                .substringBefore("/episodio/")
-                .substringBefore("?")
-                .trim()
-                .removeSuffix("/")
-
-        val slug =
-            if (animePart.isNotBlank()) {
-                animePart
-            } else {
-                url
-                    .substringAfterLast("/anime/")
-                    .substringBefore("?")
-                    .trim()
-            }
+        val slug = url
+            .substringAfter("/anime/", "")
+            .substringBefore("/episodio/")
+            .substringBefore("?")
+            .substringBefore("#")
+            .trim()
+            .removeSuffix("/")
 
         if (slug.isBlank()) return null
 
-        println(
-            "AnimoraTV: load slug=$slug"
-        )
+        // Las dos requests no dependen una de la otra -> en paralelo
+        val (animeJson, episodesJson) = coroutineScope {
+            val a = async { getJson("$mainUrl/api/animes/$slug") }
+            val e = async { getJson("$mainUrl/api/animes/$slug/episodios") }
+            a.await() to e.await()
+        }
 
-        val animeJson =
-            getJson(
-                "$mainUrl/api/animes/$slug"
-            )
+        val anime = animeJson
+            ?.optJSONObject("data")
+            ?.optJSONObject("anime")
+            ?: return null
 
-        val anime =
-            animeJson
-                .getJSONObject("data")
-                .getJSONObject("anime")
-
-        val title =
-            anime.optString("titulo")
-                .ifBlank {
-                    anime.optString("tituloIngles")
-                }
-
+        val titulo = anime.optString("titulo")
+        val tituloEn = anime.optString("tituloIngles")
+        val title = titulo.ifBlank { tituloEn }
         if (title.isBlank()) return null
 
-        val episodesJson =
-            getJson(
-                "$mainUrl/api/animes/$slug/episodios"
-            )
+        // Los títulos viajan en `data` para que loadLinks no tenga que pedirlos otra vez.
+        val titlesData = listOf(titulo, tituloEn)
+            .joinToString("|") { it.replace("|", " ").trim() }
 
-        val episodes =
-            episodesJson
-                .getJSONObject("data")
-                .getJSONArray("episodios")
+        val episodeList = (episodesJson
+            ?.optJSONObject("data")
+            ?.optJSONArray("episodios")
+            ?.objects()
+            ?: emptyList())
+            .mapIndexedNotNull { i, ep ->
 
-        val episodeList =
-            ArrayList<Episode>()
+                val number = ep.optInt("numero", i + 1)
+                if (number <= 0) return@mapIndexedNotNull null
 
-        for (i in 0 until episodes.length()) {
+                val epTitle = ep.optString("titulo").ifBlank { "Episodio $number" }
+                val epDesc = ep.optString("descripcion").ifBlank { null }
+                val epPoster = ep.optString("miniatura").ifBlank { null }
 
-            val episode =
-                episodes.getJSONObject(i)
-
-            val number =
-                episode.optInt(
-                    "numero",
-                    i + 1
-                )
-
-            val episodeTitle =
-                episode
-                    .optString("titulo")
-                    .ifBlank {
-                        "Episodio $number"
-                    }
-
-            if (number <= 0) continue
-
-            episodeList.add(
-                newEpisode("$slug|$number") {
-
-                    name = episodeTitle
+                newEpisode("$slug|$number|$titlesData") {
+                    this.name = epTitle
                     this.episode = number
-                    season = 1
-
-                    description =
-                        episode.optString(
-                            "descripcion"
-                        )
-
-                    posterUrl =
-                        episode
-                            .optString("miniatura")
-                            .ifBlank { null }
+                    this.season = 1
+                    this.description = epDesc
+                    this.posterUrl = epPoster
                 }
-            )
-        }
+            }
+            .sortedBy { it.episode }
 
-        return newTvSeriesLoadResponse(
-            title,
-            url,
-            TvType.Anime,
-            episodeList
-        ) {
-
-            posterUrl =
-                anime
-                    .optString("portada")
-                    .ifBlank { null }
-
-            plot =
-                anime
-                    .optString("sinopsis")
-                    .ifBlank { null }
-
-            year =
-                anime
-                    .optInt("anio")
-                    .takeIf { it > 0 }
+        return newTvSeriesLoadResponse(title, url, TvType.Anime, episodeList) {
+            posterUrl = anime.optString("portada").ifBlank { null }
+            plot = anime.optString("sinopsis").ifBlank { null }
+            year = anime.optInt("anio").takeIf { it > 0 }
         }
     }
 
-    private fun normalizeAnimeTitle(value: String): String {
-        return value
-            .lowercase()
-            .replace(
-                Regex(
-                    """[^\p{L}\p{N}]+"""
-                ),
-                " "
-            )
-            .replace(
-                Regex("""\s+"""),
-                " "
-            )
-            .trim()
-    }
-
-    private fun animeTitleScore(
-        requested: String,
-        candidate: String
-    ): Int {
-
-        val requestedNormalized =
-            normalizeAnimeTitle(requested)
-
-        val candidateNormalized =
-            normalizeAnimeTitle(candidate)
-
-        if (
-            requestedNormalized == candidateNormalized
-        ) {
-            return 10000
-        }
-
-        val requestedWords =
-            requestedNormalized
-                .split(" ")
-                .filter {
-                    it.length >= 2
-                }
-                .toSet()
-
-        val candidateWords =
-            candidateNormalized
-                .split(" ")
-                .filter {
-                    it.length >= 2
-                }
-                .toSet()
-
-        if (
-            requestedWords.isEmpty() ||
-            candidateWords.isEmpty()
-        ) {
-            return 0
-        }
-
-        val common =
-            requestedWords
-                .intersect(candidateWords)
-                .size
-
-        var score =
-            common * 100
-
-        if (
-            candidateNormalized.contains(
-                "3rd season"
-            ) ||
-            candidateNormalized.contains(
-                "2nd season"
-            ) ||
-            candidateNormalized.contains(
-                "recap"
-            ) ||
-            candidateNormalized.contains(
-                "ova"
-            )
-        ) {
-            score -= 150
-        }
-
-        return score
-    }
-
-    private suspend fun findAnimeAVSlug(
-        title: String
-    ): String? {
-
-        println(
-            "AnimeAV: buscando título=$title"
-        )
-
-        val encoded =
-            URLEncoder.encode(
-                title,
-                "UTF-8"
-            )
-
-        val searchUrl =
-            "https://animeav1.com/catalogo?search=$encoded"
-
-        println(
-            "AnimeAV: search=$searchUrl"
-        )
-
-        val response =
-            app.get(
-                searchUrl,
-                headers = mapOf(
-                    "User-Agent" to
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0"
-                )
-            )
-
-        if (!response.isSuccessful) {
-            println(
-                "AnimeAV: search HTTP=${response.code}"
-            )
-            return null
-        }
-
-        val html =
-            response.text
-
-        val pattern =
-            Regex(
-                """<h3[^>]*>(.*?)</h3>[\s\S]*?<a[^>]+href="(/media/[^"]+)"""",
-                RegexOption.IGNORE_CASE
-            )
-
-        val candidates =
-            pattern
-                .findAll(html)
-                .mapNotNull { match ->
-
-                    val candidateTitle =
-                        match
-                            .groupValues[1]
-                            .replace(
-                                Regex("<[^>]+>"),
-                                ""
-                            )
-                            .trim()
-
-                    val href =
-                        match
-                            .groupValues[2]
-                            .trim()
-
-                    if (
-                        candidateTitle.isBlank() ||
-                        href.isBlank()
-                    ) {
-                        null
-                    } else {
-                        Triple(
-                            candidateTitle,
-                            href,
-                            animeTitleScore(
-                                title,
-                                candidateTitle
-                            )
-                        )
-                    }
-                }
-                .toList()
-
-        println(
-            "AnimeAV: candidatos=${candidates.size}"
-        )
-
-        candidates
-            .sortedByDescending {
-                it.third
-            }
-            .take(10)
-            .forEach {
-                println(
-                    "AnimeAV: candidato score=${it.third} " +
-                        "title=${it.first} " +
-                        "href=${it.second}"
-                )
-            }
-
-        val best =
-            candidates
-                .maxByOrNull {
-                    it.third
-                }
-
-        if (
-            best == null ||
-            best.third <= 0
-        ) {
-            println(
-                "AnimeAV: no se encontró coincidencia"
-            )
-            return null
-        }
-
-        println(
-            "AnimeAV: seleccionado " +
-                "score=${best.third} " +
-                "title=${best.first} " +
-                "href=${best.second}"
-        )
-
-        return best.second
-            .removePrefix("/media/")
-            .trim()
-            .removeSuffix("/")
-    }
-
-    private suspend fun findAnimeAVEpisodeUrl(
-        animeSlug: String,
-        episodeNumber: Int
-    ): String? {
-
-        val url =
-            "https://animeav1.com/media/$animeSlug"
-
-        println(
-            "AnimeAV: serie=$url"
-        )
-
-        val response =
-            app.get(
-                url,
-                headers = mapOf(
-                    "User-Agent" to
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0"
-                )
-            )
-
-        if (!response.isSuccessful) {
-            println(
-                "AnimeAV: media HTTP=${response.code}"
-            )
-            return null
-        }
-
-        val html =
-            response.text
-
-        val episodesRegex =
-            Regex(
-                """episodes:\[(.*?)\]""",
-                RegexOption.DOT_MATCHES_ALL
-            )
-
-        val episodesMatch =
-            episodesRegex.find(html)
-
-        if (episodesMatch == null) {
-            println(
-                "AnimeAV: no se encontró episodes[]"
-            )
-            return null
-        }
-
-        val episodePattern =
-            Regex(
-                """id:(\d+),number:(\d+)"""
-            )
-
-        val episode =
-            episodePattern
-                .findAll(
-                    episodesMatch.groupValues[1]
-                )
-                .firstOrNull {
-                    it.groupValues[2].toIntOrNull() ==
-                        episodeNumber
-                }
-
-        if (episode == null) {
-            println(
-                "AnimeAV: episodio $episodeNumber no encontrado"
-            )
-            return null
-        }
-
-        val id =
-            episode
-                .groupValues[1]
-
-        println(
-            "AnimeAV: episodio=$episodeNumber id=$id"
-        )
-
-        /*
-         * AnimeAV actualmente usa:
-         *
-         * /media/{slug}/{episode}
-         *
-         * aunque el ID interno también aparece en
-         * el objeto episodes[].
-         */
-        return "https://animeav1.com/media/$animeSlug/$episodeNumber"
-    }
-
-    private fun decryptAnimeAV(
-        inputHex: String,
-        key: String,
-        iv: String
-    ): String {
-
-        val cipher =
-            Cipher.getInstance(
-                "AES/CBC/PKCS5PADDING"
-            )
-
-        val secretKey =
-            SecretKeySpec(
-                key.toByteArray(Charsets.UTF_8),
-                "AES"
-            )
-
-        val ivSpec =
-            IvParameterSpec(
-                iv.toByteArray(Charsets.UTF_8)
-            )
-
-        cipher.init(
-            Cipher.DECRYPT_MODE,
-            secretKey,
-            ivSpec
-        )
-
-        val bytes =
-            inputHex
-                .trim()
-                .chunked(2)
-                .map {
-                    it.toInt(16).toByte()
-                }
-                .toByteArray()
-
-        return String(
-            cipher.doFinal(bytes),
-            Charsets.UTF_8
-        )
-    }
-
-    private suspend fun processAnimeAV(
-        title: String,
-        episodeNumber: Int,
-        emittedUrls: MutableSet<String>,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-
-        return try {
-
-            println(
-                "AnimeAV: ===== INICIO ====="
-            )
-
-            println(
-                "AnimeAV: title=$title episode=$episodeNumber"
-            )
-
-            val animeSlug =
-                findAnimeAVSlug(
-                    title
-                )
-
-            if (animeSlug == null) {
-                println(
-                    "AnimeAV: no se pudo encontrar anime"
-                )
-                return false
-            }
-
-            val episodeUrl =
-                findAnimeAVEpisodeUrl(
-                    animeSlug,
-                    episodeNumber
-                )
-
-            if (episodeUrl == null) {
-                println(
-                    "AnimeAV: no se pudo encontrar episodio"
-                )
-                return false
-            }
-
-            println(
-                "AnimeAV: episodeUrl=$episodeUrl"
-            )
-
-            val response =
-                app.get(
-                    episodeUrl,
-                    headers = mapOf(
-                        "User-Agent" to
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0"
-                    )
-                )
-
-            if (!response.isSuccessful) {
-                println(
-                    "AnimeAV: episodio HTTP=${response.code}"
-                )
-                return false
-            }
-
-            val html =
-                response.text
-
-            val embedsMatch =
-                Regex(
-                    """embeds:\{(.*?)\},downloads""",
-                    RegexOption.DOT_MATCHES_ALL
-                ).find(html)
-
-            if (embedsMatch == null) {
-                println(
-                    "AnimeAV: no se encontró embeds"
-                )
-                return false
-            }
-
-            val embeds =
-                embedsMatch.groupValues[1]
-
-            val serverPattern =
-                Regex(
-                    """server:"([^"]+)",url:"([^"]+)""""
-                )
-
-            val servers =
-                serverPattern
-                    .findAll(embeds)
-                    .map {
-                        it.groupValues[1] to
-                            it.groupValues[2]
-                    }
-                    .toList()
-
-            println(
-                "AnimeAV: servidores=${servers.size}"
-            )
-
-            var found = false
-
-            /*
-             * UPNShare se procesa directamente porque tenemos
-             * el decoder AES y podemos obtener el HLS sin extractor.
-             */
-            val extractorServers =
-                mutableListOf<Pair<String, String>>()
-
-            for ((server, rawUrl) in servers) {
-
-                println(
-                    "AnimeAV: servidor=$server url=$rawUrl"
-                )
-
-                if (
-                    server.equals(
-                        "UPNShare",
-                        ignoreCase = true
-                    )
-                ) {
-
-                    try {
-
-                        val hash =
-                            rawUrl
-                                .substringAfterLast("#")
-                                .substringAfter("/")
-
-                        if (hash.isBlank()) {
-                            println(
-                                "AnimeAV: UPNShare hash vacío"
-                            )
-                            continue
-                        }
-
-                        val apiUrl =
-                            "https://animeav1.uns.bio/api/v1/video?id=$hash"
-
-                        println(
-                            "AnimeAV: UPNShare API=$apiUrl"
-                        )
-
-                        val apiResponse =
-                            app.get(
-                                apiUrl,
-                                headers = mapOf(
-                                    "User-Agent" to
-                                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0"
-                                )
-                            )
-
-                        if (!apiResponse.isSuccessful) {
-                            println(
-                                "AnimeAV: UPNShare HTTP=${apiResponse.code}"
-                            )
-                            continue
-                        }
-
-                        val encrypted =
-                            apiResponse.text.trim()
-
-                        val decrypted =
-                            try {
-                                decryptAnimeAV(
-                                    encrypted,
-                                    "kiemtienmua911ca",
-                                    "1234567890oiuytr"
-                                )
-                            } catch (e: Exception) {
-                                println(
-                                    "AnimeAV: UPNShare AES error -> " +
-                                        "${e.javaClass.simpleName}: ${e.message}"
-                                )
-                                continue
-                            }
-
-                        val json =
-                            JSONObject(decrypted)
-
-                        val hlsPath =
-                            json.optString(
-                                "hlsVideoTiktok"
-                            )
-
-                        if (hlsPath.isBlank()) {
-                            println(
-                                "AnimeAV: UPNShare no tiene hlsVideoTiktok"
-                            )
-                            continue
-                        }
-
-                        val hlsUrl =
-                            if (
-                                hlsPath.startsWith(
-                                    "http://"
-                                ) ||
-                                hlsPath.startsWith(
-                                    "https://"
-                                )
-                            ) {
-                                hlsPath
-                            } else {
-                                "https://animeav1.uns.bio" +
-                                    if (
-                                        hlsPath.startsWith("/")
-                                    ) {
-                                        hlsPath
-                                    } else {
-                                        "/$hlsPath"
-                                    }
-                            }
-
-                        val shouldEmit =
-                            synchronized(emittedUrls) {
-                                if (
-                                    emittedUrls.contains(
-                                        hlsUrl
-                                    )
-                                ) {
-                                    false
-                                } else {
-                                    emittedUrls.add(
-                                        hlsUrl
-                                    )
-                                    true
-                                }
-                            }
-
-                        if (shouldEmit) {
-
-                            callback(
-                                newExtractorLink(
-                                    name = "UPNShare",
-                                    source = name,
-                                    url = hlsUrl,
-                                    type = ExtractorLinkType.M3U8
-                                ) {
-                                    referer =
-                                        "https://animeav1.uns.bio/"
-
-                                    quality =
-                                        Qualities.Unknown.value
-                                }
-                            )
-
-                            found = true
-
-                            println(
-                                "AnimeAV: UPNShare LINK EMITIDO " +
-                                    "url=$hlsUrl"
-                            )
-
-                        } else {
-
-                            println(
-                                "AnimeAV: UPNShare LINK DUPLICADO"
-                            )
-                        }
-
-                    } catch (e: Exception) {
-
-                        println(
-                            "AnimeAV: UPNShare ERROR -> " +
-                                "${e.javaClass.simpleName}: " +
-                                e.message
-                        )
-                    }
-
-                    continue
-                }
-
-                /*
-                 * MP4Upload, PDrain, Voe y Byse utilizan
-                 * los extractores existentes de CloudStream.
-                 *
-                 * Los guardamos para procesarlos todos
-                 * concurrentemente después de descubrir
-                 * todos los servidores.
-                 */
-                if (
-                    server.equals("MP4Upload", ignoreCase = true) ||
-                    server.equals("PDrain", ignoreCase = true) ||
-                    server.equals("Voe", ignoreCase = true) ||
-                    server.equals("Byse", ignoreCase = true)
-                ) {
-
-                    extractorServers.add(
-                        server to rawUrl
-                    )
-
-                    continue
-                }
-
-                println(
-                    "AnimeAV: servidor ignorado=$server"
-                )
-            }
-
-            /*
-             * Procesamos MP4Upload, PDrain, Voe y Byse
-             * en paralelo.
-             *
-             * Cada extractor tiene su propio timeout para
-             * evitar que un servidor lento bloquee los demás.
-             */
-            if (extractorServers.isNotEmpty()) {
-
-                println(
-                    "AnimeAV: ===== EXTRACTORES PARALELOS ====="
-                )
-
-                val extractorResults =
-                    coroutineScope {
-
-                        extractorServers.map { (server, rawUrl) ->
-
-                            async {
-
-                                withTimeoutOrNull(7000L) {
-
-                                    val before =
-                                        synchronized(emittedUrls) {
-                                            emittedUrls.size
-                                        }
-
-                                    println(
-                                        "AnimeAV: $server -> loadExtractor"
-                                    )
-
-                                    val extractorCallback:
-                                        (ExtractorLink) -> Unit = { link ->
-
-                                        val shouldEmit =
-                                            synchronized(emittedUrls) {
-                                                if (
-                                                    emittedUrls.contains(
-                                                        link.url
-                                                    )
-                                                ) {
-                                                    false
-                                                } else {
-                                                    emittedUrls.add(
-                                                        link.url
-                                                    )
-                                                    true
-                                                }
-                                            }
-
-                                        if (shouldEmit) {
-
-                                            callback(link)
-
-                                            println(
-                                                "AnimeAV: $server LINK EMITIDO " +
-                                                    "name=${link.name} " +
-                                                    "quality=${link.quality} " +
-                                                    "type=${link.type} " +
-                                                    "url=${link.url}"
-                                            )
-
-                                        } else {
-
-                                            println(
-                                                "AnimeAV: $server LINK DUPLICADO " +
-                                                    "url=${link.url}"
-                                            )
-                                        }
-                                    }
-
-                                    try {
-
-                                        loadExtractor(
-                                            rawUrl,
-                                            "https://animeav1.com/",
-                                            subtitleCallback,
-                                            extractorCallback
-                                        )
-
-                                    } catch (e: Exception) {
-
-                                        println(
-                                            "AnimeAV: $server ERROR -> " +
-                                                "${e.javaClass.simpleName}: " +
-                                                e.message
-                                        )
-                                    }
-
-                                    val after =
-                                        synchronized(emittedUrls) {
-                                            emittedUrls.size
-                                        }
-
-                                    if (after > before) {
-
-                                        println(
-                                            "AnimeAV: $server OK"
-                                        )
-
-                                        true
-
-                                    } else {
-
-                                        println(
-                                            "AnimeAV: $server SIN LINKS"
-                                        )
-
-                                        false
-                                    }
-
-                                } ?: run {
-
-                                    println(
-                                        "AnimeAV: $server TIMEOUT 7000ms"
-                                    )
-
-                                    false
-                                }
-                            }
-                        }.awaitAll()
-                    }
-
-                if (extractorResults.any { it }) {
-                    found = true
-                }
-            }
-
-            println(
-                "AnimeAV: ===== FINAL found=$found ====="
-            )
-
-            found
-
-        } catch (e: Exception) {
-
-            println(
-                "AnimeAV: ERROR GENERAL -> " +
-                    "${e.javaClass.simpleName}: " +
-                    e.message
-            )
-
-            false
-        }
-    }
+    /* ------------------------------------------------------------
+     * loadLinks
+     * ------------------------------------------------------------ */
 
     override suspend fun loadLinks(
         data: String,
@@ -1095,977 +467,465 @@ class AnimoraTVProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        println(
-            "AnimoraTV: loadLinks data=$data"
-        )
-
-        val parts = data.split("|")
-
-        if (parts.size < 2) {
-            println(
-                "AnimoraTV: ERROR formato data inválido"
-            )
-            return false
-        }
-
-        val rawSlug = parts[0]
-
-        val episodeNumber =
-            parts[1].toIntOrNull()
-
-        if (episodeNumber == null) {
-            println(
-                "AnimoraTV: ERROR episodio inválido=${parts[1]}"
-            )
-            return false
-        }
-
-        val slug =
-            rawSlug
-                .substringAfterLast("/anime/")
-                .substringAfterLast("/")
-                .trim()
-                .removeSuffix("/")
-
-        println(
-            "AnimoraTV: slug=$slug episode=$episodeNumber"
-        )
-
-        val apiUrl =
-            "$mainUrl/api/video/$slug/$episodeNumber/fuentes"
-
-        println(
-            "AnimoraTV: API $apiUrl"
-        )
-
-        return try {
-
-            var found = false
-            var totalServers = 0
-            var totalExtractedLinks = 0
-            var megaEmitted = false
-
-            val emittedUrls =
-                mutableSetOf<String>()
-
-            /*
-             * ============================================================
-             * ANIMEAV ASYNC
-             * ============================================================
-             *
-             * AnimeAV arranca ANTES de consultar las fuentes de Animora,
-             * por lo que el timeout de Animora ya no lo bloquea.
-             */
-            println(
-                "AnimoraTV: ===== INICIANDO ANIMEAV EN PARALELO ====="
-            )
-
-            val animeAvJob =
-                kotlinx.coroutines.CoroutineScope(
-                    kotlinx.coroutines.currentCoroutineContext()
-                ).async {
-
-                    try {
-
-                        val animeTitle =
-                            try {
-
-                                val animeJson =
-                                    getJson(
-                                        "$mainUrl/api/animes/$slug"
-                                    )
-
-                                val anime =
-                                    animeJson
-                                        .optJSONObject("data")
-                                        ?.optJSONObject("anime")
-
-                                anime
-                                    ?.optString("titulo")
-                                    ?.ifBlank {
-                                        anime.optString(
-                                            "tituloIngles"
-                                        )
-                                    }
-                                    ?.takeIf {
-                                        it.isNotBlank()
-                                    }
-
-                            } catch (e: Exception) {
-
-                                println(
-                                    "AnimeAV: ERROR obteniendo título Animora -> " +
-                                        "${e.javaClass.simpleName}: " +
-                                        e.message
-                                )
-
-                                null
-                            }
-
-                        if (animeTitle == null) {
-
-                            println(
-                                "AnimeAV: no se pudo obtener título de Animora"
-                            )
-
-                            false
-
-                        } else {
-
-                            println(
-                                "AnimeAV: título obtenido=$animeTitle"
-                            )
-
-                            withTimeoutOrNull(10000L) {
-
-                                processAnimeAV(
-                                    animeTitle,
-                                    episodeNumber,
-                                    emittedUrls,
-                                    subtitleCallback,
-                                    callback
-                                )
-
-                            } ?: run {
-
-                                println(
-                                    "AnimeAV: TIMEOUT general=10000ms"
-                                )
-
-                                false
-                            }
-                        }
-
-                    } catch (e: Exception) {
-
-                        println(
-                            "AnimeAV: ERROR paralelo -> " +
-                                "${e.javaClass.simpleName}: " +
-                                e.message
-                        )
-
-                        false
-                    }
-                }
-
-            /*
-             * ============================================================
-             * ANIMORA / FUENTES
-             * ============================================================
-             */
-
-            val response =
-                try {
-                    app.get(
-                        apiUrl,
-                        headers = mapOf(
-                            "User-Agent" to
-                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0",
-                            "Accept" to
-                                "application/json, text/plain, */*",
-                            "Referer" to
-                                "$mainUrl/",
-                            "Origin" to
-                                mainUrl
-                        )
-                    )
-                } catch (e: Exception) {
-
-                    println(
-                        "AnimoraTV: ERROR API fuentes -> " +
-                            "${e.javaClass.simpleName}: ${e.message}"
-                    )
-
-                    null
-                }
-
-            val fuentes =
-                if (response == null) {
-
-                    println(
-                        "AnimoraTV: continuando con AnimeAV"
-                    )
-
-                    org.json.JSONArray()
-
-                } else if (!response.isSuccessful) {
-
-                    println(
-                        "AnimoraTV: ERROR HTTP ${response.code}, " +
-                            "continuando con AnimeAV"
-                    )
-
-                    org.json.JSONArray()
-
-                } else {
-
-                    println(
-                        "AnimoraTV: HTTP ${response.code}"
-                    )
-
-                    val root =
-                        JSONObject(response.text)
-
-                    val dataObject =
-                        root.optJSONObject("data")
-                            ?: JSONObject()
-
-                    dataObject.optJSONArray("fuentes")
-                        ?: org.json.JSONArray()
-                }
-
-            println(
-                "AnimoraTV: fuentes=${fuentes.length()}"
-            )
-
-            /*
-             * Primero recopilamos TODOS los servidores.
-             */
-            val allServers =
-                mutableListOf<JSONObject>()
-
-            val seenServerUrls =
-                mutableSetOf<String>()
-
-            for (i in 0 until fuentes.length()) {
-
-                val fuente =
-                    fuentes.optJSONObject(i)
-                        ?: continue
-
-                val servidores =
-                    fuente.optJSONArray("servidores")
-                        ?: org.json.JSONArray()
-
-                println(
-                    "AnimoraTV: FUENTE ${i + 1} " +
-                        "servidores=${servidores.length()}"
-                )
-
-                for (j in 0 until servidores.length()) {
-
-                    val servidor =
-                        servidores.optJSONObject(j)
-                            ?: continue
-
-                    val urlVideo =
-                        servidor.optString("urlVideo")
-
-                    if (urlVideo.isBlank()) {
-                        continue
-                    }
-
-                    if (!seenServerUrls.add(urlVideo)) {
-                        println(
-                            "AnimoraTV: servidor duplicado -> ignorado: $urlVideo"
-                        )
-                        continue
-                    }
-
-                    allServers.add(servidor)
-                }
-            }
-
-            totalServers = allServers.size
-
-            println(
-                "AnimoraTV: servidores totales=$totalServers"
-            )
-
-            suspend fun processServer(
-                servidor: JSONObject
-            ) {
-
-                val urlVideo =
-                    servidor.optString("urlVideo")
-
-                val calidad =
-                    servidor.optString("calidad")
-
-                val provider =
-                    servidor.optString("proveedor")
-
-                if (urlVideo.isBlank()) {
-                    return
-                }
-
-                val qualityValue =
-                    calidad
-                        .filter { it.isDigit() }
-                        .toIntOrNull()
-                        ?: Qualities.Unknown.value
-
-                val isMega =
-                    provider.equals(
-                        "mega",
-                        ignoreCase = true
-                    ) ||
-                    urlVideo.contains(
-                        "mega.nz/",
-                        ignoreCase = true
-                    )
-
-                if (isMega) {
-
-                    if (megaEmitted) {
-
-                        println(
-                            "AnimoraTV: MEGA duplicado -> ignorado"
-                        )
-
-                        return
-                    }
-
-                    try {
-
-                        println(
-                            "AnimoraTV: MEGA detectado -> $urlVideo"
-                        )
-
-                        var handle = ""
-                        var key = ""
-
-                        /*
-                         * Mega puede entregar distintos formatos de embed:
-                         *
-                         *   /embed/HANDLE#KEY
-                         *   /embed/#!HANDLE!KEY
-                         *   /embed/!HANDLE!KEY
-                         *
-                         * Extraemos primero todo lo que venga después de
-                         * /embed/ y luego detectamos cómo están separados
-                         * el handle y la key.
-                         */
-
-                        val megaPart =
-                            Regex(
-                                """mega\.nz/[^?#]*embed/([^?#]+)""",
-                                RegexOption.IGNORE_CASE
-                            )
-                                .find(urlVideo)
-                                ?.groupValues
-                                ?.getOrNull(1)
-                                ?.trim()
-                                ?.trimEnd('/')
-
-                        if (!megaPart.isNullOrBlank()) {
-
-                            val fragment =
-                                megaPart
-                                    .trimStart('!', '#')
-
-                            val hashIndex =
-                                fragment.indexOf('#')
-
-                            if (hashIndex > 0) {
-
-                                handle =
-                                    fragment
-                                        .substring(0, hashIndex)
-                                        .trim()
-                                        .trimStart('!', '#')
-
-                                key =
-                                    fragment
-                                        .substring(hashIndex + 1)
-                                        .trim()
-
-                            } else {
-
-                                val bangIndex =
-                                    fragment.indexOf('!')
-
-                                if (bangIndex > 0) {
-
-                                    handle =
-                                        fragment
-                                            .substring(0, bangIndex)
-                                            .trim()
-
-                                    key =
-                                        fragment
-                                            .substring(bangIndex + 1)
-                                            .trim()
-                                }
-                            }
-                        }
-
-                        /*
-                         * Fallback para pequeñas variaciones futuras de Mega:
-                         * si no encontramos los datos usando /embed/, buscamos
-                         * directamente el patrón HANDLE + separador + KEY.
-                         */
-                        if (
-                            handle.isBlank() ||
-                            key.isBlank()
-                        ) {
-
-                            val fallback =
-                                Regex(
-                                    """(?:embed/|/)([^#!?/\s]+)[#!]([^#!?\s]+)""",
-                                    RegexOption.IGNORE_CASE
-                                )
-                                    .find(urlVideo)
-
-                            if (fallback != null) {
-
-                                handle =
-                                    fallback
-                                        .groupValues[1]
-                                        .trim()
-                                        .trimStart('!', '#')
-
-                                key =
-                                    fallback
-                                        .groupValues[2]
-                                        .trim()
-                            }
-                        }
-
-                        if (
-                            handle.isBlank() ||
-                            key.isBlank()
-                        ) {
-
-                            println(
-                                "AnimoraTV: MEGA handle/key vacío"
-                            )
-
-                            return
-                        }
-
-                        megaEmitted = true
-
-                        println(
-                            "AnimoraTV: MEGA handle=$handle"
-                        )
-
-                        val localUrl =
-                            MegaLocalServer.start(
-                                handle,
-                                key
-                            )
-
-                        callback(
-                            newExtractorLink(
-                                name = "Mega",
-                                source = name,
-                                url = localUrl,
-                                type = ExtractorLinkType.VIDEO
-                            ) {
-
-                                referer =
-                                    "$mainUrl/"
-
-                                quality =
-                                    qualityValue
-                            }
-                        )
-
-                        found = true
-                        totalExtractedLinks++
-
-                        println(
-                            "AnimoraTV: MEGA LINK EMITIDO " +
-                                "url=$localUrl"
-                        )
-
-                    } catch (e: Exception) {
-
-                        println(
-                            "AnimoraTV: MEGA ERROR -> " +
-                                "${e.javaClass.simpleName}: " +
-                                e.message
-                        )
-                    }
-
-                    return
-                }
-
-                val isHls =
-                    provider.equals(
-                        "hls",
-                        ignoreCase = true
-                    ) ||
-                    urlVideo
-                        .substringBefore("?")
-                        .endsWith(
-                            ".m3u8",
-                            ignoreCase = true
-                        )
-
-                println(
-                    "AnimoraTV: servidor " +
-                        "provider=$provider " +
-                        "quality=$calidad " +
-                        "hls=$isHls"
-                )
-
-                if (isHls) {
-
-                    try {
-
-                        println(
-                            "AnimoraTV: HLS directo -> $urlVideo"
-                        )
-
-                        val hlsReferer =
-                            try {
-
-                                val refValue =
-                                    urlVideo
-                                        .substringAfter(
-                                            "ref=",
-                                            ""
-                                        )
-                                        .substringBefore("&")
-
-                                if (
-                                    refValue.isNotBlank()
-                                ) {
-
-                                    URLDecoder.decode(
-                                        refValue,
-                                        "UTF-8"
-                                    )
-
-                                } else {
-
-                                    "$mainUrl/"
-                                }
-
-                            } catch (_: Exception) {
-
-                                "$mainUrl/"
-                            }
-
-                        println(
-                            "AnimoraTV: HLS referer -> $hlsReferer"
-                        )
-
-                        callback(
-                            newExtractorLink(
-                                name = provider,
-                                source = name,
-                                url = urlVideo,
-                                type = ExtractorLinkType.M3U8
-                            ) {
-
-                                referer =
-                                    hlsReferer
-
-                                quality =
-                                    qualityValue
-                            }
-                        )
-
-                        found = true
-                        totalExtractedLinks++
-
-                        println(
-                            "AnimoraTV: HLS LINK EMITIDO " +
-                                "provider=$provider " +
-                                "quality=$qualityValue"
-                        )
-
-                    } catch (e: Exception) {
-
-                        println(
-                            "AnimoraTV: HLS ERROR " +
-                                "provider=$provider -> " +
-                                e.message
-                        )
-                    }
-
-                    return
-                }
-
-                val hostReferer =
-                    try {
-
-                        val uri =
-                            URI(urlVideo)
-
-                        val host =
-                            uri.host ?: ""
-
-                        if (host.isBlank()) {
-                            "$mainUrl/"
-                        } else {
-                            "${uri.scheme ?: "https"}://$host/"
-                        }
-
-                    } catch (_: Exception) {
-
-                        "$mainUrl/"
-                    }
-
-                val referers =
-                    if (
-                        hostReferer.equals(
-                            "$mainUrl/",
-                            ignoreCase = true
-                        )
-                    ) {
-
-                        listOf(
-                            "$mainUrl/"
-                        )
-
-                    } else {
-
-                        listOf(
-                            hostReferer,
-                            "$mainUrl/"
-                        )
-                    }
-
-                var emitted = 0
-                var successfulReferer: String? = null
-
-                val extractorCallback:
-                    (ExtractorLink) -> Unit = { link ->
-
-                    synchronized(emittedUrls) {
-
-                        if (
-                            emittedUrls.contains(
-                                link.url
-                            )
-                        ) {
-
-                            println(
-                                "AnimoraTV: LINK DUPLICADO " +
-                                    "ignorado " +
-                                    "name=${link.name} " +
-                                    "provider=$provider " +
-                                    "url=${link.url}"
-                            )
-
-                        } else {
-
-                            emittedUrls.add(
-                                link.url
-                            )
-
-                            emitted++
-                            totalExtractedLinks++
-
-                            println(
-                                "AnimoraTV: EXTRACTED LINK " +
-                                    "provider=$provider " +
-                                    "name=${link.name} " +
-                                    "quality=${link.quality} " +
-                                    "type=${link.type} " +
-                                    "url=${link.url}"
-                            )
-
-                            callback(link)
-                        }
-                    }
-                }
-
-                for (
-                    (attempt, referer)
-                    in referers.withIndex()
-                ) {
-
-                    if (
-                        successfulReferer != null
-                    ) {
-                        break
-                    }
-
-                    val before =
-                        emitted
-
-                    try {
-
-                        println(
-                            "AnimoraTV: loadExtractor " +
-                                "intento=${attempt + 1} " +
-                                "provider=$provider " +
-                                "referer=$referer " +
-                                "url=$urlVideo"
-                        )
-
-                        loadExtractor(
-                            urlVideo,
-                            referer,
-                            subtitleCallback,
-                            extractorCallback
-                        )
-
-                        if (
-                            emitted > before
-                        ) {
-
-                            successfulReferer =
-                                referer
-
-                            found = true
-
-                            println(
-                                "AnimoraTV: loadExtractor OK " +
-                                    "provider=$provider " +
-                                    "referer=$referer " +
-                                    "links=${emitted - before}"
-                            )
-
-                        } else {
-
-                            println(
-                                "AnimoraTV: loadExtractor SIN LINKS " +
-                                    "provider=$provider " +
-                                    "referer=$referer"
-                            )
-                        }
-
-                    } catch (e: Exception) {
-
-                        println(
-                            "AnimoraTV: loadExtractor ERROR " +
-                                "provider=$provider " +
-                                "referer=$referer -> " +
-                                e.message
-                        )
-                    }
-                }
-
-                if (
-                    successfulReferer == null
-                ) {
-
-                    println(
-                        "AnimoraTV: EXTRACTOR FALLÓ " +
-                            "provider=$provider " +
-                            "hostReferer=$hostReferer"
-                    )
-                }
-            }
-
-            /*
-             * PASADA 1:
-             * HLS/directos.
-             */
-            println(
-                "AnimoraTV: ===== PASADA HLS ====="
-            )
-
-            for (servidor in allServers) {
-
-                val urlVideo =
-                    servidor.optString("urlVideo")
-
-                val provider =
-                    servidor.optString("proveedor")
-
-                val isMega =
-                    provider.equals(
-                        "mega",
-                        ignoreCase = true
-                    ) ||
-                    urlVideo.contains(
-                        "mega.nz/",
-                        ignoreCase = true
-                    )
-
-                val isHls =
-                    provider.equals(
-                        "hls",
-                        ignoreCase = true
-                    ) ||
-                    urlVideo
-                        .substringBefore("?")
-                        .endsWith(
-                            ".m3u8",
-                            ignoreCase = true
-                        )
-
-                if (!isMega && isHls) {
-                    processServer(servidor)
-                }
-            }
-
-            /*
-             * PASADA 2:
-             * Mega.
-             */
-            println(
-                "AnimoraTV: ===== PASADA MEGA ====="
-            )
-
-            for (servidor in allServers) {
-
-                val urlVideo =
-                    servidor.optString("urlVideo")
-
-                val provider =
-                    servidor.optString("proveedor")
-
-                val isMega =
-                    provider.equals(
-                        "mega",
-                        ignoreCase = true
-                    ) ||
-                    urlVideo.contains(
-                        "mega.nz/",
-                        ignoreCase = true
-                    )
-
-                if (isMega) {
-                    processServer(servidor)
-                }
-            }
-
-            /*
-             * PASADA 3:
-             * Extractores en paralelo.
-             */
-            println(
-                "AnimoraTV: ===== PASADA EXTRACTORES PARALELA ====="
-            )
-
-            val extractorServers =
-                allServers.filter { servidor ->
-
-                    val urlVideo =
-                        servidor.optString("urlVideo")
-
-                    val provider =
-                        servidor.optString("proveedor")
-
-                    val isMega =
-                        provider.equals(
-                            "mega",
-                            ignoreCase = true
-                        ) ||
-                        urlVideo.contains(
-                            "mega.nz/",
-                            ignoreCase = true
-                        )
-
-                    val isHls =
-                        provider.equals(
-                            "hls",
-                            ignoreCase = true
-                        ) ||
-                        urlVideo
-                            .substringBefore("?")
-                            .endsWith(
-                                ".m3u8",
-                                ignoreCase = true
-                            )
-
-                    !isMega && !isHls
-                }
-
-            println(
-                "AnimoraTV: extractores paralelos=" +
-                    extractorServers.size
-            )
-
+        // formato: slug|episodio|titulo|tituloIngles  (los 2 últimos son opcionales)
+        val parts = data.split("|", limit = 4)
+        if (parts.size < 2) return false
+
+        val slug = parts[0]
+            .substringAfterLast("/anime/")
+            .substringAfterLast("/")
+            .trim()
+            .removeSuffix("/")
+
+        val episodeNumber = parts[1].trim().toIntOrNull() ?: return false
+
+        val titles = parts
+            .drop(2)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+
+        log("loadLinks slug=$slug ep=$episodeNumber titles=$titles")
+
+        val sink = LinkSink(callback)
+
+        // Todo corre dentro de un único scope: si el usuario sale de la pantalla,
+        // se cancela todo (antes AnimeAV quedaba en un scope suelto sin cancelar).
+        safely("loadLinks") {
             coroutineScope {
 
-                extractorServers
-                    .map { servidor ->
-
-                        async {
-
-                            val provider =
-                                servidor.optString(
-                                    "proveedor"
-                                )
-
-                            val completed =
-                                withTimeoutOrNull(7000L) {
-
-                                    try {
-
-                                        processServer(
-                                            servidor
-                                        )
-
-                                        true
-
-                                    } catch (e: Exception) {
-
-                                        println(
-                                            "AnimoraTV: EXTRACTOR TASK ERROR provider=" +
-                                                provider +
-                                                " -> " +
-                                                "${e.javaClass.simpleName}: " +
-                                                e.message
-                                        )
-
-                                        true
-                                    }
-                                }
-
-                            if (completed == null) {
-
-                                println(
-                                    "AnimoraTV: EXTRACTOR TIMEOUT provider=" +
-                                        provider +
-                                        " limite=7000ms"
-                                )
+                val animeAv = async {
+                    safely("AnimeAV") {
+                        val resolved = titles.ifEmpty { fetchAnimoraTitles(slug) }
+                        if (resolved.isNotEmpty()) {
+                            withTimeoutOrNull(ANIMEAV_TIMEOUT_MS) {
+                                loadAnimeAv(resolved, episodeNumber, sink, subtitleCallback)
                             }
                         }
                     }
-                    .awaitAll()
-            }
-
-            /*
-             * ============================================================
-             * ESPERAR ANIMEAV
-             * ============================================================
-             */
-            println(
-                "AnimoraTV: ===== ESPERANDO ANIMEAV ====="
-            )
-
-            val animeAvFound =
-                try {
-
-                    animeAvJob.await()
-
-                } catch (e: Exception) {
-
-                    println(
-                        "AnimeAV: ERROR await -> " +
-                            "${e.javaClass.simpleName}: " +
-                            e.message
-                    )
-
-                    false
                 }
 
-            if (animeAvFound) {
-                found = true
+                val animora = async {
+                    safely("Animora") {
+                        loadAnimoraSources(slug, episodeNumber, sink, subtitleCallback)
+                    }
+                }
+
+                animeAv.await()
+                animora.await()
+            }
+        }
+
+        log("FINAL links=${sink.count}")
+        return sink.count > 0
+    }
+
+    private suspend fun fetchAnimoraTitles(slug: String): List<String> {
+        val anime = getJson("$mainUrl/api/animes/$slug")
+            ?.optJSONObject("data")
+            ?.optJSONObject("anime")
+            ?: return emptyList()
+
+        return listOf(anime.optString("titulo"), anime.optString("tituloIngles"))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    /* ------------------------------------------------------------
+     * Animora
+     * ------------------------------------------------------------ */
+
+    private suspend fun loadAnimoraSources(
+        slug: String,
+        episodeNumber: Int,
+        sink: LinkSink,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ) {
+        val res = withTimeoutOrNull(ANIMORA_API_TIMEOUT_MS) {
+            try {
+                app.get("$mainUrl/api/video/$slug/$episodeNumber/fuentes", headers = apiHeaders)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("API fuentes ERROR -> ${e.message}")
+                null
+            }
+        }
+
+        if (res == null || !res.isSuccessful) {
+            log("API fuentes sin respuesta válida (${res?.code})")
+            return
+        }
+
+        val fuentes = JSONObject(res.text)
+            .optJSONObject("data")
+            ?.optJSONArray("fuentes")
+            ?.objects()
+            ?: return
+
+        // Dedupe ANTES de extraer: no gastamos requests en embeds repetidos
+        // (ni dentro de Animora ni los que AnimeAV ya reclamó).
+        val servers = fuentes
+            .flatMap { it.optJSONArray("servidores")?.objects() ?: emptyList() }
+            .filter { it.optString("urlVideo").isNotBlank() }
+            .filter { sink.claimEmbed(it.optString("urlVideo")) }
+
+        log("Animora servidores únicos=${servers.size}")
+
+        // Todo en paralelo: HLS directo, Mega y extractores (antes eran 3 pasadas secuenciales).
+        coroutineScope {
+            servers
+                .map { servidor ->
+                    async {
+                        safely("Animora server") {
+                            processAnimoraServer(servidor, sink, subtitleCallback)
+                        }
+                    }
+                }
+                .awaitAll()
+        }
+    }
+
+    private suspend fun processAnimoraServer(
+        servidor: JSONObject,
+        sink: LinkSink,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ) {
+        val urlVideo = servidor.optString("urlVideo")
+        val provider = servidor.optString("proveedor")
+        val qualityValue = servidor.optString("calidad")
+            .filter { it.isDigit() }
+            .toIntOrNull()
+            ?: Qualities.Unknown.value
+
+        // ---- Mega ----
+        if (isMegaServer(provider, urlVideo)) {
+            emitMega(urlVideo, qualityValue, sink)
+            return
+        }
+
+        // ---- HLS directo ----
+        if (isHlsServer(provider, urlVideo)) {
+
+            val hlsReferer = try {
+                val ref = urlVideo.substringAfter("ref=", "").substringBefore("&")
+                if (ref.isNotBlank()) URLDecoder.decode(ref, "UTF-8") else "$mainUrl/"
+            } catch (_: Exception) {
+                "$mainUrl/"
             }
 
-            println(
-                "AnimoraTV: AnimeAV resultado=$animeAvFound"
+            sink.emit(
+                newExtractorLink(
+                    name = provider.ifBlank { "HLS" },
+                    source = name,
+                    url = urlVideo,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    referer = hlsReferer
+                    quality = qualityValue
+                },
+                null
             )
-
-            println(
-                "AnimoraTV: FINAL " +
-                    "found=$found " +
-                    "totalServers=$totalServers " +
-                    "totalExtractedLinks=$totalExtractedLinks"
-            )
-
-            found
-
-        } catch (e: Exception) {
-
-            println(
-                "AnimoraTV: ERROR loadLinks -> " +
-                    "${e.javaClass.simpleName}: " +
-                    e.message
-            )
-
-            false
+            return
         }
+
+        // ---- Extractores de CloudStream ----
+        val hostReferer = try {
+            val uri = URI(urlVideo)
+            val host = uri.host.orEmpty()
+            if (host.isBlank()) "$mainUrl/" else "${uri.scheme ?: "https"}://$host/"
+        } catch (_: Exception) {
+            "$mainUrl/"
+        }
+
+        runExtractor(
+            url = urlVideo,
+            referers = listOf(hostReferer, "$mainUrl/").distinct(),
+            tag = TAG_ANIMORA,
+            sink = sink,
+            subtitleCallback = subtitleCallback
+        )
+    }
+
+    private fun parseMega(url: String): Pair<String, String>? {
+        var handle = ""
+        var key = ""
+
+        val part = MEGA_EMBED.find(url)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.trimEnd('/')
+
+        if (!part.isNullOrBlank()) {
+            val fragment = part.trimStart('!', '#')
+            val hashIndex = fragment.indexOf('#')
+
+            if (hashIndex > 0) {
+                handle = fragment.substring(0, hashIndex).trim().trimStart('!', '#')
+                key = fragment.substring(hashIndex + 1).trim()
+            } else {
+                val bangIndex = fragment.indexOf('!')
+                if (bangIndex > 0) {
+                    handle = fragment.substring(0, bangIndex).trim()
+                    key = fragment.substring(bangIndex + 1).trim()
+                }
+            }
+        }
+
+        if (handle.isBlank() || key.isBlank()) {
+            MEGA_FALLBACK.find(url)?.let {
+                handle = it.groupValues[1].trim().trimStart('!', '#')
+                key = it.groupValues[2].trim()
+            }
+        }
+
+        return if (handle.isBlank() || key.isBlank()) null else handle to key
+    }
+
+    private suspend fun emitMega(urlVideo: String, qualityValue: Int, sink: LinkSink) {
+        val (handle, key) = parseMega(urlVideo) ?: run {
+            log("MEGA handle/key vacío")
+            return
+        }
+
+        // Solo un Mega por episodio
+        if (!sink.megaClaimed.compareAndSet(false, true)) {
+            log("MEGA duplicado ignorado")
+            return
+        }
+
+        val localUrl = MegaLocalServer.start(handle, key)
+
+        sink.emit(
+            newExtractorLink(
+                name = "Mega",
+                source = name,
+                url = localUrl,
+                type = ExtractorLinkType.VIDEO
+            ) {
+                referer = "$mainUrl/"
+                quality = qualityValue
+            },
+            null
+        )
+    }
+
+    /* ------------------------------------------------------------
+     * Extractores (compartido por Animora y AnimeAV)
+     * ------------------------------------------------------------ */
+
+    /**
+     * Corre loadExtractor con timeout. Los links se juntan en una cola y se emiten
+     * al terminar (o al vencer el timeout), así no se pierde nada de lo ya extraído.
+     */
+    private suspend fun runExtractor(
+        url: String,
+        referers: List<String>,
+        tag: String,
+        sink: LinkSink,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ) {
+        val collected = ConcurrentLinkedQueue<ExtractorLink>()
+
+        val finished = withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
+            for (ref in referers) {
+                try {
+                    loadExtractor(url, ref, subtitleCallback) { link -> collected.add(link) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log("loadExtractor ERROR referer=$ref url=$url -> ${e.message}")
+                }
+
+                if (collected.isNotEmpty()) break
+            }
+            true
+        }
+
+        if (finished == null) log("TIMEOUT extractor $url")
+
+        for (link in collected) sink.emit(link, tag)
+    }
+
+    /* ------------------------------------------------------------
+     * AnimeAV
+     * ------------------------------------------------------------ */
+
+    private suspend fun loadAnimeAv(
+        titles: List<String>,
+        episodeNumber: Int,
+        sink: LinkSink,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ) {
+        val animeSlug = resolveAnimeAvSlug(titles.take(2)) ?: run {
+            log("AnimeAV: anime no encontrado")
+            return
+        }
+
+        // Antes: media page (HTML pesado + regex) -> episode page.
+        // Ahora vamos directo a la página del episodio; si no existe, devuelve 404.
+        val res = app.get(
+            "$AV_BASE/media/$animeSlug/$episodeNumber",
+            headers = mapOf("User-Agent" to UA)
+        )
+
+        if (!res.isSuccessful) {
+            log("AnimeAV: episodio HTTP=${res.code}")
+            return
+        }
+
+        val embeds = AV_EMBEDS.find(res.text)?.groupValues?.get(1) ?: run {
+            log("AnimeAV: no se encontró embeds")
+            return
+        }
+
+        val servers = AV_SERVER
+            .findAll(embeds)
+            .map { it.groupValues[1] to it.groupValues[2] }
+            .toList()
+            .filter { (_, rawUrl) -> sink.claimEmbed(rawUrl) }
+
+        log("AnimeAV servidores únicos=${servers.size}")
+
+        // UPNShare ya no bloquea el lanzamiento de los extractores: todo en paralelo.
+        coroutineScope {
+            servers
+                .map { (server, rawUrl) ->
+                    async {
+                        safely("AnimeAV $server") {
+                            when (server.lowercase()) {
+                                "upnshare" ->
+                                    withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
+                                        loadUpnShare(rawUrl, sink)
+                                    }
+
+                                "mp4upload", "pdrain", "voe", "byse" ->
+                                    runExtractor(
+                                        url = rawUrl,
+                                        referers = listOf("$AV_BASE/"),
+                                        tag = TAG_ANIMEAV,
+                                        sink = sink,
+                                        subtitleCallback = subtitleCallback
+                                    )
+
+                                else -> log("AnimeAV: servidor ignorado=$server")
+                            }
+                        }
+                    }
+                }
+                .awaitAll()
+        }
+    }
+
+    private suspend fun resolveAnimeAvSlug(titles: List<String>): String? {
+
+        for (t in titles) {
+            animeAvSlugCache[normalizeTitle(t)]?.let { return it }
+        }
+
+        for (t in titles) {
+            val slug = searchAnimeAv(t) ?: continue
+            titles.forEach { animeAvSlugCache[normalizeTitle(it)] = slug }
+            return slug
+        }
+
+        return null
+    }
+
+    private suspend fun searchAnimeAv(title: String): String? {
+
+        val encoded = URLEncoder.encode(title, "UTF-8")
+
+        val res = app.get(
+            "$AV_BASE/catalogo?search=$encoded",
+            headers = mapOf("User-Agent" to UA)
+        )
+
+        if (!res.isSuccessful) {
+            log("AnimeAV: search HTTP=${res.code}")
+            return null
+        }
+
+        val best = AV_CARD
+            .findAll(res.text)
+            .mapNotNull { m ->
+                val candidateTitle = m.groupValues[1]
+                    .replace(HTML_TAG, "")
+                    .replace("&amp;", "&")
+                    .trim()
+                val href = m.groupValues[2].trim()
+
+                if (candidateTitle.isBlank() || href.isBlank()) null
+                else href to animeTitleScore(title, candidateTitle)
+            }
+            .maxByOrNull { it.second }
+
+        if (best == null || best.second <= 0) {
+            log("AnimeAV: sin coincidencia para '$title'")
+            return null
+        }
+
+        log("AnimeAV: '$title' -> ${best.first} (score=${best.second})")
+
+        return best.first
+            .removePrefix("/media/")
+            .trim()
+            .removeSuffix("/")
+    }
+
+    private fun decryptAnimeAv(inputHex: String): String {
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5PADDING")
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            SecretKeySpec(UPN_KEY.toByteArray(Charsets.UTF_8), "AES"),
+            IvParameterSpec(UPN_IV.toByteArray(Charsets.UTF_8))
+        )
+
+        val hex = inputHex.trim()
+        val bytes = ByteArray(hex.length / 2) {
+            hex.substring(it * 2, it * 2 + 2).toInt(16).toByte()
+        }
+
+        return String(cipher.doFinal(bytes), Charsets.UTF_8)
+    }
+
+    private suspend fun loadUpnShare(rawUrl: String, sink: LinkSink) {
+
+        val hash = rawUrl.substringAfterLast("#").substringAfter("/")
+        if (hash.isBlank()) return
+
+        val res = app.get(
+            "$UPN_BASE/api/v1/video?id=$hash",
+            headers = mapOf("User-Agent" to UA)
+        )
+
+        if (!res.isSuccessful) {
+            log("UPNShare HTTP=${res.code}")
+            return
+        }
+
+        val hlsPath = JSONObject(decryptAnimeAv(res.text))
+            .optString("hlsVideoTiktok")
+
+        if (hlsPath.isBlank()) return
+
+        val hlsUrl =
+            if (hlsPath.startsWith("http://") || hlsPath.startsWith("https://")) hlsPath
+            else "$UPN_BASE/${hlsPath.trimStart('/')}"
+
+        sink.emit(
+            newExtractorLink(
+                name = "UPNShare",
+                source = name,
+                url = hlsUrl,
+                type = ExtractorLinkType.M3U8
+            ) {
+                referer = "$UPN_BASE/"
+                quality = Qualities.Unknown.value
+            },
+            null
+        )
     }
 }
