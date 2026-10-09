@@ -1749,6 +1749,7 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
 
             val saltBytes = hexToBytes(salt)
             val nonceBytes = hexToBytes(nonce)
+            val powMac = javax.crypto.Mac.getInstance("HmacSHA256")
 
             val powStart = System.nanoTime()
 
@@ -1770,7 +1771,8 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                     passwordBytes,
                     saltBytes,
                     cost,
-                    keyLength
+                    keyLength,
+                    powMac
                 )
 
                 if (matchesHexPrefix(derived, keyPrefix)) {
@@ -1998,9 +2000,9 @@ private fun pbkdf2Sha256(
     password: ByteArray,
     salt: ByteArray,
     iterations: Int,
-    keyLength: Int
+    keyLength: Int,
+    mac: javax.crypto.Mac
 ): ByteArray {
-    val mac = javax.crypto.Mac.getInstance("HmacSHA256")
     mac.init(
         javax.crypto.spec.SecretKeySpec(password, "HmacSHA256")
     )
