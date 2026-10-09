@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.nicehttp.JsonAsString
 import org.json.JSONObject
 import org.jsoup.nodes.Element
 import java.net.HttpURLConnection
@@ -37,15 +36,7 @@ override suspend fun getMainPage(
             "${request.data}?page=$page"
         }
 
-        val document = try {
-            app.get(url, timeout = 4).document
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: DonghuaWorld catálogo timeout/error -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
-            return newHomePageResponse(emptyList(), hasNext = false)
-        }
+        val document = app.get(url).document
 
         val home = document
             .select("article.bs")
@@ -310,14 +301,6 @@ override suspend fun getMainPage(
     override suspend fun search(
         query: String
     ): List<SearchResponse> {
-        val normalizedQuery = query
-            .trim()
-            .lowercase()
-            .replace(Regex("[^a-z0-9]+"), " ")
-            .trim()
-
-        if (normalizedQuery.isBlank()) return emptyList()
-
         val encodedQuery = URLEncoder.encode(
             query.trim(),
             "UTF-8"
@@ -327,25 +310,32 @@ override suspend fun getMainPage(
             "$mainUrl/buscar.php?s=$encodedQuery"
         ).document
 
-        // Mantener intacta la búsqueda original de SeriesDonghua.
         val results = document
             .select("article.donghua-card")
             .mapNotNull { it.toSearchResult() }
             .toMutableList()
 
-        // Agregar todos los resultados pertinentes de DonghuaWorld,
-        // sin reemplazar ni mezclar las URLs de ambas páginas.
         try {
             val donghuaWorldDocument = app.get(
-                "https://donghuaworld.com/?s=$encodedQuery",
-                timeout = 4
+                "https://donghuaworld.com/?s=$encodedQuery"
             ).document
 
-            val donghuaWorldResults = donghuaWorldDocument
+            val normalizedQuery = query
+                .trim()
+                .lowercase()
+                .replace(Regex("[^a-z0-9]+"), " ")
+                .trim()
+
+            val donghuaWorldResult = donghuaWorldDocument
                 .select("a[href*='/anime/'][itemprop='url'][title]")
                 .mapNotNull { element ->
-                    val href = element.attr("href").trim()
-                    val title = element.attr("title").trim()
+                    val href = element
+                        .attr("href")
+                        .trim()
+
+                    val title = element
+                        .attr("title")
+                        .trim()
 
                     if (
                         href.isBlank() ||
@@ -376,29 +366,39 @@ override suspend fun getMainPage(
                         else -> 0
                     }
 
-                    if (score <= 0) {
-                        return@mapNotNull null
+                    if (score > 0) {
+                        Triple(
+                            score,
+                            title,
+                            fixUrl(href)
+                        )
+                    } else {
+                        null
                     }
-
-                    val card = element.parents()
-                        .firstOrNull { it.tagName() == "article" }
-                    val image = card?.selectFirst("img[itemprop='image']")
-                        ?: card?.selectFirst("img")
-                    val poster = listOf("src", "data-src", "data-lazy-src", "data-original")
-                        .asSequence()
-                        .map { image?.attr(it)?.trim().orEmpty() }
-                        .firstOrNull {
-                            it.isNotBlank() && !it.startsWith("data:image/")
-                        }
-
-                    Triple(score, title, fixUrl(href)) to fixUrlNull(poster)
                 }
-                .distinctBy { it.first.third }
-                .sortedByDescending { it.first.first }
+                .distinctBy { it.third }
+                .sortedByDescending { it.first }
+                .firstOrNull()
 
-            donghuaWorldResults.forEach { (result, poster) ->
-                val (_, title, href) = result
-                println("SeriesDonghua: DonghuaWorld search -> $title | $href")
+            if (donghuaWorldResult != null) {
+                val (_, title, href) = donghuaWorldResult
+
+                println(
+                    "SeriesDonghua: DonghuaWorld search -> $title | $href"
+                )
+
+                val donghuaWorldPoster = try {
+                    app.get(href).document
+                        .selectFirst("img.ts-post-image[itemprop='image']")
+                        ?.attr("src")
+                        ?.trim()
+                } catch (e: Exception) {
+                    println(
+                        "SeriesDonghua: ERROR obteniendo poster DonghuaWorld -> " +
+                            "${e.javaClass.simpleName}: ${e.message}"
+                    )
+                    null
+                }
 
                 results.add(
                     newAnimeSearchResponse(
@@ -406,20 +406,12 @@ override suspend fun getMainPage(
                         href,
                         TvType.Anime
                     ) {
-                        this.posterUrl = poster
+                        this.posterUrl = fixUrlNull(donghuaWorldPoster)
                     }
                 )
-            }
-
-            println(
-                "SeriesDonghua: búsqueda combinada query='$query' " +
-                    "SeriesDonghua=${results.size - donghuaWorldResults.size} " +
-                    "DonghuaWorld=${donghuaWorldResults.size}"
-            )
-
-            if (donghuaWorldResults.isEmpty()) {
+            } else {
                 println(
-                    "SeriesDonghua: DonghuaWorld no encontró resultados para '$query'"
+                    "SeriesDonghua: DonghuaWorld no encontró resultado para '$query'"
                 )
             }
         } catch (e: Exception) {
@@ -924,30 +916,73 @@ override suspend fun getMainPage(
                     "SeriesDonghua: solicitando $serverName index=$serverIndex"
                 )
 
+                val connection = URL(
+                    "$mainUrl/api/player/get-server"
+                ).openConnection() as HttpURLConnection
+
+                connection.requestMethod = "POST"
+                connection.doOutput = true
+
+                connection.setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+                )
+                connection.setRequestProperty(
+                    "Referer",
+                    data
+                )
+                connection.setRequestProperty(
+                    "Origin",
+                    mainUrl
+                )
+                connection.setRequestProperty(
+                    "Cookie",
+                    cookies
+                )
+                connection.setRequestProperty(
+                    "Content-Type",
+                    "application/json"
+                )
+                connection.setRequestProperty(
+                    "Accept",
+                    "application/json, text/plain, */*"
+                )
+                connection.setRequestProperty(
+                    "X-CSRF-TOKEN",
+                    csrf
+                )
+                connection.setRequestProperty(
+                    "X-Requested-With",
+                    "XMLHttpRequest"
+                )
+
                 val requestBody = JSONObject()
                     .put("video_id", videoId.toInt())
                     .put("server_index", serverIndex)
                     .toString()
 
-                val postResponse = app.post(
-                    "$mainUrl/api/player/get-server",
-                    headers = mapOf(
-                        "User-Agent" to
-                            "Mozilla/5.0 (X11; Linux x86_64) " +
-                                "AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-                        "Referer" to data,
-                        "Origin" to mainUrl,
-                        "Cookie" to cookies,
-                        "Content-Type" to "application/json",
-                        "Accept" to "application/json, text/plain, */*",
-                        "X-CSRF-TOKEN" to csrf,
-                        "X-Requested-With" to "XMLHttpRequest"
-                    ),
-                    json = JsonAsString(requestBody)
-                )
+                connection.outputStream.use { output ->
+                    output.write(
+                        requestBody.toByteArray(Charsets.UTF_8)
+                    )
+                }
 
-                val responseCode = postResponse.code
-                val responseText = postResponse.text
+                val responseCode = connection.responseCode
+
+                val responseText = try {
+                    if (responseCode in 200..299) {
+                        connection.inputStream
+                            .bufferedReader()
+                            .use { it.readText() }
+                    } else {
+                        connection.errorStream
+                            ?.bufferedReader()
+                            ?.use { it.readText() }
+                            ?: ""
+                    }
+                } finally {
+                    connection.disconnect()
+                }
 
                 println(
                     "SeriesDonghua: $serverName HTTP=$responseCode " +
@@ -986,62 +1021,11 @@ override suspend fun getMainPage(
                     continue
                 }
 
-                val embedLower = embedUrl.lowercase()
-
                 println(
-                    "SeriesDonghua: $serverName index=$serverIndex " +
-                        "embed real=$embedUrl"
+                    "SeriesDonghua: $serverName embed=$embedUrl"
                 )
 
-                /*
-                 * IMPORTANTE:
-                 * El server_index/nombre que devuelve la página no siempre
-                 * coincide con el host real del embed. Por eso resolvemos
-                 * según embed_url.
-                 */
-
-                if (embedLower.contains("odysee.com")) {
-                    val odyseeLink = loadOkRuLinks(embedUrl)
-
-                    if (odyseeLink != null) {
-                        linkCount++
-                        callback(odyseeLink)
-
-                        println(
-                            "SeriesDonghua: LINK Odysee -> ${odyseeLink.url}"
-                        )
-                    } else {
-                        println(
-                            "SeriesDonghua: Odysee sin stream"
-                        )
-                    }
-
-                    continue
-                }
-
-                if (embedLower.contains("ok.ru")) {
-                    val okLink = loadOkRuLinks(embedUrl)
-
-                    if (okLink != null) {
-                        linkCount++
-                        callback(okLink)
-
-                        println(
-                            "SeriesDonghua: LINK OK.ru -> ${okLink.url}"
-                        )
-                    } else {
-                        println(
-                            "SeriesDonghua: OK.ru sin HLS"
-                        )
-                    }
-
-                    continue
-                }
-
-                if (
-                    embedLower.contains("dailymotion.com") ||
-                    embedLower.contains("geo.dailymotion.com")
-                ) {
+                if (serverName == "Dailymotion") {
                     val dailymotionLinks = loadDailymotionLinks(
                         embedUrl = embedUrl,
                         subtitleCallback = subtitleCallback
@@ -1065,11 +1049,26 @@ override suspend fun getMainPage(
                     continue
                 }
 
-                if (
-                    embedLower.contains("voe.sx") ||
-                    embedLower.contains("voe.to") ||
-                    embedLower.contains("voe")
-                ) {
+                if (serverName == "OK.ru") {
+                    val okLink = loadOkRuLinks(embedUrl)
+
+                    if (okLink != null) {
+                        linkCount++
+                        callback(okLink)
+
+                        println(
+                            "SeriesDonghua: LINK OK.ru -> ${okLink.url}"
+                        )
+                    } else {
+                        println(
+                            "SeriesDonghua: OK.ru sin HLS"
+                        )
+                    }
+
+                    continue
+                }
+
+                if (serverName == "VOE") {
                     val voeUrl = extractVoeLink(embedUrl)
 
                     if (voeUrl != null) {
@@ -1104,23 +1103,23 @@ override suspend fun getMainPage(
                     subtitleCallback = subtitleCallback,
                     callback = { link ->
                         if (
-                            embedLower.contains("rumble.com") &&
+                            serverName == "Rumble" &&
                             !link.url.contains("rumble.com/hls-vod/")
                         ) {
                             println(
                                 "SeriesDonghua: Rumble descartado -> ${link.url}"
                             )
                         } else if (
-                            embedLower.contains("filemoon") &&
-                            (
-                                link.type != ExtractorLinkType.M3U8 ||
-                                !link.url.contains("master.m3u8")
-                            )
-                        ) {
-                            println(
-                                "SeriesDonghua: Filemoon descartado -> ${link.url}"
-                            )
-                        } else {
+                    serverName == "Filemoon" &&
+                    (
+                        link.type != ExtractorLinkType.M3U8 ||
+                        !link.url.contains("master.m3u8")
+                    )
+                ) {
+                    println(
+                        "SeriesDonghua: Filemoon descartado -> ${link.url}"
+                    )
+                } else {
                             val modifiedLink = ExtractorLink(
                                 source = link.source,
                                 name = "${link.name} · $serverName",
@@ -1159,8 +1158,8 @@ override suspend fun getMainPage(
 
             donghuaLinks.forEach { link ->
                 val modifiedLink = ExtractorLink(
-                    source = link.source,
-                    name = link.name,
+                  source = link.source,
+                  name = link.name,
                     url = link.url,
                     referer = link.referer,
                     quality = link.quality,
@@ -1705,138 +1704,75 @@ override suspend fun getMainPage(
     private suspend fun loadOkRuLinks(
         embedUrl: String
     ): ExtractorLink? {
-        println("SeriesDonghua: OK.ru/Odysee GET $embedUrl")
+        return try {
+            println(
+                "SeriesDonghua: OK.ru GET $embedUrl"
+            )
 
-        val response = try {
-            app.get(
+            val response = app.get(
                 embedUrl,
                 headers = mapOf(
                     "User-Agent" to
                         "Mozilla/5.0 (X11; Linux x86_64) " +
-                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-                    "Referer" to embedUrl
+                        "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
                 )
             )
-        } catch (e: Exception) {
+
             println(
-                "SeriesDonghua: OK.ru/Odysee GET error -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
-            return null
-        }
-
-        println(
-            "SeriesDonghua: OK.ru/Odysee HTTP=${response.code} " +
+                "SeriesDonghua: OK.ru HTTP=${response.code} " +
                 "size=${response.text.length}"
-        )
-
-        if (response.code !in 200..299) {
-            return null
-        }
-
-        val normalized = response.text
-            .replace("&quot;", "\"")
-            .replace("&amp;", "&")
-            .replace("\\u0026", "&")
-            .replace("\\u003D", "=")
-            .replace("\\/", "/")
-            .replace("\\\\", "\\")
-
-        if (embedUrl.contains("odysee.com", ignoreCase = true)) {
-            val contentUrl = Regex(
-                """"contentUrl"\s*:\s*"([^"]+)"""",
-                RegexOption.IGNORE_CASE
             )
-                .find(normalized)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.replace("\\u0026", "&")
-                ?.replace("\\u003D", "=")
-                ?.replace("\\/", "/")
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
 
-            if (contentUrl == null) {
+            if (!response.isSuccessful) {
                 println(
-                    "SeriesDonghua: Odysee contentUrl NO encontrado"
+                    "SeriesDonghua: OK.ru HTTP no exitoso"
                 )
                 return null
             }
 
-            val contentLower = contentUrl.lowercase()
+            val normalized = response.text
+                .replace("&quot;", "\"")
+                .replace("&amp;", "&")
+                .replace("\\u0026", "&")
+                .replace("\\u003D", "=")
+                .replace("\\\\/", "/")
+                .replace("\\\\", "\\")
 
-            val linkType = when {
-                contentLower.contains(".m3u8") -> {
-                    ExtractorLinkType.M3U8
-                }
+            val hlsMatch = Regex(
+                """"hlsManifestUrl":"([^"]+)"""",
+                RegexOption.IGNORE_CASE
+            ).find(normalized)
 
-                contentLower.contains(".mp4") ||
-                    contentLower.contains(".webm") ||
-                    contentLower.contains(".mkv") ||
-                    contentLower.contains(".mov") ||
-                    contentLower.contains(".m4v") -> {
-                    ExtractorLinkType.VIDEO
-                }
-
-                else -> {
-                    /*
-                     * Odysee puede entregar URLs de vídeo sin una extensión
-                     * explícita. contentUrl ya viene del reproductor como
-                     * recurso de vídeo, así que lo tratamos como VIDEO.
-                     */
-                    ExtractorLinkType.VIDEO
-                }
+            if (hlsMatch == null) {
+                println(
+                    "SeriesDonghua: OK.ru hlsManifestUrl NO encontrado"
+                )
+                return null
             }
 
+            val hlsUrl = hlsMatch.groupValues[1]
+                .replace("\\u0026", "&")
+                .replace("\\u003D", "=")
+
             println(
-                "SeriesDonghua: Odysee contentUrl encontrado " +
-                    "type=$linkType -> $contentUrl"
+                "SeriesDonghua: OK.ru HLS encontrado -> $hlsUrl"
             )
 
-            return newExtractorLink(
-                source = "Odysee",
-                name = "Odysee",
-                url = contentUrl,
-                type = linkType
+            newExtractorLink(
+                source = "OK.ru",
+                name = "OK.ru",
+                url = hlsUrl,
+                type = ExtractorLinkType.M3U8
             ) {
                 referer = embedUrl
                 quality = 0
             }
-        }
-
-        val hlsMatch = Regex(
-            """"hlsManifestUrl":"([^"]+)"""",
-            RegexOption.IGNORE_CASE
-        ).find(normalized)
-
-        val hlsUrl = hlsMatch
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.replace("\\u0026", "&")
-            ?.replace("\\u003D", "=")
-            ?.replace("\\/", "/")
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-
-        if (hlsUrl == null) {
+        } catch (e: Exception) {
             println(
-                "SeriesDonghua: OK.ru hlsManifestUrl NO encontrado"
+                "SeriesDonghua: OK.ru ERROR -> " +
+                "${e.javaClass.simpleName}: ${e.message}"
             )
-            return null
-        }
-
-        println(
-            "SeriesDonghua: OK.ru HLS encontrado -> $hlsUrl"
-        )
-
-        return newExtractorLink(
-            source = "OK.ru",
-            name = "OK.ru",
-            url = hlsUrl,
-            type = ExtractorLinkType.M3U8
-        ) {
-            referer = embedUrl
-            quality = 0
+            null
         }
     }
 
