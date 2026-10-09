@@ -7,10 +7,15 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.nicehttp.JsonAsString
 import org.json.JSONObject
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
+import java.util.Base64
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+import kotlin.coroutines.cancellation.CancellationException
 
 class SeriesDonghuaProvider : MainAPI() {
     override var mainUrl = "https://seriesdonghua.com"
@@ -21,235 +26,122 @@ class SeriesDonghuaProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
 
     override val mainPage = mainPageOf(
-    "$mainUrl/episodios/" to "Nuevos Episodios",
-    "$mainUrl/todos-los-donghuas/" to "Catálogo Completo",
-    "https://donghuaworld.com/anime/" to "Series de DonghuaWorld"
-)
-
-override suspend fun getMainPage(
-    page: Int,
-    request: MainPageRequest
-): HomePageResponse {
-    if (request.name == "Series de DonghuaWorld") {
-        val url = if (page == 1) {
-            request.data
-        } else {
-            "${request.data}?page=$page"
-        }
-
-        val document = try {
-            app.get(url, timeout = 4).document
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: DonghuaWorld catálogo timeout/error -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
-            return newHomePageResponse(emptyList(), hasNext = false)
-        }
-
-        val home = document
-            .select("article.bs")
-            .mapNotNull { article ->
-                val link = article
-                    .selectFirst("a[href*='/anime/'][itemprop='url'][title]")
-                    ?: return@mapNotNull null
-
-                val href = link.attr("href").trim()
-                val title = link.attr("title").trim()
-
-                if (
-                    href.isBlank() ||
-                    title.isBlank() ||
-                    href.contains("/anime/?")
-                ) {
-                    return@mapNotNull null
-                }
-
-                val normalizedTitle = title
-                    .lowercase()
-                    .replace(Regex("[^a-z0-9]+"), " ")
-                    .trim()
-
-                if (normalizedTitle.contains(" movie ")) {
-                    return@mapNotNull null
-                }
-
-                val image = article
-                    .selectFirst("img[itemprop='image']")
-
-                val src = image
-                    ?.attr("src")
-                    ?.trim()
-                    .orEmpty()
-
-                val poster = if (
-                    src.isNotBlank() &&
-                    !src.startsWith("data:image/")
-                ) {
-                    src
-                } else {
-                    listOf(
-                        "data-src",
-                        "data-lazy-src",
-                        "data-original",
-                        "data-url"
-                    )
-                        .asSequence()
-                        .map { attr ->
-                            image?.attr(attr)?.trim().orEmpty()
-                        }
-                        .firstOrNull { value ->
-                            value.isNotBlank() &&
-                                !value.startsWith("data:image/")
-                        }
-                }
-
-                val fixedHref = fixUrl(href)
-
-                println(
-                    "SeriesDonghua: DonghuaWorld poster -> " +
-                        "$title | ${poster ?: "NO ENCONTRADO"}"
-                )
-
-                newAnimeSearchResponse(
-                    title,
-                    fixedHref,
-                    TvType.Anime
-                ) {
-                    this.posterUrl = fixUrlNull(poster)
-                }
-            }
-            .distinctBy { it.url }
-
-        println(
-            "SeriesDonghua: DonghuaWorld Home page=$page items=${home.size}"
-        )
-
-        return newHomePageResponse(
-            listOf(
-                HomePageList(
-                    request.name,
-                    home
-                )
-            ),
-            hasNext = home.isNotEmpty()
-        )
-    }
-
-    val url = if (page == 1) {
-        request.data
-    } else {
-        val separator = if (request.data.contains("?")) "&" else "?"
-        "${request.data}${separator}page=$page"
-    }
-
-    val document = app.get(url).document
-
-    val home = if (request.name == "Nuevos Episodios") {
-        document
-            .select("article.donghua-card")
-            .mapNotNull { card ->
-                val episodeUrl = card
-                    .selectFirst("a")
-                    ?.attr("href")
-                    ?.trim()
-                    ?: return@mapNotNull null
-
-                val seriesPath = episodeUrl
-                    .substringBeforeLast("-episodio-")
-                    .trimEnd('/')
-
-                if (seriesPath.isBlank()) {
-                    return@mapNotNull null
-                }
-
-                val title = card
-                    .selectFirst(".card-title")
-                    ?.text()
-                    ?.trim()
-                    ?: return@mapNotNull null
-
-                val poster = card
-                    .selectFirst("img")
-                    ?.attr("src")
-                    ?.trim()
-
-                newAnimeSearchResponse(
-                    title,
-                    fixUrl("$seriesPath/"),
-                    TvType.Anime
-                ) {
-                    this.posterUrl = fixUrlNull(poster)
-                }
-            }
-            .distinctBy { it.url }
-    } else {
-        document
-            .select("article.donghua-card")
-            .mapNotNull { it.toSearchResult() }
-    }
-
-    return newHomePageResponse(
-        listOf(
-            HomePageList(
-                request.name,
-                home
-            )
-        ),
-        hasNext = home.isNotEmpty()
+        "$mainUrl/episodios/" to "Nuevos Episodios",
+        "$mainUrl/todos-los-donghuas/" to "Catálogo Completo",
+        "$DW_URL/anime/" to DW_LABEL
     )
-}
 
-    private fun Element.toSearchResult(): SearchResponse? {
-        val link = selectFirst("a")?.attr("href")?.toString()
-            ?: return null
+    private companion object {
+        // Poné DEBUG = true solo cuando quieras ver logs en logcat.
+        const val DEBUG = false
 
-        val href = fixUrl(link)
+        const val DW_URL = "https://donghuaworld.com"
+        const val DW_LABEL = "Series de DonghuaWorld"
+        const val BROWSER_UA =
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+        const val ALTCHA_TIMEOUT_NS = 25_000_000_000L
 
-        var title = selectFirst(".card-title")?.text()?.trim()
+        val SERVERS = listOf(
+            "Dailymotion" to 0,
+            "OK.ru" to 1,
+            "Rumble" to 2,
+            "Filemoon" to 3,
+            "VOE" to 4
+        )
 
-        if (title.isNullOrBlank()) {
-            title = selectFirst("a")?.attr("title")?.trim()
-        }
+        val HEX_CHARS = "0123456789abcdef".toCharArray()
+        val POSTER_ATTRS = listOf("src", "data-src", "data-lazy-src", "data-original", "data-url")
 
-        if (title.isNullOrBlank()) {
-            return null
-        }
+        val NON_ALNUM = Regex("[^a-z0-9]+")
+        val EPISODE_SLUG = Regex("/([^/]+)-episodio-(\\d+)/?$")
+        val IFRAME_SRC = Regex("""src=["']([^"']+)["']""")
+        val TRACK = Regex("""\{"file":"([^"]+)","label":"([^"]+)"\}""")
+        val DM_PATH_ID = Regex("/video/([A-Za-z0-9]+)")
 
-        var imgUrl = selectFirst("img")?.attr("src")?.toString()
+        val ODYSEE_CONTENT_URL = Regex(
+            """"contentUrl"\s*:\s*"([^"]+)"""",
+            RegexOption.IGNORE_CASE
+        )
+        val OK_HLS_URL = Regex(
+            """"hlsManifestUrl":"([^"]+)"""",
+            RegexOption.IGNORE_CASE
+        )
 
-        if (imgUrl.isNullOrBlank()) {
-            imgUrl = selectFirst("img")?.attr("data-src")?.toString()
-        }
+        val VOE_REDIRECT = Regex(
+            """window\.location\.href\s*=\s*['"]([^'"]+/e/[^'"]+)['"]"""
+        )
+        val VOE_CONFIG = Regex(
+            """<script[^>]+type=["']application/json["'][^>]*>\s*(?:\[\s*)?["']([^"']+)["']"""
+        )
+        val VOE_CONFIG_STRICT = Regex(
+            """<script[^>]+type=["']application/json["'][^>]*>\s*\[\s*["']([^"']+)["']\s*\]\s*</script>"""
+        )
+        val VOE_TOKEN = Regex("""name=["']_token["'][^>]+value=["']([^"']+)["']""")
+        val VOE_CHALLENGE = Regex("""<altcha-widget[^>]+challenge=["']([^"']+)["']""")
+        val VOE_SOURCE = Regex(""""source"\s*:\s*"([^"]+)"""")
+    }
 
-        if (imgUrl.isNullOrBlank()) {
-            imgUrl = selectFirst("img")?.attr("data-lazy-src")?.toString()
-        }
+    // ───────────────────────── Utilidades ─────────────────────────
 
-        return newAnimeSearchResponse(
-            title,
-            href,
-            TvType.Anime
-        ) {
-            this.posterUrl = fixUrlNull(imgUrl)
+    private inline fun debug(message: () -> String) {
+        if (DEBUG) println("SeriesDonghua: ${message()}")
+    }
+
+    /** Ejecuta el bloque y devuelve null si falla (sin tragarse la cancelación). */
+    private suspend inline fun <T> attempt(block: () -> T): T? {
+        return try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            debug { "ERROR ${e.javaClass.simpleName}: ${e.message}" }
+            null
         }
     }
 
-    private fun isOneTypoAway(
-        first: String,
-        second: String
-    ): Boolean {
-        val firstTokens = first
-            .split(" ")
-            .filter { it.isNotBlank() }
-
-        val secondTokens = second
-            .split(" ")
-            .filter { it.isNotBlank() }
-
-        if (firstTokens.size != secondTokens.size) {
-            return false
+    private suspend fun guarded(tag: String, block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            debug { "ERROR $tag -> ${e.javaClass.simpleName}: ${e.message}" }
         }
+    }
+
+    private fun normalize(text: String): String =
+        text.lowercase().replace(NON_ALNUM, " ").trim()
+
+    // Antes " movie " nunca coincidía con títulos terminados en "Movie" porque
+    // el texto normalizado queda sin espacio final.
+    private fun isMovieTitle(normalized: String): Boolean =
+        " $normalized ".contains(" movie ")
+
+    private fun Element?.imageUrl(): String? {
+        if (this == null) return null
+        for (key in POSTER_ATTRS) {
+            val value = attr(key).trim()
+            if (value.isNotBlank() && !value.startsWith("data:image/")) return value
+        }
+        return null
+    }
+
+    private fun titleScore(title: String, query: String, titleInQueryScore: Int): Int = when {
+        // Un título vacío (p. ej. solo caracteres no latinos) coincidía con todo.
+        title.isBlank() || query.isBlank() -> 0
+        title == query -> 100
+        title.startsWith("$query ") -> 95
+        title.contains(query) -> 90
+        query.contains(title) -> titleInQueryScore
+        isOneTypoAway(title, query) -> 70
+        else -> 0
+    }
+
+    private fun isOneTypoAway(first: String, second: String): Boolean {
+        val firstTokens = first.split(" ").filter { it.isNotBlank() }
+        val secondTokens = second.split(" ").filter { it.isNotBlank() }
+
+        if (firstTokens.size != secondTokens.size) return false
 
         var differences = 0
 
@@ -257,13 +149,8 @@ override suspend fun getMainPage(
             val a = firstTokens[index]
             val b = secondTokens[index]
 
-            if (a == b) {
-                continue
-            }
-
-            if (kotlin.math.abs(a.length - b.length) > 1) {
-                return false
-            }
+            if (a == b) continue
+            if (kotlin.math.abs(a.length - b.length) > 1) return false
 
             var i = 0
             var j = 0
@@ -275,10 +162,7 @@ override suspend fun getMainPage(
                     j++
                 } else {
                     edits++
-
-                    if (edits > 1) {
-                        return false
-                    }
+                    if (edits > 1) return false
 
                     when {
                         a.length > b.length -> i++
@@ -292,165 +176,207 @@ override suspend fun getMainPage(
             }
 
             edits += (a.length - i) + (b.length - j)
-
-            if (edits != 1) {
-                return false
-            }
+            if (edits != 1) return false
 
             differences++
-
-            if (differences > 1) {
-                return false
-            }
+            if (differences > 1) return false
         }
 
         return differences == 1
     }
 
-    override suspend fun search(
-        query: String
-    ): List<SearchResponse> {
-        val normalizedQuery = query
-            .trim()
-            .lowercase()
-            .replace(Regex("[^a-z0-9]+"), " ")
-            .trim()
+    /** Recolecta links sin repetir URLs ni trabajo ya hecho; seguro para uso paralelo. */
+    private class LinkSink(private val callback: (ExtractorLink) -> Unit) {
+        private val seenUrls = ConcurrentHashMap.newKeySet<String>()
+        private val claimed = ConcurrentHashMap.newKeySet<String>()
+        private val counter = AtomicInteger(0)
 
-        if (normalizedQuery.isBlank()) return emptyList()
+        val total: Int get() = counter.get()
 
-        val encodedQuery = URLEncoder.encode(
-            query.trim(),
-            "UTF-8"
-        )
+        /** true solo la primera vez que se pide esa clave. */
+        fun claim(key: String): Boolean = claimed.add(key)
 
-        val document = app.get(
-            "$mainUrl/buscar.php?s=$encodedQuery"
-        ).document
-
-        // Mantener intacta la búsqueda original de SeriesDonghua.
-        val results = document
-            .select("article.donghua-card")
-            .mapNotNull { it.toSearchResult() }
-            .toMutableList()
-
-        // Agregar todos los resultados pertinentes de DonghuaWorld,
-        // sin reemplazar ni mezclar las URLs de ambas páginas.
-        try {
-            val donghuaWorldDocument = app.get(
-                "https://donghuaworld.com/?s=$encodedQuery",
-                timeout = 4
-            ).document
-
-            val donghuaWorldResults = donghuaWorldDocument
-                .select("a[href*='/anime/'][itemprop='url'][title]")
-                .mapNotNull { element ->
-                    val href = element.attr("href").trim()
-                    val title = element.attr("title").trim()
-
-                    if (
-                        href.isBlank() ||
-                        title.isBlank() ||
-                        href.contains("/anime/?")
-                    ) {
-                        return@mapNotNull null
-                    }
-
-                    val normalizedTitle = title
-                        .lowercase()
-                        .replace(Regex("[^a-z0-9]+"), " ")
-                        .trim()
-
-                    if (normalizedTitle.contains(" movie ")) {
-                        return@mapNotNull null
-                    }
-
-                    val score = when {
-                        normalizedTitle == normalizedQuery -> 100
-                        normalizedTitle.startsWith("$normalizedQuery ") -> 95
-                        normalizedTitle.contains(normalizedQuery) -> 90
-                        normalizedQuery.contains(normalizedTitle) -> 80
-                        isOneTypoAway(
-                            normalizedTitle,
-                            normalizedQuery
-                        ) -> 70
-                        else -> 0
-                    }
-
-                    if (score <= 0) {
-                        return@mapNotNull null
-                    }
-
-                    val card = element.parents()
-                        .firstOrNull { it.tagName() == "article" }
-                    val image = card?.selectFirst("img[itemprop='image']")
-                        ?: card?.selectFirst("img")
-                    val poster = listOf("src", "data-src", "data-lazy-src", "data-original")
-                        .asSequence()
-                        .map { image?.attr(it)?.trim().orEmpty() }
-                        .firstOrNull {
-                            it.isNotBlank() && !it.startsWith("data:image/")
-                        }
-
-                    Triple(score, title, fixUrl(href)) to fixUrlNull(poster)
-                }
-                .distinctBy { it.first.third }
-                .sortedByDescending { it.first.first }
-
-            donghuaWorldResults.forEach { (result, poster) ->
-                val (_, title, href) = result
-                println("SeriesDonghua: DonghuaWorld search -> $title | $href")
-
-                results.add(
-                    newAnimeSearchResponse(
-                        "$title · DonghuaWorld",
-                        href,
-                        TvType.Anime
-                    ) {
-                        this.posterUrl = poster
-                    }
-                )
-            }
-
-            println(
-                "SeriesDonghua: búsqueda combinada query='$query' " +
-                    "SeriesDonghua=${results.size - donghuaWorldResults.size} " +
-                    "DonghuaWorld=${donghuaWorldResults.size}"
-            )
-
-            if (donghuaWorldResults.isEmpty()) {
-                println(
-                    "SeriesDonghua: DonghuaWorld no encontró resultados para '$query'"
-                )
-            }
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: ERROR búsqueda DonghuaWorld -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
+        fun emit(link: ExtractorLink): Boolean {
+            if (!seenUrls.add(link.url)) return false
+            counter.incrementAndGet()
+            callback(link)
+            return true
         }
-
-        return results
     }
 
+    // ───────────────────────── Página principal ─────────────────────────
+
+    override suspend fun getMainPage(
+        page: Int,
+        request: MainPageRequest
+    ): HomePageResponse {
+        val url = if (page == 1) {
+            request.data
+        } else {
+            val separator = if (request.data.contains("?")) "&" else "?"
+            "${request.data}${separator}page=$page"
+        }
+
+        val home = if (request.name == DW_LABEL) {
+            val document = try {
+                app.get(url, timeout = 4).document
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                debug { "DonghuaWorld catálogo timeout/error -> ${e.message}" }
+                return newHomePageResponse(emptyList(), hasNext = false)
+            }
+            parseDonghuaWorldHome(document)
+        } else {
+            val document = app.get(url).document
+            if (request.name == "Nuevos Episodios") {
+                parseNewEpisodes(document)
+            } else {
+                document.select("article.donghua-card").mapNotNull { it.toSearchResult() }
+            }
+        }
+
+        return newHomePageResponse(
+            listOf(HomePageList(request.name, home)),
+            hasNext = home.isNotEmpty()
+        )
+    }
+
+    private fun parseDonghuaWorldHome(document: Document): List<SearchResponse> =
+        document.select("article.bs").mapNotNull { article ->
+            val link = article.selectFirst("a[href*='/anime/'][itemprop='url'][title]")
+                ?: return@mapNotNull null
+
+            val href = link.attr("href").trim()
+            val title = link.attr("title").trim()
+
+            if (href.isBlank() || title.isBlank() || href.contains("/anime/?")) {
+                return@mapNotNull null
+            }
+
+            if (isMovieTitle(normalize(title))) return@mapNotNull null
+
+            val poster = article.selectFirst("img[itemprop='image']").imageUrl()
+
+            newAnimeSearchResponse(title, fixUrl(href), TvType.Anime) {
+                this.posterUrl = fixUrlNull(poster)
+            }
+        }.distinctBy { it.url }
+
+    private fun parseNewEpisodes(document: Document): List<SearchResponse> =
+        document.select("article.donghua-card").mapNotNull { card ->
+            val episodeUrl = card.selectFirst("a")?.attr("href")?.trim()
+                ?: return@mapNotNull null
+
+            val seriesPath = episodeUrl.substringBeforeLast("-episodio-").trimEnd('/')
+            if (seriesPath.isBlank()) return@mapNotNull null
+
+            val title = card.selectFirst(".card-title")?.text()?.trim()
+                ?: return@mapNotNull null
+
+            val poster = card.selectFirst("img").imageUrl()
+
+            newAnimeSearchResponse(title, fixUrl("$seriesPath/"), TvType.Anime) {
+                this.posterUrl = fixUrlNull(poster)
+            }
+        }.distinctBy { it.url }
+
+    private fun Element.toSearchResult(): SearchResponse? {
+        val anchor = selectFirst("a") ?: return null
+        val href = fixUrl(anchor.attr("href"))
+
+        val title = selectFirst(".card-title")?.text()?.trim()
+            .takeUnless { it.isNullOrBlank() }
+            ?: anchor.attr("title").trim()
+
+        if (title.isBlank()) return null
+
+        val poster = selectFirst("img").imageUrl()
+
+        return newAnimeSearchResponse(title, href, TvType.Anime) {
+            this.posterUrl = fixUrlNull(poster)
+        }
+    }
+
+    // ───────────────────────── Búsqueda ─────────────────────────
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        val normalizedQuery = normalize(query)
+        if (normalizedQuery.isBlank()) return emptyList()
+
+        val encodedQuery = URLEncoder.encode(query.trim(), "UTF-8")
+
+        // Ambas páginas se consultan a la vez; el orden del resultado se mantiene.
+        val sources = listOf<suspend () -> List<SearchResponse>>(
+            {
+                app.get("$mainUrl/buscar.php?s=$encodedQuery")
+                    .document
+                    .select("article.donghua-card")
+                    .mapNotNull { it.toSearchResult() }
+            },
+            { searchDonghuaWorld(encodedQuery, normalizedQuery) }
+        )
+
+        return sources.amap { it() }.flatten()
+    }
+
+    private suspend fun searchDonghuaWorld(
+        encodedQuery: String,
+        normalizedQuery: String
+    ): List<SearchResponse> {
+        val document = attempt {
+            app.get("$DW_URL/?s=$encodedQuery", timeout = 4).document
+        } ?: return emptyList()
+
+        return document
+            .select("a[href*='/anime/'][itemprop='url'][title]")
+            .mapNotNull { element ->
+                val href = element.attr("href").trim()
+                val title = element.attr("title").trim()
+
+                if (href.isBlank() || title.isBlank() || href.contains("/anime/?")) {
+                    return@mapNotNull null
+                }
+
+                val normalizedTitle = normalize(title)
+                if (isMovieTitle(normalizedTitle)) return@mapNotNull null
+
+                val score = titleScore(normalizedTitle, normalizedQuery, 80)
+                if (score <= 0) return@mapNotNull null
+
+                val card = element.parents().firstOrNull { it.tagName() == "article" }
+                val image = card?.selectFirst("img[itemprop='image']")
+                    ?: card?.selectFirst("img")
+                val poster = image.imageUrl()
+
+                val response = newAnimeSearchResponse(
+                    "$title · DonghuaWorld",
+                    fixUrl(href),
+                    TvType.Anime
+                ) {
+                    this.posterUrl = fixUrlNull(poster)
+                }
+
+                score to response
+            }
+            .distinctBy { it.second.url }
+            .sortedByDescending { it.first }
+            .map { it.second }
+    }
+
+    // ───────────────────────── Detalle de serie ─────────────────────────
+
     override suspend fun load(url: String): LoadResponse? {
-        if (
-            url.contains("donghuaworld.com/anime/")
-        ) {
+        if (url.contains("donghuaworld.com/anime/")) {
             return loadDonghuaWorldSeries(url)
         }
 
         val document = app.get(url).document
 
-        val title = document
-            .selectFirst("h1.hero-title")
-            ?.text()
-            ?.trim()
+        val title = document.selectFirst("h1.hero-title")?.text()?.trim()
             ?: return null
 
-        val poster = document
-            .selectFirst("img.hero-poster")
-            ?.attr("src")
-            ?.toString()
+        val poster = document.selectFirst("img.hero-poster")?.attr("src")
 
         val plot = document
             .select(".glass-panel p")
@@ -463,27 +389,14 @@ override suspend fun getMainPage(
         val episodes = document
             .select("article.episode-card-item")
             .mapNotNull { epElement ->
-                val epLink = epElement
-                    .selectFirst("a")
-                    ?.attr("href")
-                    ?.toString()
+                val epLink = epElement.selectFirst("a")?.attr("href")
                     ?: return@mapNotNull null
 
-                val epNum = epElement
-                    .attr("data-ep")
-                    .toIntOrNull()
+                val epNum = epElement.attr("data-ep").toIntOrNull()
+                val epTitle = epElement.selectFirst(".card-title")?.text()
+                val epPoster = epElement.selectFirst("img")?.attr("src")
 
-                val epTitle = epElement
-                    .selectFirst(".card-title")
-                    ?.text()
-                    ?.toString()
-
-                val epPoster = epElement
-                    .selectFirst("img")
-                    ?.attr("src")
-                    ?.toString()
-
-                newEpisode(epLink) {
+                newEpisode(fixUrl(epLink)) {
                     this.name = epTitle
                     this.episode = epNum
                     this.posterUrl = fixUrlNull(epPoster)
@@ -491,24 +404,15 @@ override suspend fun getMainPage(
             }
             .reversed()
 
-        return newAnimeLoadResponse(
-            title,
-            url,
-            TvType.Anime
-        ) {
+        return newAnimeLoadResponse(title, url, TvType.Anime) {
             this.posterUrl = fixUrlNull(poster)
             this.plot = plot
             this.tags = tags
-            this.addEpisodes(
-                DubStatus.Subbed,
-                episodes
-            )
+            this.addEpisodes(DubStatus.Subbed, episodes)
         }
     }
 
-    private suspend fun loadDonghuaWorldSeries(
-        url: String
-    ): LoadResponse? {
+    private suspend fun loadDonghuaWorldSeries(url: String): LoadResponse? {
         val document = app.get(url).document
 
         val title = document
@@ -525,39 +429,24 @@ override suspend fun getMainPage(
         val episodes = document
             .select("a[href*='episode-']")
             .mapNotNull { episodeElement ->
-                val episodeUrl = episodeElement
-                    .attr("href")
-                    .trim()
+                val episodeUrl = episodeElement.attr("href").trim()
+                if (episodeUrl.isBlank()) return@mapNotNull null
 
-                if (episodeUrl.isBlank()) {
-                    return@mapNotNull null
-                }
+                val container = episodeElement.parent() ?: return@mapNotNull null
 
-                val episodeContainer = episodeElement.parent()
-                    ?: return@mapNotNull null
-
-                val episodeNumberText = episodeContainer
+                val episodeNumber = container
                     .selectFirst(".epl-num")
                     ?.text()
                     ?.trim()
-
-                val episodeNumber = episodeNumberText
                     ?.substringBefore("[")
                     ?.substringBefore("(")
                     ?.trim()
                     ?.toIntOrNull()
                     ?: return@mapNotNull null
 
-                val episodeTitle = episodeContainer
-                    .selectFirst(".epl-title")
-                    ?.text()
-                    ?.trim()
+                val episodeTitle = container.selectFirst(".epl-title")?.text()?.trim()
 
-                Triple(
-                    episodeNumber,
-                    fixUrl(episodeUrl),
-                    episodeTitle
-                )
+                Triple(episodeNumber, fixUrl(episodeUrl), episodeTitle)
             }
             .distinctBy { it.second }
             .sortedByDescending { it.first }
@@ -569,285 +458,13 @@ override suspend fun getMainPage(
                 }
             }
 
-        println(
-            "SeriesDonghua: DonghuaWorld load -> " +
-                "title=$title episodes=${episodes.size}"
-        )
-
-        return newAnimeLoadResponse(
-            "$title · DonghuaWorld",
-            url,
-            TvType.Anime
-        ) {
+        return newAnimeLoadResponse("$title · DonghuaWorld", url, TvType.Anime) {
             this.posterUrl = fixUrlNull(poster)
-            this.addEpisodes(
-                DubStatus.Subbed,
-                episodes
-            )
+            this.addEpisodes(DubStatus.Subbed, episodes)
         }
     }
 
-    private suspend fun loadDonghuaWorldEpisodeLinks(
-        data: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        println(
-            "SeriesDonghua: DonghuaWorld episodio directo -> $data"
-        )
-
-        val document = try {
-            app.get(data).document
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: ERROR obteniendo episodio DonghuaWorld -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
-            return false
-        }
-
-        var linkCount = 0
-
-        val embedUrl = document
-            .select("iframe[src*='geo.dailymotion.com'][src*='video=']")
-            .mapNotNull { iframe ->
-                iframe.attr("src")
-                    .trim()
-                    .takeIf { it.isNotBlank() }
-            }
-            .firstOrNull()
-
-        if (embedUrl == null) {
-            println(
-                "SeriesDonghua: DonghuaWorld no encontró DM Player"
-            )
-        } else {
-            println(
-                "SeriesDonghua: DonghuaWorld DM Player -> $embedUrl"
-            )
-
-            val links = loadDailymotionLinks(
-                embedUrl = embedUrl,
-                subtitleCallback = subtitleCallback
-            )
-
-            if (links.isEmpty()) {
-                println(
-                    "SeriesDonghua: DonghuaWorld Dailymotion sin links"
-                )
-            } else {
-                links.forEach { link ->
-                    val modifiedLink = ExtractorLink(
-                        source = "DonghuaWorld",
-                        name = "DonghuaWorld · Dailymotion",
-                        url = link.url,
-                        referer = link.referer,
-                        quality = link.quality,
-                        type = link.type
-                    )
-
-                    callback(modifiedLink)
-                    linkCount++
-
-                    println(
-                        "SeriesDonghua: LINK DonghuaWorld Dailymotion -> ${link.url}"
-                    )
-                }
-            }
-        }
-
-        try {
-            val darkServer = document
-                .select(".server-item a")
-                .firstOrNull { element ->
-                    element.text()
-                        .trim()
-                        .equals("Dark Server", ignoreCase = true)
-                }
-
-            if (darkServer == null) {
-                println(
-                    "SeriesDonghua: DonghuaWorld Dark Server no encontrado"
-                )
-            } else {
-                val encodedHash = darkServer
-                    .attr("data-hash")
-                    .trim()
-
-                if (encodedHash.isBlank()) {
-                    println(
-                        "SeriesDonghua: DonghuaWorld Dark Server sin data-hash"
-                    )
-                } else {
-                    val decodedEmbed = try {
-                        String(
-                            java.util.Base64.getDecoder().decode(encodedHash),
-                            Charsets.UTF_8
-                        )
-                    } catch (e: Exception) {
-                        println(
-                            "SeriesDonghua: Dark Server Base64 ERROR -> " +
-                                "${e.javaClass.simpleName}: ${e.message}"
-                        )
-                        ""
-                    }
-
-                    val darkServerUrl = Regex(
-                        """src="([^"]+)""""
-                    )
-                        .find(decodedEmbed)
-                        ?.groupValues
-                        ?.getOrNull(1)
-                        ?.trim()
-
-                    if (darkServerUrl.isNullOrBlank()) {
-                        println(
-                            "SeriesDonghua: Dark Server iframe no encontrado"
-                        )
-                    } else {
-                        println(
-                            "SeriesDonghua: Dark Server Player -> $darkServerUrl"
-                        )
-
-                        val darkServerResponse = app.get(
-                            darkServerUrl,
-                            headers = mapOf(
-                                "Referer" to data,
-                                "User-Agent" to
-                                    "Mozilla/5.0 (X11; Linux x86_64) " +
-                                        "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
-                            )
-                        )
-
-                        val darkServerHtml = darkServerResponse.text
-
-                        val tracksStart =
-                            darkServerHtml.indexOf("const tracks = [")
-
-                        val tracksEnd = if (tracksStart >= 0) {
-                            darkServerHtml.indexOf("]", tracksStart)
-                        } else {
-                            -1
-                        }
-
-                        if (tracksStart >= 0 && tracksEnd > tracksStart) {
-                            val tracksText = darkServerHtml.substring(
-                                tracksStart,
-                                tracksEnd + 1
-                            )
-
-                            val trackRegex = Regex(
-                                """\{"file":"([^"]+)"\,"label":"([^"]+)"\}"""
-                            )
-
-                            trackRegex.findAll(tracksText).forEach { match ->
-                                val subtitleUrl = match.groupValues[1]
-                                    .replace(Char(92).toString(), "")
-
-                                val subtitleLabel = match.groupValues[2]
-
-                                subtitleCallback(
-                                    SubtitleFile(
-                                        lang = subtitleLabel,
-                                        url = subtitleUrl
-                                    )
-                                )
-
-                                println(
-                                    "SeriesDonghua: Dark Server subtitle -> " +
-                                        "$subtitleLabel | $subtitleUrl"
-                                )
-                            }
-                        } else {
-                            println(
-                                "SeriesDonghua: Dark Server tracks no encontrados"
-                            )
-                        }
-
-                        val rumbleMarker = "rumble.com"
-                        val rumbleStart =
-                            darkServerHtml.indexOf(rumbleMarker)
-
-                        val rumblePlaylist = if (rumbleStart >= 0) {
-                            val urlStart =
-                                darkServerHtml.lastIndexOf(
-                                    "https",
-                                    rumbleStart
-                                )
-
-                            val playlistEndMarker = "playlist.m3u8"
-
-                            val playlistEnd =
-                                darkServerHtml.indexOf(
-                                    playlistEndMarker,
-                                    rumbleStart
-                                )
-
-                            val end = if (playlistEnd >= 0) {
-                                playlistEnd +
-                                    playlistEndMarker.length
-                            } else {
-                                -1
-                            }
-
-                            if (urlStart >= 0 && end > urlStart) {
-                                darkServerHtml
-                                    .substring(urlStart, end)
-                                    .replace(
-                                        Char(92).toString(),
-                                        ""
-                                    )
-                            } else {
-                                null
-                            }
-                        } else {
-                            null
-                        }
-
-                        if (rumblePlaylist.isNullOrBlank()) {
-                            println(
-                                "SeriesDonghua: Dark Server Rumble playlist no encontrada"
-                            )
-                        } else {
-                            println(
-                                "SeriesDonghua: Dark Server Rumble playlist -> " +
-                                    rumblePlaylist
-                            )
-
-                            val darkServerLink = newExtractorLink(
-                                name = "DonghuaWorld · Dark Server",
-                                source = "DonghuaWorld",
-                                url = rumblePlaylist,
-                                type = ExtractorLinkType.M3U8
-                            ) {
-                                referer = darkServerUrl
-                                quality = 0
-                            }
-
-                            callback(darkServerLink)
-                            linkCount++
-
-                            println(
-                                "SeriesDonghua: LINK DonghuaWorld Dark Server -> " +
-                                    rumblePlaylist
-                            )
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: ERROR Dark Server -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
-        }
-
-        println(
-            "SeriesDonghua: DonghuaWorld direct total links=$linkCount"
-        )
-
-        return linkCount > 0
-    }
+    // ───────────────────────── Links ─────────────────────────
 
     override suspend fun loadLinks(
         data: String,
@@ -855,884 +472,422 @@ override suspend fun getMainPage(
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("SeriesDonghua: loadLinks data=$data")
+        val sink = LinkSink(callback)
 
-        if (data.contains("donghuaworld.com/") &&
-            data.contains("-episode-")
-        ) {
-            return loadDonghuaWorldEpisodeLinks(
-                data = data,
-                subtitleCallback = subtitleCallback,
-                callback = callback
-            )
+        // Episodio que viene directo de DonghuaWorld.
+        if (data.contains("donghuaworld.com/") && data.contains("-episode-")) {
+            loadDonghuaWorldEpisodeLinks(data, subtitleCallback, sink)
+            return sink.total > 0
         }
 
-        val pageResponse = try {
-            app.get(data)
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: ERROR obteniendo episodio -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
-            return false
-        }
+        // Todas las fuentes (los 5 servidores + DonghuaWorld) corren en paralelo.
+        val tasks = mutableListOf<suspend () -> Unit>()
 
-        val document = pageResponse.document
+        val pageResponse = attempt { app.get(data) }
 
-        val videoId = document
-            .selectFirst("[data-video-id]")
-            ?.attr("data-video-id")
-            ?.trim()
+        if (pageResponse != null) {
+            val document = pageResponse.document
 
-        val csrf = document
-            .selectFirst("meta[name=csrf-token]")
-            ?.attr("content")
-            ?.trim()
+            val videoId = document
+                .selectFirst("[data-video-id]")
+                ?.attr("data-video-id")
+                ?.trim()
+                ?.toIntOrNull()
 
-        if (videoId.isNullOrBlank()) {
-            println("SeriesDonghua: ERROR no se encontró data-video-id")
-            return false
-        }
+            val csrf = document
+                .selectFirst("meta[name=csrf-token]")
+                ?.attr("content")
+                ?.trim()
 
-        if (csrf.isNullOrBlank()) {
-            println("SeriesDonghua: ERROR no se encontró CSRF")
-            return false
-        }
+            if (videoId != null && !csrf.isNullOrBlank()) {
+                val cookies = pageResponse.cookies.entries
+                    .joinToString("; ") { (cookieName, cookieValue) -> "$cookieName=$cookieValue" }
 
-        val cookies = pageResponse.cookies.entries
-            .joinToString("; ") { (cookieName, cookieValue) ->
-                "$cookieName=$cookieValue"
-            }
-
-        println(
-            "SeriesDonghua: videoId=$videoId cookies=${pageResponse.cookies.keys}"
-        )
-
-        val servers = listOf(
-            "Dailymotion" to 0,
-            "OK.ru" to 1,
-            "Rumble" to 2,
-            "Filemoon" to 3,
-            "VOE" to 4
-        )
-
-        var linkCount = 0
-
-        for ((serverName, serverIndex) in servers) {
-            try {
-                println(
-                    "SeriesDonghua: solicitando $serverName index=$serverIndex"
-                )
-
-                val requestBody = JSONObject()
-                    .put("video_id", videoId.toInt())
-                    .put("server_index", serverIndex)
-                    .toString()
-
-                val postResponse = app.post(
-                    "$mainUrl/api/player/get-server",
-                    headers = mapOf(
-                        "User-Agent" to
-                            "Mozilla/5.0 (X11; Linux x86_64) " +
-                                "AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-                        "Referer" to data,
-                        "Origin" to mainUrl,
-                        "Cookie" to cookies,
-                        "Content-Type" to "application/json",
-                        "Accept" to "application/json, text/plain, */*",
-                        "X-CSRF-TOKEN" to csrf,
-                        "X-Requested-With" to "XMLHttpRequest"
-                    ),
-                    json = JsonAsString(requestBody)
-                )
-
-                val responseCode = postResponse.code
-                val responseText = postResponse.text
-
-                println(
-                    "SeriesDonghua: $serverName HTTP=$responseCode " +
-                        "response=${responseText.take(300)}"
-                )
-
-                if (responseCode !in 200..299) {
-                    continue
-                }
-
-                val json = try {
-                    JSONObject(responseText)
-                } catch (e: Exception) {
-                    println(
-                        "SeriesDonghua: $serverName JSON inválido -> " +
-                            "${e.message}"
-                    )
-                    continue
-                }
-
-                if (!json.optBoolean("success", false)) {
-                    println(
-                        "SeriesDonghua: $serverName API success=false"
-                    )
-                    continue
-                }
-
-                val embedUrl = json
-                    .optString("embed_url")
-                    .trim()
-
-                if (embedUrl.isBlank()) {
-                    println(
-                        "SeriesDonghua: $serverName sin embed_url"
-                    )
-                    continue
-                }
-
-                val embedLower = embedUrl.lowercase()
-
-                println(
-                    "SeriesDonghua: $serverName index=$serverIndex " +
-                        "embed real=$embedUrl"
-                )
-
-                /*
-                 * IMPORTANTE:
-                 * El server_index/nombre que devuelve la página no siempre
-                 * coincide con el host real del embed. Por eso resolvemos
-                 * según embed_url.
-                 */
-
-                if (embedLower.contains("odysee.com")) {
-                    val odyseeLink = loadOkRuLinks(embedUrl)
-
-                    if (odyseeLink != null) {
-                        linkCount++
-                        callback(odyseeLink)
-
-                        println(
-                            "SeriesDonghua: LINK Odysee -> ${odyseeLink.url}"
-                        )
-                    } else {
-                        println(
-                            "SeriesDonghua: Odysee sin stream"
-                        )
-                    }
-
-                    continue
-                }
-
-                if (embedLower.contains("ok.ru")) {
-                    val okLink = loadOkRuLinks(embedUrl)
-
-                    if (okLink != null) {
-                        linkCount++
-                        callback(okLink)
-
-                        println(
-                            "SeriesDonghua: LINK OK.ru -> ${okLink.url}"
-                        )
-                    } else {
-                        println(
-                            "SeriesDonghua: OK.ru sin HLS"
-                        )
-                    }
-
-                    continue
-                }
-
-                if (
-                    embedLower.contains("dailymotion.com") ||
-                    embedLower.contains("geo.dailymotion.com")
-                ) {
-                    val dailymotionLinks = loadDailymotionLinks(
-                        embedUrl = embedUrl,
-                        subtitleCallback = subtitleCallback
-                    )
-
-                    if (dailymotionLinks.isNotEmpty()) {
-                        dailymotionLinks.forEach { link ->
-                            linkCount++
-                            callback(link)
-
-                            println(
-                                "SeriesDonghua: LINK Dailymotion -> ${link.url}"
+                for ((serverName, serverIndex) in SERVERS) {
+                    tasks.add {
+                        guarded(serverName) {
+                            loadSeriesDonghuaServer(
+                                serverName = serverName,
+                                serverIndex = serverIndex,
+                                videoId = videoId,
+                                csrf = csrf,
+                                cookies = cookies,
+                                pageUrl = data,
+                                subtitleCallback = subtitleCallback,
+                                sink = sink
                             )
                         }
-                    } else {
-                        println(
-                            "SeriesDonghua: Dailymotion manual sin links"
-                        )
                     }
-
-                    continue
                 }
+            } else {
+                debug { "no se encontró data-video-id o CSRF" }
+            }
+        }
 
-                if (
-                    embedLower.contains("voe.sx") ||
-                    embedLower.contains("voe.to") ||
-                    embedLower.contains("voe")
-                ) {
-                    val voeUrl = extractVoeLink(embedUrl)
+        // Fuente adicional: DonghuaWorld.
+        tasks.add {
+            guarded("DonghuaWorld") {
+                loadDonghuaWorldLinks(data, subtitleCallback, sink)
+            }
+        }
 
-                    if (voeUrl != null) {
-                        val voeLink = newExtractorLink(
-                            source = "VOE",
-                            name = "VOE",
-                            url = voeUrl,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            referer = embedUrl
-                            quality = 0
-                        }
+        tasks.amap { it() }
 
-                        linkCount++
-                        callback(voeLink)
+        debug { "loadLinks final linkCount=${sink.total}" }
+        return sink.total > 0
+    }
 
-                        println(
-                            "SeriesDonghua: LINK VOE -> $voeUrl"
-                        )
-                    } else {
-                        println(
-                            "SeriesDonghua: VOE sin HLS"
-                        )
+    private suspend fun loadSeriesDonghuaServer(
+        serverName: String,
+        serverIndex: Int,
+        videoId: Int,
+        csrf: String,
+        cookies: String,
+        pageUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        sink: LinkSink
+    ) {
+        val requestBody = JSONObject()
+            .put("video_id", videoId)
+            .put("server_index", serverIndex)
+            .toString()
+
+        val postResponse = app.post(
+            "$mainUrl/api/player/get-server",
+            headers = mapOf(
+                "User-Agent" to BROWSER_UA,
+                "Referer" to pageUrl,
+                "Origin" to mainUrl,
+                "Cookie" to cookies,
+                "Content-Type" to "application/json",
+                "Accept" to "application/json, text/plain, */*",
+                "X-CSRF-TOKEN" to csrf,
+                "X-Requested-With" to "XMLHttpRequest"
+            ),
+            json = JsonAsString(requestBody)
+        )
+
+        if (postResponse.code !in 200..299) return
+
+        val json = attempt { JSONObject(postResponse.text) } ?: return
+        if (!json.optBoolean("success", false)) return
+
+        val embedUrl = json.optString("embed_url").trim()
+        if (embedUrl.isBlank()) return
+
+        // Si dos servidores devuelven el mismo embed, se resuelve una sola vez.
+        if (!sink.claim("embed:$embedUrl")) return
+
+        val embedLower = embedUrl.lowercase()
+        debug { "$serverName index=$serverIndex embed real=$embedUrl" }
+
+        /*
+         * IMPORTANTE:
+         * El server_index/nombre que devuelve la página no siempre coincide
+         * con el host real del embed. Por eso se resuelve según embed_url.
+         */
+        when {
+            embedLower.contains("odysee.com") || embedLower.contains("ok.ru") -> {
+                loadOkRuLinks(embedUrl)?.let { sink.emit(it) }
+            }
+
+            embedLower.contains("dailymotion.com") -> {
+                val id = dailymotionVideoId(embedUrl)
+                if (id != null && sink.claim("dm:$id")) {
+                    resolveDailymotion(id, "Dailymotion", "Dailymotion")?.let { sink.emit(it) }
+                }
+            }
+
+            embedLower.contains("voe") -> {
+                val voeUrl = extractVoeLink(embedUrl)
+                if (voeUrl != null) {
+                    val voeLink = newExtractorLink(
+                        source = "VOE",
+                        name = "VOE",
+                        url = voeUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        referer = embedUrl
+                        quality = 0
                     }
-
-                    continue
+                    sink.emit(voeLink)
                 }
+            }
 
+            else -> {
                 loadExtractor(
                     url = embedUrl,
-                    referer = data,
+                    referer = pageUrl,
                     subtitleCallback = subtitleCallback,
                     callback = { link ->
-                        if (
-                            embedLower.contains("rumble.com") &&
-                            !link.url.contains("rumble.com/hls-vod/")
-                        ) {
-                            println(
-                                "SeriesDonghua: Rumble descartado -> ${link.url}"
-                            )
-                        } else if (
-                            embedLower.contains("filemoon") &&
-                            (
-                                link.type != ExtractorLinkType.M3U8 ||
-                                !link.url.contains("master.m3u8")
-                            )
-                        ) {
-                            println(
-                                "SeriesDonghua: Filemoon descartado -> ${link.url}"
-                            )
-                        } else {
-                            val modifiedLink = ExtractorLink(
-                                source = link.source,
-                                name = "${link.name} · $serverName",
-                                url = link.url,
-                                referer = link.referer,
-                                quality = link.quality,
-                                type = link.type
-                            )
+                        val keep = when {
+                            embedLower.contains("rumble.com") ->
+                                link.url.contains("rumble.com/hls-vod/")
 
-                            linkCount++
-                            callback(modifiedLink)
+                            embedLower.contains("filemoon") ->
+                                link.type == ExtractorLinkType.M3U8 &&
+                                    link.url.contains("master.m3u8")
 
-                            println(
-                                "SeriesDonghua: LINK $serverName -> ${link.url}"
+                            else -> true
+                        }
+
+                        if (keep) {
+                            sink.emit(
+                                ExtractorLink(
+                                    source = link.source,
+                                    name = "${link.name} · $serverName",
+                                    url = link.url,
+                                    referer = link.referer,
+                                    quality = link.quality,
+                                    type = link.type
+                                )
                             )
                         }
                     }
                 )
-            } catch (e: Exception) {
-                println(
-                    "SeriesDonghua: ERROR $serverName -> " +
-                        "${e.javaClass.simpleName}: ${e.message}"
-                )
             }
         }
+    }
 
-        println(
-            "SeriesDonghua: buscando fuente adicional DonghuaWorld"
-        )
+    // ───────────────────────── DonghuaWorld ─────────────────────────
 
-        try {
-            val donghuaLinks = loadDonghuaWorldLinks(
-                data = data,
-                subtitleCallback = subtitleCallback
-            )
-
-            donghuaLinks.forEach { link ->
-                val modifiedLink = ExtractorLink(
-                    source = link.source,
-                    name = link.name,
-                    url = link.url,
-                    referer = link.referer,
-                    quality = link.quality,
-                    type = link.type
-                )
-
-                linkCount++
-                callback(modifiedLink)
-
-                println(
-                    "SeriesDonghua: LINK DonghuaWorld Dailymotion -> ${link.url}"
-                )
-            }
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: ERROR DonghuaWorld -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
-        }
-
-        println(
-            "SeriesDonghua: loadLinks final linkCount=$linkCount"
-        )
-
-        return linkCount > 0
+    private suspend fun loadDonghuaWorldEpisodeLinks(
+        data: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        sink: LinkSink
+    ) {
+        val document = attempt { app.get(data).document } ?: return
+        resolveDonghuaWorldEpisode(document, data, subtitleCallback, sink)
     }
 
     private suspend fun loadDonghuaWorldLinks(
         data: String,
-        subtitleCallback: (SubtitleFile) -> Unit
-    ): List<ExtractorLink> {
-        val match = Regex(
-            "/([^/]+)-episodio-(\\d+)/?$"
-        ).find(data)
-
-        if (match == null) {
-            println(
-                "SeriesDonghua: DonghuaWorld no pudo interpretar data=$data"
-            )
-            return emptyList()
-        }
+        subtitleCallback: (SubtitleFile) -> Unit,
+        sink: LinkSink
+    ) {
+        val match = EPISODE_SLUG.find(data) ?: return
 
         val seriesSlug = match.groupValues[1]
         val episodeNumber = match.groupValues[2]
+        val searchQuery = seriesSlug.replace("-", " ").trim()
 
-        val searchQuery = seriesSlug
-            .replace("-", " ")
-            .trim()
+        var candidates = findDonghuaWorldSeries(searchQuery)
 
-        println(
-            "SeriesDonghua: DonghuaWorld búsqueda='$searchQuery' episodio=$episodeNumber"
-        )
-
-        suspend fun findSeriesCandidates(
-            query: String
-        ): List<Triple<Int, String, String>> {
-            val encodedQuery = URLEncoder
-                .encode(query, "UTF-8")
-                .replace("+", "+")
-
-            val searchUrl =
-                "https://donghuaworld.com/?s=$encodedQuery"
-
-            val searchResponse = app.get(searchUrl)
-
-            val normalizedSearch = query
-                .lowercase()
-                .replace(Regex("[^a-z0-9]+"), " ")
-                .trim()
-
-            return searchResponse.document
-                .select("a[href*='/anime/'][itemprop='url']")
-                .mapNotNull { element ->
-                    val href = element
-                        .attr("href")
-                        .trim()
-
-                    val title = element
-                        .attr("title")
-                        .trim()
-                        .ifBlank { element.text().trim() }
-
-                    if (
-                        href.isBlank() ||
-                        href.contains("/anime/?")
-                    ) {
-                        return@mapNotNull null
-                    }
-
-                    val normalizedTitle = title
-                        .lowercase()
-                        .replace(Regex("[^a-z0-9]+"), " ")
-                        .trim()
-
-                    val normalizedSlug = href
-                        .substringAfter("/anime/")
-                        .trim('/')
-                        .lowercase()
-
-                    val isMovie =
-                        normalizedSlug.contains("movie") ||
-                            normalizedTitle.contains(" movie ")
-
-                    if (isMovie) {
-                        return@mapNotNull null
-                    }
-
-                    val score = when {
-                        normalizedTitle == normalizedSearch -> 100
-                        normalizedTitle.startsWith(
-                            "$normalizedSearch "
-                        ) -> 95
-                        normalizedTitle.contains(
-                            normalizedSearch
-                        ) -> 90
-                        isOneTypoAway(
-                            normalizedTitle,
-                            normalizedSearch
-                        ) -> 70
-                        normalizedSearch.contains(
-                            normalizedTitle
-                        ) -> 60
-                        else -> 0
-                    }
-
-                    if (score > 0) {
-                        Triple(
-                            score,
-                            title,
-                            fixUrl(href)
-                        )
-                    } else {
-                        null
-                    }
-                }
-                .distinctBy { it.third }
-                .sortedByDescending { it.first }
-        }
-
-        var seriesCandidates = findSeriesCandidates(
-            searchQuery
-        )
-
-        if (seriesCandidates.isEmpty()) {
-            val fallbackQuery = searchQuery
-                .replace(
-                    Regex("(?i)shrouding"),
-                    "shrounding"
-                )
-
+        if (candidates.isEmpty()) {
+            val fallbackQuery = searchQuery.replace(Regex("(?i)shrouding"), "shrounding")
             if (fallbackQuery != searchQuery) {
-                println(
-                    "SeriesDonghua: DonghuaWorld fallback='$fallbackQuery'"
-                )
-
-                seriesCandidates = findSeriesCandidates(
-                    fallbackQuery
-                )
+                candidates = findDonghuaWorldSeries(fallbackQuery)
             }
         }
 
-        val seriesCandidate = seriesCandidates.firstOrNull()
+        val seriesUrl = candidates.firstOrNull()?.second ?: return
+        debug { "DonghuaWorld serie -> $seriesUrl" }
 
-        if (seriesCandidates.isNotEmpty()) {
-            println(
-                "SeriesDonghua: DonghuaWorld candidatos=" +
-                    seriesCandidates.joinToString(" | ") {
-                        "${it.first}:${it.second}:${it.third}"
-                    }
-            )
-        }
+        val seriesDocument = app.get(seriesUrl, timeout = 15).document
+        val episodeRegex = Regex("episode-$episodeNumber(?:-|/|\$)")
 
-        val seriesUrl = seriesCandidate?.third
+        val episodeUrl = seriesDocument
+            .select("a[href*='episode-$episodeNumber']")
+            .asSequence()
+            .map { it.attr("href").trim() }
+            .firstOrNull { href ->
+                href.isNotBlank() &&
+                    episodeRegex.containsMatchIn(href.substringBefore("?").substringBefore("#"))
+            }
+            ?.let { fixUrl(it) }
+            ?: return
 
-        if (seriesUrl == null) {
-            println(
-                "SeriesDonghua: DonghuaWorld no encontró serie para '$searchQuery'"
-            )
-            return emptyList()
-        }
+        debug { "DonghuaWorld episodio -> $episodeUrl" }
 
-        println(
-            "SeriesDonghua: DonghuaWorld serie -> $seriesUrl"
-        )
+        val episodeDocument = app.get(episodeUrl, timeout = 15).document
+        resolveDonghuaWorldEpisode(episodeDocument, episodeUrl, subtitleCallback, sink)
+    }
 
-        val seriesResponse = app.get(seriesUrl)
+    private suspend fun findDonghuaWorldSeries(query: String): List<Pair<Int, String>> {
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        val document = app.get("$DW_URL/?s=$encodedQuery", timeout = 15).document
+        val normalizedSearch = normalize(query)
 
-        val episodeUrl = seriesResponse.document
-            .select("a[href]")
+        return document
+            .select("a[href*='/anime/'][itemprop='url']")
             .mapNotNull { element ->
                 val href = element.attr("href").trim()
+                if (href.isBlank() || href.contains("/anime/?")) return@mapNotNull null
 
-                if (href.isBlank()) {
+                val title = element.attr("title").trim().ifBlank { element.text().trim() }
+                val normalizedTitle = normalize(title)
+                val slug = href.substringAfter("/anime/").trim('/').lowercase()
+
+                if (slug.contains("movie") || isMovieTitle(normalizedTitle)) {
                     return@mapNotNull null
                 }
 
-                val normalized = href
-                    .substringBefore("?")
-                    .substringBefore("#")
-
-                val episodeRegex = Regex(
-                    "episode-$episodeNumber(?:-|/)"
-                )
-
-                if (episodeRegex.containsMatchIn(normalized)) {
-                    fixUrl(href)
-                } else {
-                    null
-                }
+                val score = titleScore(normalizedTitle, normalizedSearch, 60)
+                if (score > 0) (score to fixUrl(href)) else null
             }
-            .distinct()
-            .firstOrNull()
-
-        if (episodeUrl == null) {
-            println(
-                "SeriesDonghua: DonghuaWorld no encontró episodio $episodeNumber"
-            )
-            return emptyList()
-        }
-
-        println(
-            "SeriesDonghua: DonghuaWorld episodio -> $episodeUrl"
-        )
-
-        val episodeResponse = app.get(episodeUrl)
-
-        val links = mutableListOf<ExtractorLink>()
-
-        val embedUrl = episodeResponse.document
-            .select("iframe[src*='geo.dailymotion.com'][src*='video=']")
-            .mapNotNull { iframe ->
-                iframe.attr("src")
-                    .trim()
-                    .takeIf { it.isNotBlank() }
-            }
-            .firstOrNull()
-
-        if (embedUrl != null) {
-            println(
-                "SeriesDonghua: DonghuaWorld DM Player -> $embedUrl"
-            )
-
-            val dailymotionLinks = loadDailymotionLinks(
-                embedUrl = embedUrl,
-                subtitleCallback = subtitleCallback
-            )
-
-            dailymotionLinks.forEach { link ->
-                links.add(
-                    ExtractorLink(
-                        source = "DonghuaWorld",
-                        name = "DonghuaWorld · Dailymotion",
-                        url = link.url,
-                        referer = link.referer,
-                        quality = link.quality,
-                        type = link.type
-                    )
-                )
-            }
-        } else {
-            println(
-                "SeriesDonghua: DonghuaWorld no encontró DM Player"
-            )
-        }
-
-        try {
-            val darkServer = episodeResponse.document
-                .select(".server-item a")
-                .firstOrNull { element ->
-                    element.text()
-                        .trim()
-                        .equals("Dark Server", ignoreCase = true)
-                }
-
-            if (darkServer == null) {
-                println(
-                    "SeriesDonghua: DonghuaWorld Dark Server no encontrado"
-                )
-            } else {
-                val encodedHash = darkServer
-                    .attr("data-hash")
-                    .trim()
-
-                if (encodedHash.isBlank()) {
-                    println(
-                        "SeriesDonghua: DonghuaWorld Dark Server sin data-hash"
-                    )
-                } else {
-                    val decodedEmbed = try {
-                        String(
-                            java.util.Base64.getDecoder().decode(encodedHash),
-                            Charsets.UTF_8
-                        )
-                    } catch (e: Exception) {
-                        println(
-                            "SeriesDonghua: Dark Server Base64 ERROR -> " +
-                                "${e.javaClass.simpleName}: ${e.message}"
-                        )
-                        ""
-                    }
-
-                    val darkServerUrl = Regex(
-                        """src="([^"]+)""""
-                    )
-                        .find(decodedEmbed)
-                        ?.groupValues
-                        ?.getOrNull(1)
-                        ?.trim()
-
-                    if (darkServerUrl.isNullOrBlank()) {
-                        println(
-                            "SeriesDonghua: Dark Server iframe no encontrado"
-                        )
-                    } else {
-                        println(
-                            "SeriesDonghua: Dark Server Player -> $darkServerUrl"
-                        )
-
-                        val darkServerResponse = app.get(
-                            darkServerUrl,
-                            headers = mapOf(
-                                "Referer" to episodeUrl,
-                                "User-Agent" to
-                                    "Mozilla/5.0 (X11; Linux x86_64) " +
-                                        "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
-                            )
-                        )
-
-        val darkServerHtml = darkServerResponse.text
-
-        val tracksStart = darkServerHtml.indexOf("const tracks = [")
-        val tracksEnd = if (tracksStart >= 0) {
-            darkServerHtml.indexOf("]", tracksStart)
-        } else {
-            -1
-        }
-
-        if (tracksStart >= 0 && tracksEnd > tracksStart) {
-            val tracksText = darkServerHtml.substring(
-                tracksStart,
-                tracksEnd + 1
-            )
-
-            val trackRegex = Regex(
-                """\{"file":"([^"]+)"\,"label":"([^"]+)"\}"""
-            )
-
-            trackRegex.findAll(tracksText).forEach { match ->
-                val subtitleUrl = match.groupValues[1]
-                    .replace(Char(92).toString(), "")
-
-                val subtitleLabel = match.groupValues[2]
-
-                subtitleCallback(
-                    SubtitleFile(
-                        lang = subtitleLabel,
-                        url = subtitleUrl
-                    )
-                )
-
-                println(
-                    "SeriesDonghua: Dark Server subtitle -> " +
-                        "$subtitleLabel | $subtitleUrl"
-                )
-            }
-        } else {
-            println(
-                "SeriesDonghua: Dark Server tracks no encontrados"
-            )
-        }
-
-        val rumbleMarker = "rumble.com"
-        val rumbleStart = darkServerHtml.indexOf(rumbleMarker)
-
-        val rumblePlaylist = if (rumbleStart >= 0) {
-            val urlStart = darkServerHtml.lastIndexOf("https", rumbleStart)
-            val playlistEndMarker = "playlist.m3u8"
-            val playlistEnd = darkServerHtml.indexOf(
-                playlistEndMarker,
-                rumbleStart
-            )
-            val end = if (playlistEnd >= 0) {
-                playlistEnd + playlistEndMarker.length
-            } else {
-                -1
-            }
-
-            if (urlStart >= 0 && end > urlStart) {
-                darkServerHtml
-                    .substring(urlStart, end)
-                    .replace(Char(92).toString(), "")
-            } else {
-                null
-            }
-        } else {
-            null
-        }
-
-        if (rumblePlaylist.isNullOrBlank()) {
-                            println(
-                                "SeriesDonghua: Dark Server Rumble playlist no encontrada"
-                            )
-                        } else {
-                            println(
-                                "SeriesDonghua: Dark Server Rumble playlist -> " +
-                                    rumblePlaylist
-                            )
-
-                            links.add(
-                                newExtractorLink(
-                                    name = "DonghuaWorld · Dark Server",
-                                    source = "DonghuaWorld",
-                                    url = rumblePlaylist,
-                                    type = ExtractorLinkType.M3U8
-                                ) {
-                                    referer = darkServerUrl
-                                    quality = 0
-                                }
-                            )
-
-                            println(
-                                "SeriesDonghua: LINK DonghuaWorld Dark Server -> " +
-                                    rumblePlaylist
-                            )
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: ERROR Dark Server -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
-        }
-
-        println(
-            "SeriesDonghua: DonghuaWorld total links=${links.size}"
-        )
-
-        return links
+            .distinctBy { it.second }
+            .sortedByDescending { it.first }
     }
 
-    private suspend fun loadDailymotionLinks(
-        embedUrl: String,
-        subtitleCallback: (SubtitleFile) -> Unit
-    ): List<ExtractorLink> {
-        println(
-            "SeriesDonghua: Dailymotion resolving metadata endpoint=$embedUrl"
+    /** Dailymotion y Dark Server de un episodio de DonghuaWorld, en paralelo. */
+    private suspend fun resolveDonghuaWorldEpisode(
+        document: Document,
+        episodeUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        sink: LinkSink
+    ) {
+        val tasks = listOf<suspend () -> Unit>(
+            {
+                guarded("DonghuaWorld Dailymotion") {
+                    val embed = document
+                        .selectFirst("iframe[src*='geo.dailymotion.com'][src*='video=']")
+                        ?.attr("src")
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+
+                    val id = embed?.let { dailymotionVideoId(it) }
+
+                    if (id != null && sink.claim("dm:$id")) {
+                        resolveDailymotion(id, "DonghuaWorld", "DonghuaWorld · Dailymotion")
+                            ?.let { sink.emit(it) }
+                    }
+                }
+            },
+            {
+                guarded("DonghuaWorld Dark Server") {
+                    loadDarkServerLink(document, episodeUrl, subtitleCallback)
+                        ?.let { sink.emit(it) }
+                }
+            }
         )
 
-        val videoId = embedUrl
+        tasks.amap { it() }
+    }
+
+    private suspend fun loadDarkServerLink(
+        document: Document,
+        pageUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ): ExtractorLink? {
+        val darkServer = document
+            .select(".server-item a")
+            .firstOrNull { it.text().trim().equals("Dark Server", ignoreCase = true) }
+            ?: return null
+
+        val encodedHash = darkServer.attr("data-hash").trim()
+        if (encodedHash.isBlank()) return null
+
+        val decodedEmbed = attempt {
+            String(Base64.getDecoder().decode(encodedHash), Charsets.UTF_8)
+        } ?: return null
+
+        val playerUrl = IFRAME_SRC.find(decodedEmbed)?.groupValues?.getOrNull(1)?.trim()
+        if (playerUrl.isNullOrBlank()) return null
+
+        val html = attempt {
+            app.get(
+                playerUrl,
+                headers = mapOf(
+                    "Referer" to pageUrl,
+                    "User-Agent" to BROWSER_UA
+                )
+            ).text
+        } ?: return null
+
+        // Subtítulos
+        val tracksStart = html.indexOf("const tracks = [")
+        if (tracksStart >= 0) {
+            val tracksEnd = html.indexOf("]", tracksStart)
+            if (tracksEnd > tracksStart) {
+                TRACK.findAll(html.substring(tracksStart, tracksEnd + 1)).forEach { match ->
+                    subtitleCallback(
+                        SubtitleFile(
+                            lang = match.groupValues[2],
+                            url = match.groupValues[1].replace("\\", "")
+                        )
+                    )
+                }
+            }
+        }
+
+        // Playlist de Rumble
+        val rumbleStart = html.indexOf("rumble.com")
+        if (rumbleStart < 0) return null
+
+        val urlStart = html.lastIndexOf("https", rumbleStart)
+        val endMarker = "playlist.m3u8"
+        val endPos = html.indexOf(endMarker, rumbleStart)
+        if (urlStart < 0 || endPos < 0) return null
+
+        val playlist = html
+            .substring(urlStart, endPos + endMarker.length)
+            .replace("\\", "")
+
+        return newExtractorLink(
+            name = "DonghuaWorld · Dark Server",
+            source = "DonghuaWorld",
+            url = playlist,
+            type = ExtractorLinkType.M3U8
+        ) {
+            referer = playerUrl
+            quality = 0
+        }
+    }
+
+    // ───────────────────────── Dailymotion ─────────────────────────
+
+    private fun dailymotionVideoId(embedUrl: String): String? =
+        embedUrl
             .substringAfter("video=", "")
             .substringBefore("&")
             .takeIf { it.isNotBlank() }
+            ?: DM_PATH_ID.find(embedUrl)?.groupValues?.getOrNull(1)
 
-        if (videoId == null) {
-            println(
-                "SeriesDonghua: Dailymotion could not extract video id"
-            )
-            return emptyList()
-        }
-
-        println(
-            "SeriesDonghua: Dailymotion access_id=$videoId"
-        )
-
-        val metadataUrl = "https://geo.dailymotion.com/videos/$videoId"
-
-        val response = try {
+    private suspend fun resolveDailymotion(
+        videoId: String,
+        source: String,
+        displayName: String
+    ): ExtractorLink? {
+        val response = attempt {
             app.get(
-                metadataUrl,
+                "https://geo.dailymotion.com/videos/$videoId",
                 headers = mapOf(
                     "Accept" to "application/json",
-                    "Referer" to embedUrl,
-                    "User-Agent" to
-                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+                    "Referer" to "https://geo.dailymotion.com/",
+                    "User-Agent" to BROWSER_UA
                 )
             )
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: Dailymotion metadata ERROR -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
-            return emptyList()
+        } ?: return null
+
+        val streamUrl = attempt {
+            JSONObject(response.text).getJSONObject("stream").optString("url")
+        }?.takeIf { it.isNotBlank() } ?: return null
+
+        return newExtractorLink(
+            name = displayName,
+            source = source,
+            url = streamUrl,
+            type = ExtractorLinkType.M3U8
+        ) {
+            referer = "https://geo.dailymotion.com/"
+            quality = 0
         }
-
-        println(
-            "SeriesDonghua: Dailymotion metadata status=${response.code}"
-        )
-
-        val json = try {
-            JSONObject(response.text)
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: Dailymotion metadata JSON ERROR -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
-            return emptyList()
-        }
-
-        val streamUrl = try {
-            json
-                .getJSONObject("stream")
-                .optString("url")
-                .takeIf { it.isNotBlank() }
-        } catch (e: Exception) {
-            null
-        }
-
-        if (streamUrl == null) {
-            println(
-                "SeriesDonghua: Dailymotion stream.url not found"
-            )
-            return emptyList()
-        }
-
-        println(
-            "SeriesDonghua: Dailymotion stream.url=$streamUrl"
-        )
-
-        val links = mutableListOf<ExtractorLink>()
-
-        links.add(
-            newExtractorLink(
-                name = "Dailymotion",
-                source = "Dailymotion",
-                url = streamUrl,
-                type = ExtractorLinkType.M3U8
-            ) {
-                referer = "https://geo.dailymotion.com/"
-                quality = 0
-            }
-        )
-
-        println(
-            "SeriesDonghua: Dailymotion manual linkCount=${links.size}"
-        )
-
-        return links
     }
 
-    private suspend fun loadOkRuLinks(
-        embedUrl: String
-    ): ExtractorLink? {
-        println("SeriesDonghua: OK.ru/Odysee GET $embedUrl")
+    // ───────────────────────── OK.ru / Odysee ─────────────────────────
 
-        val response = try {
+    private suspend fun loadOkRuLinks(embedUrl: String): ExtractorLink? {
+        val response = attempt {
             app.get(
                 embedUrl,
                 headers = mapOf(
-                    "User-Agent" to
-                        "Mozilla/5.0 (X11; Linux x86_64) " +
-                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                    "User-Agent" to BROWSER_UA,
                     "Referer" to embedUrl
                 )
             )
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: OK.ru/Odysee GET error -> " +
-                    "${e.javaClass.simpleName}: ${e.message}"
-            )
-            return null
-        }
+        } ?: return null
 
-        println(
-            "SeriesDonghua: OK.ru/Odysee HTTP=${response.code} " +
-                "size=${response.text.length}"
-        )
-
-        if (response.code !in 200..299) {
-            return null
-        }
+        if (response.code !in 200..299) return null
 
         val normalized = response.text
             .replace("&quot;", "\"")
@@ -1743,10 +898,7 @@ override suspend fun getMainPage(
             .replace("\\\\", "\\")
 
         if (embedUrl.contains("odysee.com", ignoreCase = true)) {
-            val contentUrl = Regex(
-                """"contentUrl"\s*:\s*"([^"]+)"""",
-                RegexOption.IGNORE_CASE
-            )
+            val contentUrl = ODYSEE_CONTENT_URL
                 .find(normalized)
                 ?.groupValues
                 ?.getOrNull(1)
@@ -1755,43 +907,14 @@ override suspend fun getMainPage(
                 ?.replace("\\/", "/")
                 ?.trim()
                 ?.takeIf { it.isNotBlank() }
+                ?: return null
 
-            if (contentUrl == null) {
-                println(
-                    "SeriesDonghua: Odysee contentUrl NO encontrado"
-                )
-                return null
+            // Odysee a veces entrega vídeo sin extensión; contentUrl ya es un recurso de vídeo.
+            val linkType = if (contentUrl.contains(".m3u8", ignoreCase = true)) {
+                ExtractorLinkType.M3U8
+            } else {
+                ExtractorLinkType.VIDEO
             }
-
-            val contentLower = contentUrl.lowercase()
-
-            val linkType = when {
-                contentLower.contains(".m3u8") -> {
-                    ExtractorLinkType.M3U8
-                }
-
-                contentLower.contains(".mp4") ||
-                    contentLower.contains(".webm") ||
-                    contentLower.contains(".mkv") ||
-                    contentLower.contains(".mov") ||
-                    contentLower.contains(".m4v") -> {
-                    ExtractorLinkType.VIDEO
-                }
-
-                else -> {
-                    /*
-                     * Odysee puede entregar URLs de vídeo sin una extensión
-                     * explícita. contentUrl ya viene del reproductor como
-                     * recurso de vídeo, así que lo tratamos como VIDEO.
-                     */
-                    ExtractorLinkType.VIDEO
-                }
-            }
-
-            println(
-                "SeriesDonghua: Odysee contentUrl encontrado " +
-                    "type=$linkType -> $contentUrl"
-            )
 
             return newExtractorLink(
                 source = "Odysee",
@@ -1804,12 +927,8 @@ override suspend fun getMainPage(
             }
         }
 
-        val hlsMatch = Regex(
-            """"hlsManifestUrl":"([^"]+)"""",
-            RegexOption.IGNORE_CASE
-        ).find(normalized)
-
-        val hlsUrl = hlsMatch
+        val hlsUrl = OK_HLS_URL
+            .find(normalized)
             ?.groupValues
             ?.getOrNull(1)
             ?.replace("\\u0026", "&")
@@ -1817,17 +936,7 @@ override suspend fun getMainPage(
             ?.replace("\\/", "/")
             ?.trim()
             ?.takeIf { it.isNotBlank() }
-
-        if (hlsUrl == null) {
-            println(
-                "SeriesDonghua: OK.ru hlsManifestUrl NO encontrado"
-            )
-            return null
-        }
-
-        println(
-            "SeriesDonghua: OK.ru HLS encontrado -> $hlsUrl"
-        )
+            ?: return null
 
         return newExtractorLink(
             source = "OK.ru",
@@ -1840,339 +949,172 @@ override suspend fun getMainPage(
         }
     }
 
-    private suspend fun extractVoeLink(
-        embedUrl: String
-    ): String? {
-        return try {
-            println(
-                "SeriesDonghua: VOE directo GET $embedUrl"
-            )
+    // ───────────────────────── VOE ─────────────────────────
 
-            val firstResponse = app.get(
-                embedUrl,
-                headers = mapOf(
-                    "User-Agent" to
-                        "Mozilla/5.0 (X11; Linux x86_64) " +
-                        "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
-                )
-            )
+    private suspend fun extractVoeLink(embedUrl: String): String? =
+        attempt { resolveVoe(embedUrl) }
 
-            if (!firstResponse.isSuccessful) {
-                println(
-                    "SeriesDonghua: VOE HTTP inicial ${firstResponse.code}"
-                )
-                return null
-            }
+    private suspend fun resolveVoe(embedUrl: String): String? {
+        val headers = mapOf("User-Agent" to BROWSER_UA)
 
-            var html = firstResponse.text
+        val firstResponse = app.get(embedUrl, headers = headers)
+        if (!firstResponse.isSuccessful) return null
 
-            val redirectUrl = Regex(
-                """window\.location\.href\s*=\s*['"]([^'"]+/e/[^'"]+)['"]"""
-            ).find(html)?.groupValues?.getOrNull(1)
+        val redirectUrl = VOE_REDIRECT.find(firstResponse.text)?.groupValues?.getOrNull(1)
+        val realUrl = redirectUrl ?: embedUrl
 
-            val realUrl = redirectUrl ?: embedUrl
-
-            println(
-                "SeriesDonghua: VOE URL real -> $realUrl"
-            )
-
-            val pageResponse = if (realUrl != embedUrl) {
-                app.get(
-                    realUrl,
-                    headers = mapOf(
-                        "User-Agent" to
-                            "Mozilla/5.0 (X11; Linux x86_64) " +
-                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
-                    )
-                )
-            } else {
-                firstResponse
-            }
-
-            html = pageResponse.text
-
-            println(
-                "SeriesDonghua: VOE página size=${html.length}"
-            )
-
-            var encodedConfig = Regex(
-                """<script[^>]+type=["']application/json["'][^>]*>\s*(?:\[\s*)?["']([^"']+)["']"""
-            ).find(html)?.groupValues?.getOrNull(1)
-
-            if (encodedConfig.isNullOrBlank()) {
-                println(
-                    "SeriesDonghua: VOE ALTCHA requerido"
-                )
-
-                val csrf = Regex(
-                    """name=["']_token["'][^>]+value=["']([^"']+)["']"""
-                ).find(html)?.groupValues?.getOrNull(1)
-
-                val challengeUrl = Regex(
-                    """<altcha-widget[^>]+challenge=["']([^"']+)["']"""
-                ).find(html)?.groupValues?.getOrNull(1)
-
-                if (
-                    csrf.isNullOrBlank() ||
-                    challengeUrl.isNullOrBlank()
-                ) {
-                    println(
-                        "SeriesDonghua: VOE no se encontró CSRF o challenge"
-                    )
-                    return null
-                }
-
-                println(
-                    "SeriesDonghua: VOE ALTCHA challenge -> $challengeUrl"
-                )
-
-                val challengeResponse = app.get(
-                    challengeUrl,
-                    headers = mapOf(
-                        "User-Agent" to
-                            "Mozilla/5.0 (X11; Linux x86_64) " +
-                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-                        "Referer" to realUrl
-                    )
-                )
-
-                if (!challengeResponse.isSuccessful) {
-                    println(
-                        "SeriesDonghua: VOE ALTCHA challenge HTTP " +
-                        "${challengeResponse.code}"
-                    )
-                    return null
-                }
-
-                val challengeJson = challengeResponse.text
-
-                val algorithm = Regex(
-                    """"algorithm"\s*:\s*"([^"]+)""""
-                ).find(challengeJson)?.groupValues?.getOrNull(1)
-
-                val cost = Regex(
-                    """"cost"\s*:\s*(\d+)"""
-                ).find(challengeJson)
-                    ?.groupValues
-                    ?.getOrNull(1)
-                    ?.toIntOrNull()
-
-                val keyLength = Regex(
-                    """"keyLength"\s*:\s*(\d+)"""
-                ).find(challengeJson)
-                    ?.groupValues
-                    ?.getOrNull(1)
-                    ?.toIntOrNull()
-
-                val keyPrefix = Regex(
-                    """"keyPrefix"\s*:\s*"([^"]+)""""
-                ).find(challengeJson)?.groupValues?.getOrNull(1)
-
-                val nonce = Regex(
-                    """"nonce"\s*:\s*"([^"]+)""""
-                ).find(challengeJson)?.groupValues?.getOrNull(1)
-
-                val salt = Regex(
-                    """"salt"\s*:\s*"([^"]+)""""
-                ).find(challengeJson)?.groupValues?.getOrNull(1)
-
-                if (
-                    algorithm.isNullOrBlank() ||
-                    cost == null ||
-                    keyLength == null ||
-                    keyPrefix.isNullOrBlank() ||
-                    nonce.isNullOrBlank() ||
-                    salt.isNullOrBlank()
-                ) {
-                    println(
-                        "SeriesDonghua: VOE ALTCHA parámetros incompletos"
-                    )
-                    return null
-                }
-
-                println(
-                    "SeriesDonghua: VOE ALTCHA " +
-                    "algorithm=$algorithm cost=$cost " +
-                    "keyLength=$keyLength prefix=$keyPrefix"
-                )
-
-                var solvedCounter = -1
-                var solvedKey = ""
-
-                val saltBytes = hexToBytes(salt)
-                val nonceBytes = hexToBytes(nonce)
-
-                val powStart = System.nanoTime()
-
-                for (counter in 0 until 1_000_000) {
-                    val counterBytes = byteArrayOf(
-                        ((counter ushr 24) and 0xff).toByte(),
-                        ((counter ushr 16) and 0xff).toByte(),
-                        ((counter ushr 8) and 0xff).toByte(),
-                        (counter and 0xff).toByte()
-                    )
-
-                    val passwordBytes =
-                        nonceBytes + counterBytes
-
-                    val derived = pbkdf2Sha256(
-                        passwordBytes,
-                        saltBytes,
-                        cost,
-                        keyLength
-                    )
-
-                    val hex = derived.joinToString("") {
-                        "%02x".format(it.toInt() and 0xff)
-                    }
-
-                    if (hex.startsWith(keyPrefix)) {
-                        solvedCounter = counter
-                        solvedKey = hex
-                        break
-                    }
-                }
-
-                if (solvedCounter < 0) {
-                    println(
-                        "SeriesDonghua: VOE ALTCHA PoW no resuelto"
-                    )
-                    return null
-                }
-
-                val powElapsedMs =
-                    (System.nanoTime() - powStart) / 1_000_000.0
-
-                println(
-                    "SeriesDonghua: VOE ALTCHA resuelto " +
-                    "counter=$solvedCounter time=${powElapsedMs}ms"
-                )
-
-                val altchaPayload = """
-                    {"challenge":$challengeJson,"solution":{"counter":$solvedCounter,"derivedKey":"$solvedKey","time":$powElapsedMs}}
-                """.trimIndent()
-
-                val payloadB64 = java.util.Base64
-                    .getEncoder()
-                    .encodeToString(
-                        altchaPayload.toByteArray(Charsets.UTF_8)
-                    )
-
-                val voeCookies = pageResponse.cookies.entries
-                    .joinToString("; ") { (name, value) ->
-                        "$name=$value"
-                    }
-
-                val postResponse = app.post(
-                    realUrl,
-                    headers = mapOf(
-                        "User-Agent" to
-                            "Mozilla/5.0 (X11; Linux x86_64) " +
-                            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-                        "Referer" to realUrl,
-                        "Origin" to "https://katherineschoolphone.com",
-                        "Cookie" to voeCookies,
-                        "Content-Type" to
-                            "application/x-www-form-urlencoded"
-                    ),
-                    data = mapOf(
-                        "_token" to csrf,
-                        "access" to "0",
-                        "altcha" to payloadB64
-                    )
-                )
-
-                if (!postResponse.isSuccessful) {
-                    println(
-                        "SeriesDonghua: VOE ALTCHA POST HTTP " +
-                        "${postResponse.code}"
-                    )
-                    return null
-                }
-
-                html = postResponse.text
-
-                println(
-                    "SeriesDonghua: VOE página después ALTCHA " +
-                    "size=${html.length}"
-                )
-
-                encodedConfig = Regex(
-                    """<script[^>]+type=["']application/json["'][^>]*>\s*\[\s*["']([^"']+)["']\s*\]\s*</script>"""
-                ).find(html)?.groupValues?.getOrNull(1)
-            }
-
-            if (encodedConfig.isNullOrBlank()) {
-                println(
-                    "SeriesDonghua: VOE config JSON no encontrada"
-                )
-                return null
-            }
-
-            println(
-                "SeriesDonghua: VOE config encontrada " +
-                "${encodedConfig.length} chars"
-            )
-
-            val decodedConfig = decodeVoeConfig(encodedConfig)
-
-            if (decodedConfig.isNullOrBlank()) {
-                println(
-                    "SeriesDonghua: VOE no se pudo decodificar config"
-                )
-                return null
-            }
-
-            val source = Regex(
-                """"source"\s*:\s*"([^"]+)""""
-            ).find(decodedConfig)
-                ?.groupValues
-                ?.getOrNull(1)
-
-            if (source.isNullOrBlank()) {
-                println(
-                    "SeriesDonghua: VOE source HLS no encontrada"
-                )
-                return null
-            }
-
-            val result = source
-                .replace("\\\\/", "/")
-                .replace("\\u0026", "&")
-
-            println(
-                "SeriesDonghua: VOE HLS encontrado -> $result"
-            )
-
-            result
-        } catch (e: Exception) {
-            println(
-                "SeriesDonghua: VOE directo ERROR -> " +
-                "${e.javaClass.simpleName}: ${e.message}"
-            )
-            null
+        val pageResponse = if (realUrl != embedUrl) {
+            app.get(realUrl, headers = headers)
+        } else {
+            firstResponse
         }
+
+        var html = pageResponse.text
+        var encodedConfig = VOE_CONFIG.find(html)?.groupValues?.getOrNull(1)
+
+        if (encodedConfig.isNullOrBlank()) {
+            html = solveVoeAltcha(realUrl, html, pageResponse.cookies) ?: return null
+            encodedConfig = VOE_CONFIG_STRICT.find(html)?.groupValues?.getOrNull(1)
+        }
+
+        if (encodedConfig.isNullOrBlank()) return null
+
+        val decodedConfig = decodeVoeConfig(encodedConfig)
+        if (decodedConfig.isNullOrBlank()) return null
+
+        val source = VOE_SOURCE.find(decodedConfig)?.groupValues?.getOrNull(1)
+        if (source.isNullOrBlank()) return null
+
+        return source
+            .replace("\\\\/", "/")
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
     }
 
-    private fun decodeVoeConfig(
-        encoded: String
+    /** Resuelve el desafío ALTCHA de VOE y devuelve el HTML de la página resultante. */
+    private suspend fun solveVoeAltcha(
+        realUrl: String,
+        html: String,
+        pageCookies: Map<String, String>
     ): String? {
+        val csrf = VOE_TOKEN.find(html)?.groupValues?.getOrNull(1)
+        val challengeUrl = VOE_CHALLENGE.find(html)?.groupValues?.getOrNull(1)
+
+        if (csrf.isNullOrBlank() || challengeUrl.isNullOrBlank()) return null
+
+        val challengeResponse = app.get(
+            challengeUrl,
+            headers = mapOf(
+                "User-Agent" to BROWSER_UA,
+                "Referer" to realUrl
+            )
+        )
+        if (!challengeResponse.isSuccessful) return null
+
+        val challengeJson = challengeResponse.text
+
+        val algorithm = jsonString(challengeJson, "algorithm")
+        val cost = jsonInt(challengeJson, "cost")
+        val keyLength = jsonInt(challengeJson, "keyLength")
+        val keyPrefix = jsonString(challengeJson, "keyPrefix")
+        val nonce = jsonString(challengeJson, "nonce")
+        val salt = jsonString(challengeJson, "salt")
+
+        if (
+            algorithm.isNullOrBlank() ||
+            cost == null ||
+            keyLength == null ||
+            keyPrefix.isNullOrBlank() ||
+            nonce.isNullOrBlank() ||
+            salt.isNullOrBlank()
+        ) {
+            return null
+        }
+
+        val saltBytes = hexToBytes(salt)
+        val nonceBytes = hexToBytes(nonce)
+        val mac = Mac.getInstance("HmacSHA256")
+
+        var solvedCounter = -1
+        var solvedKey = ""
+        val powStart = System.nanoTime()
+
+        for (counter in 0 until 1_000_000) {
+            // Corte de seguridad para no colgar la carga de links.
+            if ((counter and 0xff) == 0 && System.nanoTime() - powStart > ALTCHA_TIMEOUT_NS) break
+
+            val counterBytes = byteArrayOf(
+                ((counter ushr 24) and 0xff).toByte(),
+                ((counter ushr 16) and 0xff).toByte(),
+                ((counter ushr 8) and 0xff).toByte(),
+                (counter and 0xff).toByte()
+            )
+
+            val derived = pbkdf2Sha256(mac, nonceBytes + counterBytes, saltBytes, cost, keyLength)
+            val hex = bytesToHex(derived)
+
+            if (hex.startsWith(keyPrefix)) {
+                solvedCounter = counter
+                solvedKey = hex
+                break
+            }
+        }
+
+        if (solvedCounter < 0) return null
+
+        val powElapsedMs = (System.nanoTime() - powStart) / 1_000_000.0
+
+        val altchaPayload =
+            """{"challenge":$challengeJson,"solution":{"counter":$solvedCounter,"derivedKey":"$solvedKey","time":$powElapsedMs}}"""
+
+        val payloadB64 = Base64.getEncoder()
+            .encodeToString(altchaPayload.toByteArray(Charsets.UTF_8))
+
+        val voeCookies = pageCookies.entries
+            .joinToString("; ") { (cookieName, cookieValue) -> "$cookieName=$cookieValue" }
+
+        // Antes el Origin estaba fijo a un dominio; ahora sale de la URL real.
+        val origin = "https://" + realUrl.substringAfter("://").substringBefore("/")
+
+        val postResponse = app.post(
+            realUrl,
+            headers = mapOf(
+                "User-Agent" to BROWSER_UA,
+                "Referer" to realUrl,
+                "Origin" to origin,
+                "Cookie" to voeCookies,
+                "Content-Type" to "application/x-www-form-urlencoded"
+            ),
+            data = mapOf(
+                "_token" to csrf,
+                "access" to "0",
+                "altcha" to payloadB64
+            )
+        )
+
+        if (!postResponse.isSuccessful) return null
+        return postResponse.text
+    }
+
+    private fun jsonString(json: String, key: String): String? =
+        Regex("\"" + key + "\"\\s*:\\s*\"([^\"]+)\"")
+            .find(json)?.groupValues?.getOrNull(1)
+
+    private fun jsonInt(json: String, key: String): Int? =
+        Regex("\"" + key + "\"\\s*:\\s*(\\d+)")
+            .find(json)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+    private fun decodeVoeConfig(encoded: String): String? {
         return try {
             var value = buildString {
                 for (char in encoded) {
                     append(
                         when (char) {
                             in 'A'..'Z' ->
-                                (
-                                    (char.code - 'A'.code + 13) % 26 +
-                                    'A'.code
-                                ).toChar()
+                                ((char.code - 'A'.code + 13) % 26 + 'A'.code).toChar()
 
                             in 'a'..'z' ->
-                                (
-                                    (char.code - 'a'.code + 13) % 26 +
-                                    'a'.code
-                                ).toChar()
+                                ((char.code - 'a'.code + 13) % 26 + 'a'.code).toChar()
 
                             else -> char
                         }
@@ -2180,15 +1122,7 @@ override suspend fun getMainPage(
                 }
             }
 
-            val separators = listOf(
-                "@$",
-                "^^",
-                "~@",
-                "%?",
-                "*~",
-                "!!",
-                "#&"
-            )
+            val separators = listOf("@$", "^^", "~@", "%?", "*~", "!!", "#&")
 
             for (separator in separators) {
                 value = value.replace(separator, "_")
@@ -2196,113 +1130,84 @@ override suspend fun getMainPage(
 
             value = value.replace("_", "")
 
-            var bytes = java.util.Base64
-                .getDecoder()
-                .decode(value)
+            var bytes = Base64.getDecoder().decode(value)
 
-            bytes = bytes.map {
-                (it.toInt() - 3).toByte()
-            }.toByteArray()
-
+            bytes = bytes.map { (it.toInt() - 3).toByte() }.toByteArray()
             bytes.reverse()
 
-            val decoded = java.util.Base64
-                .getDecoder()
-                .decode(
-                    String(bytes, Charsets.UTF_8)
-                )
+            val decoded = Base64.getDecoder().decode(String(bytes, Charsets.UTF_8))
 
             String(decoded, Charsets.UTF_8)
         } catch (e: Exception) {
-            println(
-                "SeriesDonghua: VOE decode ERROR -> ${e.message}"
-            )
+            debug { "VOE decode ERROR -> ${e.message}" }
             null
         }
     }
 
+    /**
+     * PBKDF2-HMAC-SHA256. El Mac se inicializa una sola vez por llamada (doFinal
+     * lo deja listo con la misma clave), en vez de re-inicializarlo en cada
+     * iteración: es lo que más pesaba al resolver el ALTCHA.
+     */
     private fun pbkdf2Sha256(
+        mac: Mac,
         password: ByteArray,
         salt: ByteArray,
         iterations: Int,
         keyLength: Int
     ): ByteArray {
-        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(password, "HmacSHA256"))
 
-        val blockCount =
-            (keyLength + mac.macLength - 1) / mac.macLength
-
-        val output =
-            ByteArray(blockCount * mac.macLength)
-
-        var outputOffset = 0
+        val hashLength = mac.macLength
+        val blockCount = (keyLength + hashLength - 1) / hashLength
+        val output = ByteArray(blockCount * hashLength)
 
         for (block in 1..blockCount) {
-            mac.init(
-                javax.crypto.spec.SecretKeySpec(
-                    password,
-                    "HmacSHA256"
+            mac.update(salt)
+            mac.update(
+                byteArrayOf(
+                    ((block ushr 24) and 0xff).toByte(),
+                    ((block ushr 16) and 0xff).toByte(),
+                    ((block ushr 8) and 0xff).toByte(),
+                    (block and 0xff).toByte()
                 )
             )
 
-            val blockSalt = salt + byteArrayOf(
-                ((block ushr 24) and 0xff).toByte(),
-                ((block ushr 16) and 0xff).toByte(),
-                ((block ushr 8) and 0xff).toByte(),
-                (block and 0xff).toByte()
-            )
-
-            var u = mac.doFinal(blockSalt)
+            var u = mac.doFinal()
             val t = u.copyOf()
 
             for (i in 1 until iterations) {
-                mac.init(
-                    javax.crypto.spec.SecretKeySpec(
-                        password,
-                        "HmacSHA256"
-                    )
-                )
-
                 u = mac.doFinal(u)
-
                 for (j in t.indices) {
-                    t[j] = (
-                        t[j].toInt() xor u[j].toInt()
-                    ).toByte()
+                    t[j] = (t[j].toInt() xor u[j].toInt()).toByte()
                 }
             }
 
-            System.arraycopy(
-                t,
-                0,
-                output,
-                outputOffset,
-                t.size
-            )
-
-            outputOffset += t.size
+            System.arraycopy(t, 0, output, (block - 1) * hashLength, hashLength)
         }
 
         return output.copyOf(keyLength)
     }
 
-    private fun hexToBytes(
-        value: String
-    ): ByteArray {
+    private fun bytesToHex(bytes: ByteArray): String {
+        val chars = CharArray(bytes.size * 2)
+        for (i in bytes.indices) {
+            val v = bytes[i].toInt() and 0xff
+            chars[i * 2] = HEX_CHARS[v ushr 4]
+            chars[i * 2 + 1] = HEX_CHARS[v and 0x0f]
+        }
+        return String(chars)
+    }
+
+    private fun hexToBytes(value: String): ByteArray {
         val clean = value.trim()
 
         if (clean.length % 2 != 0) {
-            throw IllegalArgumentException(
-                "Hex inválido: longitud impar"
-            )
+            throw IllegalArgumentException("Hex inválido: longitud impar")
         }
 
         return ByteArray(clean.length / 2) { index ->
-            clean.substring(
-                index * 2,
-                index * 2 + 2
-            ).toInt(16).toByte()
+            clean.substring(index * 2, index * 2 + 2).toInt(16).toByte()
         }
     }
-
 }
