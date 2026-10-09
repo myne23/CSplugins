@@ -1706,6 +1706,7 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
             val algorithm = Regex(
                 """"algorithm"\s*:\s*"([^"]+)""""
             ).find(challengeJson)?.groupValues?.getOrNull(1)
+                ?.replace("\\/", "/")
 
             val cost = Regex(
                 """"cost"\s*:\s*(\d+)"""
