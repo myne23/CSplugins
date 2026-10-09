@@ -19,6 +19,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
 
 
 class MegadedeProvider : MainAPI() {
@@ -823,7 +824,7 @@ class MegadedeProvider : MainAPI() {
                                             "LINKS Voe directo: $realUrl"
                                         )
 
-                                        val hlsUrl = withTimeoutOrNull(20000L) {
+                                        val hlsUrl = withTimeoutOrNull(45000L) {
                                             withContext(Dispatchers.Default) {
                                                 extractVoeLink(realUrl)
                                             }
@@ -1591,6 +1592,8 @@ class MegadedeProvider : MainAPI() {
             ?.takeIf { it.isNotBlank() }
     }
 
+private val voePowMutex = Mutex()
+
 private suspend fun extractVoeLink(embedUrl: String): String? {
     return try {
         Log.d(
@@ -1758,32 +1761,39 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
             val passwordBytes = ByteArray(nonceBytes.size + 4)
             System.arraycopy(nonceBytes, 0, passwordBytes, 0, nonceBytes.size)
 
-            val powStart = System.nanoTime()
+            var powElapsedMs = 0.0
 
-            for (counter in 0 until 1_000_000) {
-                if (counter % 100 == 0) {
-                    currentCoroutineContext().ensureActive()
+            voePowMutex.lock()
+            try {
+                val powStart = System.nanoTime()
+                for (counter in 0 until 1_000_000) {
+                    if (counter % 100 == 0) {
+                        currentCoroutineContext().ensureActive()
+                    }
+
+                    val offset = nonceBytes.size
+                    passwordBytes[offset] = (counter ushr 24).toByte()
+                    passwordBytes[offset + 1] = (counter ushr 16).toByte()
+                    passwordBytes[offset + 2] = (counter ushr 8).toByte()
+                    passwordBytes[offset + 3] = counter.toByte()
+
+                    val derived = pbkdf2Sha256(
+                        passwordBytes,
+                        saltBytes,
+                        cost,
+                        keyLength,
+                        powMac
+                    )
+
+                    if (matchesHexPrefix(derived, keyPrefix)) {
+                        solvedCounter = counter
+                        solvedKey = bytesToHex(derived)
+                        break
+                    }
                 }
-
-                val offset = nonceBytes.size
-                passwordBytes[offset] = (counter ushr 24).toByte()
-                passwordBytes[offset + 1] = (counter ushr 16).toByte()
-                passwordBytes[offset + 2] = (counter ushr 8).toByte()
-                passwordBytes[offset + 3] = counter.toByte()
-
-                val derived = pbkdf2Sha256(
-                    passwordBytes,
-                    saltBytes,
-                    cost,
-                    keyLength,
-                    powMac
-                )
-
-                if (matchesHexPrefix(derived, keyPrefix)) {
-                    solvedCounter = counter
-                    solvedKey = bytesToHex(derived)
-                    break
-                }
+                powElapsedMs = (System.nanoTime() - powStart) / 1_000_000.0
+            } finally {
+                voePowMutex.unlock()
             }
 
             if (solvedCounter < 0) {
@@ -1793,9 +1803,6 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
                 )
                 return null
             }
-
-            val powElapsedMs =
-                (System.nanoTime() - powStart) / 1_000_000.0
 
             Log.d(
                 "MegadedeProvider",
