@@ -1743,9 +1743,12 @@ private suspend fun extractVoeLink(embedUrl: String): String? {
             }
 
             if (!algorithm.equals("PBKDF2/SHA-256", ignoreCase = true)) {
-                    Log.d("MegadedeProvider", "Voe ALTCHA: algoritmo no compatible")
-                    return null
-                }
+                Log.d(
+                    "MegadedeProvider",
+                    "Voe ALTCHA: algoritmo recibido=${algorithm.take(80)}"
+                )
+                return null
+            }
 
             Log.d(
                 "MegadedeProvider",
