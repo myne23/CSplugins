@@ -70,6 +70,7 @@ private val AV_CARD = Regex(
 )
 private val AV_EMBEDS = Regex("""embeds:\{(.*?)\},downloads""", RegexOption.DOT_MATCHES_ALL)
 private val AV_SERVER = Regex("""server:"([^"]+)",url:"([^"]+)"""")
+private val AV_LANGUAGE_BLOCK = Regex("""(SUB|DUB):\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL)
 
 private val MEGA_EMBED = Regex("""mega\.nz/[^?#]*embed/([^?#]+)""", RegexOption.IGNORE_CASE)
 private val MEGA_FALLBACK =
@@ -781,36 +782,42 @@ class AnimoraTVProvider : MainAPI() {
             return
         }
 
-        val servers = AV_SERVER
+        val servers = AV_LANGUAGE_BLOCK
             .findAll(embeds)
-            .map { it.groupValues[1] to it.groupValues[2] }
+            .flatMap { languageMatch ->
+                val language = if (languageMatch.groupValues[1] == "SUB") "SUB" else "LAT"
+                AV_SERVER.findAll(languageMatch.groupValues[2]).map { match ->
+                    Triple(match.groupValues[1], match.groupValues[2], language)
+                }.toList()
+            }
+            .filter { (_, rawUrl, _) -> sink.claimEmbed(rawUrl) }
             .toList()
-            .filter { (_, rawUrl) -> sink.claimEmbed(rawUrl) }
 
         log("AnimeAV servidores únicos=${servers.size}")
 
         // UPNShare ya no bloquea el lanzamiento de los extractores: todo en paralelo.
         coroutineScope {
             servers
-                .map { (server, rawUrl) ->
+                .map { (server, rawUrl, language) ->
                     async {
-                        safely("AnimeAV $server") {
+                        val animeAvTag = "$TAG_ANIMEAV · $language"
+                      safely("AnimeAV $language $server") {
                             when (server.lowercase()) {
                                 "upnshare" ->
                                     withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
-                                        loadUpnShare(rawUrl, sink)
+                                        loadUpnShare(rawUrl, sink, animeAvTag)
                                     }
 
                                 "mp4upload", "pdrain", "voe", "byse" ->
                                     runExtractor(
                                         url = rawUrl,
                                         referers = listOf("$AV_BASE/"),
-                                        tag = TAG_ANIMEAV,
+                                        tag = animeAvTag,
                                         sink = sink,
                                         subtitleCallback = subtitleCallback
                                     )
 
-                                else -> log("AnimeAV: servidor ignorado=$server")
+                                else -> log("AnimeAV: servidor ignorado=$server idioma=$language")
                             }
                         }
                     }
@@ -891,7 +898,7 @@ class AnimoraTVProvider : MainAPI() {
         return String(cipher.doFinal(bytes), Charsets.UTF_8)
     }
 
-    private suspend fun loadUpnShare(rawUrl: String, sink: LinkSink) {
+    private suspend fun loadUpnShare(rawUrl: String, sink: LinkSink, tag: String) {
 
         val hash = rawUrl.substringAfterLast("#").substringAfter("/")
         if (hash.isBlank()) return
@@ -925,7 +932,7 @@ class AnimoraTVProvider : MainAPI() {
                 referer = "$UPN_BASE/"
                 quality = Qualities.Unknown.value
             },
-            null
+            tag
         )
     }
 }
