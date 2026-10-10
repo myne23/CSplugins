@@ -74,6 +74,12 @@ class AnimeOnlineProvider : MainAPI() {
 
         private const val PLAYER_TIMEOUT_MS = 25_000L
 
+        // Archivos del sitio con nombre de TMDB: /wp-content/uploads/2026/10/<27 chars>-300x170.jpg
+        private val RX_TMDB_UPLOAD = Regex(
+            """/wp-content/uploads/\d{4}/\d{2}/([A-Za-z0-9]{27})-\d+x\d+\.(jpe?g|png|webp)""",
+            RegexOption.IGNORE_CASE
+        )
+
         private const val HEADER_LATEST_ANIME = "ÚLTIMOS ANIMES AGREGADOS"
         private const val HEADER_LATEST_MOVIES = "ÚLTIMAS PELÍCULAS AGREGADAS"
 
@@ -112,7 +118,20 @@ class AnimeOnlineProvider : MainAPI() {
             ?: img.attr("src").trim().takeIf { it.isNotBlank() && !it.startsWith("data:") }
     }
 
-    private fun Element.cardPoster(): String? = getImageUrl()?.let { fixUrl(it) }
+    private fun Element.cardPoster(): String? = hotlinkSafe(getImageUrl()?.let { fixUrl(it) })
+
+    // El sitio devuelve 403 a las imágenes sin Referer y Kino no puede mandarlo.
+    // Solo fuera de CloudStream, esas imágenes se piden a TMDB (público).
+    // CloudStream (SEND_POSTER_HEADERS = true) no cambia en nada.
+    private fun hotlinkSafe(url: String?): String? {
+        if (url == null || SEND_POSTER_HEADERS) return url
+
+        val match = RX_TMDB_UPLOAD.find(url) ?: return url
+        val id = match.groupValues[1]
+        val ext = if (match.groupValues[2].equals("png", ignoreCase = true)) "png" else "jpg"
+
+        return "https://image.tmdb.org/t/p/w780/$id.$ext"
+    }
 
     // Miniatura propia de un capítulo (mismo orden de atributos que tenías).
     private fun episodeThumb(li: Element): String? {
