@@ -1171,7 +1171,7 @@ class DonghuaLifeProvider : MainAPI() {
 
         // Todas las fuentes se resuelven en paralelo; si una falla, las demás siguen.
         val extraUuids = if (sources.any { it.provider.equals("r2", true) || it.label.equals("r2", true) }) {
-            subtitleUuidCandidates(pageText, data)
+            fetchR2SubtitleIds(pageText, data, cookies)
         } else {
             emptyList()
         }
@@ -1200,52 +1200,59 @@ class DonghuaLifeProvider : MainAPI() {
     }
 
     /**
-     * UUIDs que podrían ser el de /api/subtitles/{uuid}: los campos del objeto del capítulo (el que
-     * tiene el slug de esta URL) y los que aparecen junto a la palabra "subtitle" en el payload.
+     * Consulta la lista oficial de pistas del episodio. Los UUID se obtienen de la API,
+     * no se adivinan buscando UUID aleatorios dentro del HTML.
      */
-    private fun subtitleUuidCandidates(pageText: String, pageUrl: String): List<String> {
+    private suspend fun fetchR2SubtitleIds(
+        pageText: String,
+        pageUrl: String,
+        cookies: String
+    ): List<String> {
         val text = unescapePayload(pageText)
-        val slug = pageUrl.substringBefore("?").trimEnd('/').substringAfterLast('/')
-        val out = LinkedHashSet<String>()
-
-        var from = 0
-        while (out.size < 8) {
-            val index = text.indexOf("\"slug\":\"$slug\"", from)
-            if (index < 0) break
-            val json = enclosingObject(text, index)?.let { attempt0 { JSONObject(it) } }
-            if (json != null) {
-                val keys = json.keys()
-                while (keys.hasNext()) {
-                    val value = json.opt(keys.next())
-                    if (value is String && UUID_RE.matches(value)) out.add(value)
-                }
-            }
-            from = index + 1
+        val episodeIdPattern = Regex(
+            "\"episodeId\"\\s*:\\s*\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""
+        )
+        val episodeId = episodeIdPattern.find(text)?.groupValues?.getOrNull(1)
+        if (episodeId.isNullOrBlank()) {
+            debug { "R2 subtítulos: no se encontró episodeId en el HTML" }
+            return emptyList()
         }
 
-        for (match in SUB_WORD.findAll(text).take(20)) {
-            val window = text.substring(
-                maxOf(0, match.range.first - 200),
-                minOf(text.length, match.range.last + 300)
+        val headers = mutableMapOf(
+            "User-Agent" to BROWSER_UA,
+            "Referer" to pageUrl,
+            "Accept" to "application/json"
+        )
+        if (cookies.isNotBlank()) headers["Cookie"] = cookies
+
+        val response = attempt {
+            app.get(
+                "$mainUrl/api/subtitles?episodeId=$episodeId",
+                headers = headers,
+                timeout = HLS_TIMEOUT_S
             )
-            UUID_FIND.findAll(window).forEach { out.add(it.value) }
-            if (out.size >= 12) break
+        } ?: return emptyList()
+
+        if (response.code !in 200..299) {
+            debug { "R2 subtítulos episodio=$episodeId -> HTTP ${response.code}" }
+            return emptyList()
         }
 
-        // Último recurso: cualquier uuid del payload (cada intento es un GET chico que da 404).
-        UUID_FIND.findAll(text).forEach { if (out.size < 80) out.add(it.value) }
-        debug {
-            "payload ${text.length} chars, contiene 'subtitle'=${text.contains("subtitle", ignoreCase = true)}, " +
-                "uuids=${out.size}, slug=$slug"
+        val json = attempt0 { JSONObject(response.text) } ?: return emptyList()
+        val tracks = json.optJSONArray("subtitles") ?: return emptyList()
+        val ids = LinkedHashSet<String>()
+
+        for (i in 0 until tracks.length()) {
+            val track = tracks.optJSONObject(i) ?: continue
+            val id = track.optString("id").trim()
+            if (UUID_RE.matches(id)) ids.add(id)
         }
 
-        return out.toList()
+        debug { "R2 subtítulos episodio=$episodeId: pistas=${ids.size} ids=$ids" }
+        return ids.toList()
     }
 
-    /**
-     * /api/subtitles/{uuid} devuelve JSON con el subtítulo dentro ("content"), no un archivo.
-     * Para dárselo al reproductor como URL se sirve desde un mini servidor HTTP en 127.0.0.1.
-     */
+    /** Servidor local para entregar subtítulos al reproductor. */
     private object LocalTextServer {
         private val files = ConcurrentHashMap<String, ByteArray>()
 
