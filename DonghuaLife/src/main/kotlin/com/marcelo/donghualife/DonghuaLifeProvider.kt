@@ -1938,14 +1938,19 @@ class DonghuaLifeProvider : MainAPI() {
             ?: DM_PATH_ID.find(embedUrl)?.groupValues?.getOrNull(1)
 
     private suspend fun resolveDailymotion(videoId: String, display: String): ExtractorLink? {
+        val dmReferer = "https://geo.dailymotion.com/"
+        val dmHeaders = mapOf(
+            "Accept" to "*/*",
+            "Origin" to "https://geo.dailymotion.com",
+            "Referer" to dmReferer,
+            "X-Request-Origin" to "https://geo.dailymotion.com",
+            "User-Agent" to BROWSER_UA
+        )
+
         val response = attempt {
             app.get(
                 "https://geo.dailymotion.com/videos/$videoId",
-                headers = mapOf(
-                    "Accept" to "application/json",
-                    "Referer" to "https://geo.dailymotion.com/",
-                    "User-Agent" to BROWSER_UA
-                ),
+                headers = dmHeaders + ("Accept" to "application/json"),
                 timeout = SOURCE_TIMEOUT_S
             )
         } ?: return null
@@ -1954,14 +1959,17 @@ class DonghuaLifeProvider : MainAPI() {
             JSONObject(response.text).getJSONObject("stream").optString("url")
         }?.takeIf { it.isNotBlank() } ?: return null
 
+        debug { "Dailymotion: manifiesto encontrado para $videoId" }
+
         return newExtractorLink(
             source = name,
             name = "$name · $display",
             url = streamUrl,
             type = ExtractorLinkType.M3U8
         ) {
-            this.referer = "https://geo.dailymotion.com/"
+            this.referer = dmReferer
             this.quality = Qualities.Unknown.value
+            this.headers = dmHeaders
         }
     }
 
