@@ -126,7 +126,10 @@ class AnimeOnlineProvider : MainAPI() {
     private fun hotlinkSafe(url: String?): String? {
         if (url == null || SEND_POSTER_HEADERS) return url
 
-        val match = RX_TMDB_UPLOAD.find(url) ?: return url
+        val match = RX_TMDB_UPLOAD.find(url) ?: run {
+            if (posterLogCount.incrementAndGet() <= 40) Log.i(TAG, "sin-tmdb: $url")
+            return url
+        }
         val id = match.groupValues[1]
         val ext = if (match.groupValues[2].equals("png", ignoreCase = true)) "png" else "jpg"
 
@@ -176,7 +179,6 @@ class AnimeOnlineProvider : MainAPI() {
         poster: String?,
         isMovie: Boolean
     ): SearchResponse {
-        if (!SEND_POSTER_HEADERS && posterLogCount.incrementAndGet() <= 15) Log.i(TAG, "card: $poster")
         return if (isMovie) {
             newMovieSearchResponse(title, url, TvType.Movie) {
                 this.posterUrl = poster
