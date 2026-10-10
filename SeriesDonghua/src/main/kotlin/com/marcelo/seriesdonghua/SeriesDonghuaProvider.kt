@@ -755,10 +755,12 @@ class SeriesDonghuaProvider : MainAPI() {
             }
 
             else -> {
+                // Los subtítulos de estos servidores se descartan a propósito: los únicos que
+                // se ofrecen son los del Dark Server de DonghuaWorld (ver loadDarkServerLink).
                 loadExtractor(
                     url = embedUrl,
                     referer = pageUrl,
-                    subtitleCallback = subtitleCallback,
+                    subtitleCallback = { },
                     callback = { link ->
                         val keep = when {
                             embedLower.contains("rumble.com") ->
@@ -942,7 +944,9 @@ class SeriesDonghuaProvider : MainAPI() {
         if (tracksStart >= 0) {
             val tracksEnd = html.indexOf("]", tracksStart)
             if (tracksEnd > tracksStart) {
-                TRACK.findAll(html.substring(tracksStart, tracksEnd + 1)).forEach { match ->
+                TRACK.findAll(html.substring(tracksStart, tracksEnd + 1)).distinctBy { match ->
+                    match.groupValues[1]
+                }.forEach { match ->
                     subtitleCallback(
                         SubtitleFile(
                             lang = match.groupValues[2],
