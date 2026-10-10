@@ -76,7 +76,7 @@ class AnimeOnlineProvider : MainAPI() {
 
         // Archivos del sitio con nombre de TMDB: /wp-content/uploads/2026/10/<27 chars>-300x170.jpg
         private val RX_TMDB_UPLOAD = Regex(
-            """/wp-content/uploads/\d{4}/\d{2}/([A-Za-z0-9]{27})-\d+x\d+\.(jpe?g|png|webp)""",
+            """/wp-content/uploads/\d{4}/\d{2}/([A-Za-z0-9]{25,28})(?:-\d+x\d+)?\.(jpe?g|png|webp)""",
             RegexOption.IGNORE_CASE
         )
 
@@ -94,7 +94,7 @@ class AnimeOnlineProvider : MainAPI() {
     }
 
     private val cloudflareKiller by lazy { CloudflareKiller() }
-    private val posterLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val posterLogCount = java.util.concurrent.atomic.AtomicInteger(0)
 
     private val posterHeaders = mapOf(
         "Referer" to "$mainUrl/",
@@ -176,7 +176,7 @@ class AnimeOnlineProvider : MainAPI() {
         poster: String?,
         isMovie: Boolean
     ): SearchResponse {
-        if (!posterLogged.getAndSet(true)) Log.i(TAG, "primer poster del catálogo: $poster")
+        if (!SEND_POSTER_HEADERS && posterLogCount.incrementAndGet() <= 15) Log.i(TAG, "card: $poster")
         return if (isMovie) {
             newMovieSearchResponse(title, url, TvType.Movie) {
                 this.posterUrl = poster
