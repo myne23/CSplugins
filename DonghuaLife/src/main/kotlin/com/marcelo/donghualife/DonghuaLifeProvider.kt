@@ -41,17 +41,15 @@ class DonghuaLifeProvider : MainAPI() {
         "home:featured" to "Destacado",
         "home:latest" to "Últimos episodios",
         "home:trending" to "Tendencias",
-        "home:recommended" to "Recomendados",
         "$mainUrl/series" to "Series populares",
-        "$mainUrl/series?sort=latest" to "Series recientes",
         "$mainUrl/series?status=finalizadas" to "Series finalizadas",
         "$mainUrl/peliculas" to "Películas",
         "$mainUrl/series?sort=az" to "Series A-Z"
     )
 
     private companion object {
-        // Poné DEBUG = true solo cuando quieras ver logs en logcat.
-        const val DEBUG = false
+        // DEBUG = true: logs en logcat con el tag "DonghuaLife" (ponelo en false para la versión final).
+        const val DEBUG = true
 
         const val BROWSER_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -121,6 +119,8 @@ class DonghuaLifeProvider : MainAPI() {
         const val BACKGROUND_CONCURRENCY = 3
         const val INDEX_PARTIAL_TTL_MS = 2L * 60_000L
         const val INDEX_FILE_NAME = "donghualife_index_v1.json"
+        val UUID_FIND = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+        val SUB_WORD = Regex("subtitle|subs|subtitulo", RegexOption.IGNORE_CASE)
         val UUID_RE = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
         val ODYSEE_CLAIM_ID = Regex("^[0-9a-fA-F]{6,40}$")
         val OK_HLS_URL = Regex("\"hlsManifestUrl\":\"([^\"]+)\"", RegexOption.IGNORE_CASE)
@@ -164,7 +164,7 @@ class DonghuaLifeProvider : MainAPI() {
     // ───────────────────────── Utilidades ─────────────────────────
 
     private inline fun debug(message: () -> String) {
-        if (DEBUG) println("DonghuaLife: ${message()}")
+        if (DEBUG) android.util.Log.d("DonghuaLife", message())
     }
 
     /** Ejecuta el bloque y devuelve null si falla (sin tragarse la cancelación). */
@@ -1146,6 +1146,7 @@ class DonghuaLifeProvider : MainAPI() {
 
         val pageText = page.text
         val sources = parseSources(pageText)
+        debug { "loadLinks data=$data fuentes=${sources.map { "${it.label}/${it.provider}/ids=${it.uuids}" }}" }
         debug { "fuentes encontradas: ${sources.map { "${it.label}/${it.provider}" }}" }
 
         // Subtítulos que vengan en el payload de la página (valen para todas las fuentes).
@@ -1157,9 +1158,15 @@ class DonghuaLifeProvider : MainAPI() {
             .joinToString("; ") { (cookieName, cookieValue) -> "$cookieName=$cookieValue" }
 
         // Todas las fuentes se resuelven en paralelo; si una falla, las demás siguen.
+        val extraUuids = if (sources.any { it.provider.equals("r2", true) || it.label.equals("r2", true) }) {
+            subtitleUuidCandidates(pageText, data)
+        } else {
+            emptyList()
+        }
+
         sources.amap { source ->
             guarded(source.label) {
-                resolveSource(source, data, cookies, subtitleCallback, sink)
+                resolveSource(source, data, cookies, subtitleCallback, sink, extraUuids)
             }
         }
 
@@ -1178,6 +1185,42 @@ class DonghuaLifeProvider : MainAPI() {
                 subtitleCallback(newSubtitleFile(label, subtitleUrl))
             }
         }
+    }
+
+    /**
+     * UUIDs que podrían ser el de /api/subtitles/{uuid}: los campos del objeto del capítulo (el que
+     * tiene el slug de esta URL) y los que aparecen junto a la palabra "subtitle" en el payload.
+     */
+    private fun subtitleUuidCandidates(pageText: String, pageUrl: String): List<String> {
+        val text = unescapePayload(pageText)
+        val slug = pageUrl.substringBefore("?").trimEnd('/').substringAfterLast('/')
+        val out = LinkedHashSet<String>()
+
+        var from = 0
+        while (out.size < 8) {
+            val index = text.indexOf("\"slug\":\"$slug\"", from)
+            if (index < 0) break
+            val json = enclosingObject(text, index)?.let { attempt0 { JSONObject(it) } }
+            if (json != null) {
+                val keys = json.keys()
+                while (keys.hasNext()) {
+                    val value = json.opt(keys.next())
+                    if (value is String && UUID_RE.matches(value)) out.add(value)
+                }
+            }
+            from = index + 1
+        }
+
+        for (match in SUB_WORD.findAll(text).take(20)) {
+            val window = text.substring(
+                maxOf(0, match.range.first - 200),
+                minOf(text.length, match.range.last + 300)
+            )
+            UUID_FIND.findAll(window).forEach { out.add(it.value) }
+            if (out.size >= 12) break
+        }
+
+        return out.toList()
     }
 
     private fun looksLikeSubtitleText(body: String): Boolean {
@@ -1298,7 +1341,8 @@ class DonghuaLifeProvider : MainAPI() {
         pageUrl: String,
         cookies: String,
         subtitleCallback: (SubtitleFile) -> Unit,
-        sink: LinkSink
+        sink: LinkSink,
+        extraUuids: List<String> = emptyList()
     ) {
         val body = postSource(source.token, pageUrl, cookies, source.label) ?: return
 
@@ -1352,7 +1396,9 @@ class DonghuaLifeProvider : MainAPI() {
         var finalSubtitles = resolvedSubtitles
         if (isR2 && finalSubtitles.isEmpty()) {
             // R2 (video directo) pide sus subtítulos a /api/subtitles/{uuid}.
-            for (candidate in source.uuids.take(3)) {
+            val candidates = (source.uuids + extraUuids).distinct().take(14)
+            debug { "R2 ${source.label}: candidatos de subtítulos=$candidates" }
+            for (candidate in candidates) {
                 val fetched = fetchSubtitlesById(candidate, pageUrl, cookies, "Español")
                 if (fetched.isNotEmpty()) {
                     finalSubtitles = fetched
@@ -1583,6 +1629,7 @@ class DonghuaLifeProvider : MainAPI() {
         val provider = source.provider.lowercase()
         val display = displayName(source.label)
         val isOwnVideo = provider == "r2" || host.endsWith("donghualife.com")
+        debug { "emitUrl [${source.label}/${source.provider}] host=$host url=$url" }
 
         when {
             lower.contains("dailymotion.com") || lower.contains("dai.ly") || provider == "dailymotion" -> {
@@ -1599,8 +1646,8 @@ class DonghuaLifeProvider : MainAPI() {
             }
 
             host.contains("odysee.com") || host.contains("lbry.tv") || provider == "odysee" -> {
-                val link = resolveOdysee(url, display)
-                if (link != null) sink.emit(link) else extractWithExtractors(url, pageUrl, sink)
+                val links = resolveOdyseeLinks(url, display)
+                if (links.isNotEmpty()) links.forEach { sink.emit(it) } else extractWithExtractors(url, pageUrl, sink)
             }
 
             host.contains("ok.ru") || host.contains("odnoklassniki") || provider == "okru" || provider == "ok.ru" -> {
@@ -1901,41 +1948,58 @@ class DonghuaLifeProvider : MainAPI() {
         return null
     }
 
-    private suspend fun resolveOdysee(embedUrl: String, display: String): ExtractorLink? {
-        var streamUrl: String? = odyseeStreamUrl(embedUrl)
+    /**
+     * Mismo método que usa SeriesDonghua (y funciona allá): contentUrl de la página del embed con
+     * referer = embed y sin headers extra. Si además se logra armar el stream directo por la API de
+     * Odysee y es distinto, se ofrece como segundo link "(directo)".
+     */
+    private suspend fun resolveOdyseeLinks(embedUrl: String, display: String): List<ExtractorLink> {
+        val links = ArrayList<ExtractorLink>()
 
-        if (streamUrl == null) {
-            val page = fetchEmbed(embedUrl)
-            val contentUrl = page?.let {
-                ODYSEE_CONTENT_URL.find(it)?.groupValues?.getOrNull(1)?.trim()?.takeIf { v -> v.isNotBlank() }
+        val page = fetchEmbed(embedUrl)
+        val contentUrl = page?.let {
+            ODYSEE_CONTENT_URL.find(it)?.groupValues?.getOrNull(1)?.trim()?.takeIf { v -> v.isNotBlank() }
+        }
+        debug { "odysee embed=$embedUrl página=${page?.length ?: "sin respuesta"} contentUrl=$contentUrl" }
+
+        if (contentUrl != null) {
+            val type = if (contentUrl.contains(".m3u8", ignoreCase = true)) {
+                ExtractorLinkType.M3U8
+            } else {
+                ExtractorLinkType.VIDEO
             }
-            streamUrl = when {
-                contentUrl == null -> null
-                contentUrl.contains("/\$/download/") -> odyseeStreamUrl(contentUrl) ?: contentUrl
-                else -> contentUrl
+            links += newExtractorLink(
+                source = name,
+                name = "$name · $display",
+                url = contentUrl,
+                type = type
+            ) {
+                this.referer = embedUrl
+                this.quality = Qualities.Unknown.value
             }
         }
 
-        val finalUrl = streamUrl ?: return null
-        val type = if (finalUrl.contains(".m3u8", ignoreCase = true)) {
-            ExtractorLinkType.M3U8
-        } else {
-            ExtractorLinkType.VIDEO
+        val direct = odyseeStreamUrl(embedUrl)
+            ?: contentUrl?.takeIf { it.contains("/\$/download/") }?.let { odyseeStreamUrl(it) }
+        debug { "odysee directo=$direct" }
+
+        if (direct != null && direct != contentUrl) {
+            links += newExtractorLink(
+                source = name,
+                name = "$name · $display (directo)",
+                url = direct,
+                type = ExtractorLinkType.VIDEO
+            ) {
+                this.referer = "$ODYSEE_ORIGIN/"
+                this.quality = Qualities.Unknown.value
+                this.headers = mapOf(
+                    "Origin" to ODYSEE_ORIGIN,
+                    "User-Agent" to BROWSER_UA
+                )
+            }
         }
 
-        return newExtractorLink(
-            source = name,
-            name = "$name · $display",
-            url = finalUrl,
-            type = type
-        ) {
-            this.referer = "$ODYSEE_ORIGIN/"
-            this.quality = Qualities.Unknown.value
-            this.headers = mapOf(
-                "Origin" to ODYSEE_ORIGIN,
-                "User-Agent" to BROWSER_UA
-            )
-        }
+        return links
     }
 
     private suspend fun resolveOkRu(embedUrl: String, display: String): ExtractorLink? {
