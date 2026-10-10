@@ -2071,77 +2071,49 @@ class DonghuaLifeProvider : MainAPI() {
      * restringido necesita esos mismos parámetros, así que se ofrece la URL firmada y la lisa.
      */
     private suspend fun resolveOdyseeLinks(embedUrl: String, display: String): List<ExtractorLink> {
-        val links = ArrayList<ExtractorLink>()
-
-        val page = fetchEmbed(embedUrl)
-        val contentUrl = page?.let {
-            ODYSEE_CONTENT_URL.find(it)?.groupValues?.getOrNull(1)?.trim()?.takeIf { v -> v.isNotBlank() }
+        val page = fetchEmbed(embedUrl) ?: run {
+            debug { "Odysee: no se pudo obtener el embed" }
+            return emptyList()
         }
-        val direct = odyseeStreamUrl(embedUrl)
-            ?: contentUrl?.takeIf { it.contains("/\$/download/") }?.let { odyseeStreamUrl(it) }
-        debug { "odysee embed página=${page?.length ?: "sin respuesta"} contentUrl=$contentUrl directo=$direct" }
 
-        val signature = SIG_PARAM.find(embedUrl)?.groupValues?.getOrNull(1)
-        val signatureTs = SIG_TS_PARAM.find(embedUrl)?.groupValues?.getOrNull(1)
-        val hasSignature = signature != null && signatureTs != null
+        val normalized = page
+            .replace("&quot;", "\"")
+            .replace("&amp;", "&")
+            .replace("\\u0026", "&")
+            .replace("\\u003D", "=")
+            .replace("\\/", "/")
+            .replace("\\\\", "\\")
 
-        fun signed(base: String): String =
-            base + (if (base.contains("?")) "&" else "?") + "signature=$signature&signature_ts=$signatureTs"
+        val contentUrl = ODYSEE_CONTENT_URL.find(normalized)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.takeIf { it.startsWith("http", ignoreCase = true) }
 
-        suspend fun add(label: String, mediaUrl: String, viaEmbedReferer: Boolean) {
-            val type = if (mediaUrl.contains(".m3u8", ignoreCase = true)) {
-                ExtractorLinkType.M3U8
-            } else {
-                ExtractorLinkType.VIDEO
-            }
-            val link = newExtractorLink(
+        if (contentUrl == null) {
+            debug { "Odysee: no se encontró contentUrl en el embed (${page.length} caracteres)" }
+            return emptyList()
+        }
+
+        val type = if (contentUrl.contains(".m3u8", ignoreCase = true)) {
+            ExtractorLinkType.M3U8
+        } else {
+            ExtractorLinkType.VIDEO
+        }
+
+        debug { "Odysee: contentUrl encontrado, tipo=$type, url=$contentUrl" }
+
+        return listOf(
+            newExtractorLink(
                 source = name,
-                name = label,
-                url = mediaUrl,
+                name = "$name · $display",
+                url = contentUrl,
                 type = type
             ) {
-                this.quality = Qualities.Unknown.value
-                if (viaEmbedReferer) {
-                    this.referer = embedUrl
-                } else {
-                    this.referer = "$ODYSEE_ORIGIN/"
-                    this.headers = mapOf("Origin" to ODYSEE_ORIGIN, "User-Agent" to BROWSER_UA)
-                }
+                referer = embedUrl
+                quality = Qualities.Unknown.value
             }
-            links += link
-            debug { "odysee link [$label] $mediaUrl" }
-        }
-
-        val candidates = listOfNotNull(contentUrl, direct).distinct()
-        for (candidate in candidates) {
-            if (hasSignature && !candidate.contains("signature=")) {
-                add("$name · $display", signed(candidate), viaEmbedReferer = true)
-                add("$name · $display (sin firma)", candidate, viaEmbedReferer = true)
-            } else {
-                add("$name · $display", candidate, viaEmbedReferer = true)
-            }
-        }
-        // Variante con Referer/Origin de odysee.com, por si el CDN valida el origen.
-        candidates.firstOrNull()?.let { first ->
-            val url = if (hasSignature && !first.contains("signature=")) signed(first) else first
-            add("$name · $display (odysee.com)", url, viaEmbedReferer = false)
-        }
-
-        // Diagnóstico: código HTTP de cada variante (HEAD, no descarga el video).
-        if (DEBUG) {
-            for (link in links) {
-                val code = attempt {
-                    app.head(
-                        link.url,
-                        headers = mapOf("User-Agent" to BROWSER_UA, "Referer" to (link.referer.ifBlank { embedUrl })),
-                        timeout = HLS_TIMEOUT_S
-                    ).code
-                }
-                debug { "odysee HEAD ${link.name} -> $code" }
-            }
-        }
-
-        return links
+        )
     }
 
     private suspend fun resolveOkRu(embedUrl: String, display: String): ExtractorLink? {
