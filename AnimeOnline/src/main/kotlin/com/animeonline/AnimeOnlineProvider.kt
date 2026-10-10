@@ -1,16 +1,21 @@
 @file:Suppress("DEPRECATION")
 package com.animeonline
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.io.ByteArrayOutputStream
 import java.lang.reflect.Method
 import java.net.URLEncoder
 import java.util.Optional
@@ -73,6 +78,11 @@ class AnimeOnlineProvider : MainAPI() {
         }
 
         private const val PLAYER_TIMEOUT_MS = 25_000L
+
+        // Solo fuera de CloudStream: baja las imágenes que el sitio bloquea sin Referer
+        // y las entrega incrustadas (data:image/jpeg;base64). Poné false para apagarlo.
+        private val EMBED_BLOCKED_POSTERS = true
+        private const val EMBED_BUDGET = 700_000
 
         // Archivos del sitio con nombre de TMDB: /wp-content/uploads/2026/10/<27 chars>-300x170.jpg
         private val RX_TMDB_UPLOAD = Regex(
@@ -172,6 +182,86 @@ class AnimeOnlineProvider : MainAPI() {
     //  CARDS
     // ======================================================================
 
+    private val embeddedPosterCache = ConcurrentHashMap<String, String>()
+
+    private suspend fun embedBlockedPosters(items: List<SearchResponse>) {
+        if (!EMBED_BLOCKED_POSTERS || SEND_POSTER_HEADERS) return
+
+        val budget = AtomicInteger(EMBED_BUDGET)
+        val embedded = AtomicInteger(0)
+        val prefix = "$mainUrl/wp-content/uploads/"
+
+        coroutineScope {
+            items
+                .filter { it.posterUrl?.startsWith(prefix) == true }
+                .map { item ->
+                    async {
+                        val url = item.posterUrl ?: return@async
+
+                        val data = embeddedPosterCache[url]
+                            ?: withTimeoutOrNull(10_000L) {
+                                withContext(Dispatchers.IO) { downloadThumb(url) }
+                            }
+                            ?: return@async
+
+                        if (embeddedPosterCache.size < 300) embeddedPosterCache[url] = data
+
+                        if (budget.addAndGet(-data.length) >= 0) {
+                            item.posterUrl = data
+                            embedded.incrementAndGet()
+                        }
+                    }
+                }
+                .awaitAll()
+        }
+
+        Log.i(TAG, "embed: ${embedded.get()} posters incrustados, ${(EMBED_BUDGET - budget.get()) / 1024}KB")
+    }
+
+    // Baja la imagen con el Referer del sitio, la reduce (~320px, JPEG q75) y la
+    // devuelve como data URI. Si algo falla devuelve null y la tarjeta queda igual.
+    private fun downloadThumb(url: String): String? {
+        var connection: java.net.HttpURLConnection? = null
+
+        return try {
+            val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+            connection = conn
+            conn.connectTimeout = 6_000
+            conn.readTimeout = 8_000
+            conn.setRequestProperty("Referer", "$mainUrl/")
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+
+            if (conn.responseCode != 200) return null
+
+            val bytes = conn.inputStream.use { it.readBytes() }
+
+            if (bytes.isEmpty() || bytes.size > 600_000) return null
+
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 320) sample *= 2
+
+            val bitmap = BitmapFactory.decodeByteArray(
+                bytes, 0, bytes.size,
+                BitmapFactory.Options().apply { inSampleSize = sample }
+            ) ?: return null
+
+            val out = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 75, out)
+            bitmap.recycle()
+
+            "data:image/jpeg;base64," +
+                android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+        } catch (e: Exception) {
+            dbg { "EMBED ERROR $url -> ${e.message}" }
+            null
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
     private fun buildCard(
         title: String,
         url: String,
@@ -267,6 +357,8 @@ class AnimeOnlineProvider : MainAPI() {
 
         val items = document.select("article.item").mapNotNull { parseGenericCard(it) }
 
+        embedBlockedPosters(items)
+
         dbg { "HOME ${request.name}: page=$page url=$url parsed=${items.size}" }
 
         return newHomePageResponse(
@@ -330,6 +422,8 @@ class AnimeOnlineProvider : MainAPI() {
 
         dbg { "HOME Inicio totalSections=${sections.size}" }
 
+        embedBlockedPosters(sections.flatMap { it.list })
+
         return newHomePageResponse(sections, hasNext = false)
     }
 
@@ -355,7 +449,7 @@ class AnimeOnlineProvider : MainAPI() {
                 interceptor = cloudflareKiller
             ).document
 
-            document.select(".result-item").mapNotNull { item ->
+            val results = document.select(".result-item").mapNotNull { item ->
                 val link = item.selectFirst("a[href]")?.attr("href") ?: return@mapNotNull null
 
                 val title = item.selectFirst("h3")?.text()?.trim()?.takeIf { it.isNotBlank() }
@@ -366,6 +460,9 @@ class AnimeOnlineProvider : MainAPI() {
 
                 buildCard(title, fixedLink, item.cardPoster(), fixedLink.contains("/pelicula/"))
             }
+
+            embedBlockedPosters(results)
+            results
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             Log.e(TAG, "SEARCH ERROR", e)
