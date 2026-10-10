@@ -39,8 +39,8 @@ class SeriesDonghuaProvider : MainAPI() {
 
         const val DW_URL = "https://donghuaworld.com"
 
-        // Series ordenadas por última actualización (es el "View All" de Latest Release de la web).
-        const val DW_NEW_URL = "$DW_URL/anime/?status=&type=&order=update"
+        // Home de DonghuaWorld: de ahí sale la sección "Latest Release" (últimos capítulos).
+        const val DW_NEW_URL = "$DW_URL/"
 
         // Tiempos máximos (segundos) para DonghuaWorld: si la web no responde, se la deja de lado.
         const val DW_FAST_TIMEOUT_S = 4L
@@ -62,6 +62,8 @@ class SeriesDonghuaProvider : MainAPI() {
         val POSTER_ATTRS = listOf("src", "data-src", "data-lazy-src", "data-original", "data-url")
 
         val NON_ALNUM = Regex("[^a-z0-9]+")
+        val EPISODE_IN_TITLE = Regex("""\s+Episode\s+\d""", RegexOption.IGNORE_CASE)
+        val DW_SERIES_URL = Regex("""^https?://[^/?#]+/anime/[^/?#]+/?$""")
         val EPISODE_SLUG = Regex("/([^/]+)-episodio-(\\d+)/?$")
         val IFRAME_SRC = Regex("""src=["']([^"']+)["']""")
         val TRACK = Regex("""\{"file":"([^"]+)","label":"([^"]+)"\}""")
@@ -225,11 +227,16 @@ class SeriesDonghuaProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = if (page == 1) {
-            request.data
-        } else {
-            val separator = if (request.data.contains("?")) "&" else "?"
-            "${request.data}${separator}page=$page"
+        val isDwLatest = request.data == DW_NEW_URL
+
+        val url = when {
+            page == 1 -> request.data
+            // La home de DonghuaWorld pagina como /page/2/, no con ?page=2.
+            isDwLatest -> "$DW_URL/page/$page/"
+            else -> {
+                val separator = if (request.data.contains("?")) "&" else "?"
+                "${request.data}${separator}page=$page"
+            }
         }
 
         val isDonghuaWorld = request.data.startsWith(DW_URL)
@@ -239,7 +246,7 @@ class SeriesDonghuaProvider : MainAPI() {
         val home: List<SearchResponse> = attempt {
             if (isDonghuaWorld) {
                 val document = app.get(url, timeout = DW_FAST_TIMEOUT_S).document
-                parseDonghuaWorldHome(document)
+                if (isDwLatest) parseDonghuaWorldLatest(document) else parseDonghuaWorldHome(document)
             } else {
                 val document = app.get(url).document
                 if (request.data.contains("/episodios/")) {
@@ -279,6 +286,43 @@ class SeriesDonghuaProvider : MainAPI() {
                 this.posterUrl = fixUrlNull(poster)
             }
         }.distinctBy { it.url }
+
+    /**
+     * "Latest Release" de la home de DonghuaWorld: cada ítem es un capítulo. Se muestra con el
+     * nombre de la serie y, al abrirlo, load() resuelve la serie para que elijas el capítulo.
+     */
+    private fun parseDonghuaWorldLatest(document: Document): List<SearchResponse> {
+        val container = document.select(".listupd").firstOrNull { it.selectFirst("article") != null }
+        val articles = container?.select("article") ?: document.select("article.bs")
+
+        return articles.mapNotNull { article ->
+            val link = article.selectFirst("a[href][title]")
+                ?: article.selectFirst("a[href]")
+                ?: return@mapNotNull null
+
+            val href = link.attr("href").trim()
+            if (href.isBlank() || href.contains("/anime/") || !href.contains("-episode-")) {
+                return@mapNotNull null
+            }
+
+            val rawTitle = link.attr("title").trim()
+                .ifBlank { article.selectFirst(".tt")?.ownText()?.trim().orEmpty() }
+
+            // "Battle Through the Heavens Season 5 Episode 214 (4K) ..." -> nombre de la serie.
+            val title = EPISODE_IN_TITLE.find(rawTitle)
+                ?.let { rawTitle.substring(0, it.range.first) }
+                ?.trim()
+                ?: rawTitle
+
+            if (title.isBlank() || isMovieTitle(normalize(title))) return@mapNotNull null
+
+            val poster = article.selectFirst("img").imageUrl()
+
+            newAnimeSearchResponse(title, fixUrl(href), TvType.Anime) {
+                this.posterUrl = fixUrlNull(poster)
+            }
+        }.distinctBy { it.url }
+    }
 
     private fun parseNewEpisodes(document: Document): List<SearchResponse> =
         document.select("article.donghua-card").mapNotNull { card ->
@@ -391,6 +435,12 @@ class SeriesDonghuaProvider : MainAPI() {
             return loadDonghuaWorldSeries(url)
         }
 
+        // Capítulo suelto de "Nuevos Episodios Donghuaworld": se abre la serie completa.
+        if (url.contains("donghuaworld.com/")) {
+            val seriesUrl = resolveDonghuaWorldSeriesUrl(url) ?: return null
+            return loadDonghuaWorldSeries(seriesUrl)
+        }
+
         val document = attempt { app.get(url).document } ?: return null
 
         val title = document.selectFirst("h1.hero-title")?.text()?.trim()
@@ -430,6 +480,57 @@ class SeriesDonghuaProvider : MainAPI() {
             this.tags = tags
             this.addEpisodes(DubStatus.Subbed, episodes)
         }
+    }
+
+    /**
+     * Dado el link de un capítulo de DonghuaWorld, devuelve el link de su serie (/anime/...).
+     * La página del capítulo enlaza a la serie desde varios lugares (ruta de navegación,
+     * "All Episodes", ficha de la serie), pero el sidebar también trae otras series populares.
+     * Por eso se elige el link /anime/ cuyo slug comparte más palabras con el del capítulo.
+     */
+    private suspend fun resolveDonghuaWorldSeriesUrl(episodeUrl: String): String? {
+        val episodeSlug = episodeUrl.substringBefore("?").trimEnd('/').substringAfterLast('/')
+        val episodeTokens = episodeSlug.split('-').filter { it.isNotBlank() }.toSet()
+
+        val fromPage = attempt {
+            val document = app.get(episodeUrl, timeout = DW_PAGE_TIMEOUT_S).document
+            val seen = HashSet<String>()
+            var best: String? = null
+            var bestScore = 0
+
+            for (anchor in document.select("a[href*='/anime/']")) {
+                val href = fixUrl(anchor.attr("href").trim().substringBefore("#"))
+                if (!DW_SERIES_URL.matches(href)) continue
+
+                val key = href.trimEnd('/') + "/"
+                if (!seen.add(key)) continue
+
+                val slugTokens = key.trimEnd('/').substringAfterLast('/')
+                    .split('-')
+                    .filter { it.isNotBlank() }
+                if (slugTokens.isEmpty()) continue
+
+                val score = slugTokens.count { it in episodeTokens }
+
+                // Con empate gana el primero que aparece (la ruta de navegación).
+                if (score > bestScore && score * 2 >= slugTokens.size) {
+                    best = key
+                    bestScore = score
+                }
+            }
+
+            best
+        }
+        if (fromPage != null) return fromPage
+
+        // Si la página del capítulo no respondió o no tenía el link, se busca la serie por nombre.
+        val seriesName = episodeSlug
+            .substringBefore("-episode-")
+            .replace("-", " ")
+            .trim()
+        if (seriesName.isBlank()) return null
+
+        return attempt { findDonghuaWorldSeries(seriesName).firstOrNull()?.second }
     }
 
     private suspend fun loadDonghuaWorldSeries(url: String): LoadResponse? {
