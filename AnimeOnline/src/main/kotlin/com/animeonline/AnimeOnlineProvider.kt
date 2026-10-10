@@ -40,6 +40,10 @@ class AnimeOnlineProvider : MainAPI() {
         // true  = usa la miniatura propia de cada capítulo y, si no hay, el poster de la serie.
         private val USE_EPISODE_THUMBNAILS = false
 
+        // false = la pantalla de detalle (banner/poster de la serie) NO manda posterHeaders.
+        // Kino mostraba el banner en gris con esos headers. Los catálogos y el buscador no cambian.
+        private val LOAD_POSTER_HEADERS = false
+
         private const val PLAYER_TIMEOUT_MS = 25_000L
 
         private const val HEADER_LATEST_ANIME = "ÚLTIMOS ANIMES AGREGADOS"
@@ -387,7 +391,7 @@ class AnimeOnlineProvider : MainAPI() {
             if (url.contains("/pelicula/")) {
                 return newMovieLoadResponse(title, url, TvType.Movie, url) {
                     this.posterUrl = mainPoster
-                    applyPosterHeaders(this)
+                    if (LOAD_POSTER_HEADERS) applyPosterHeaders(this)
                     this.plot = description
                 }
             }
@@ -397,7 +401,7 @@ class AnimeOnlineProvider : MainAPI() {
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
             this.posterUrl = mainPoster
-            applyPosterHeaders(this)
+            if (LOAD_POSTER_HEADERS) applyPosterHeaders(this)
             this.plot = description
             addEpisodes(DubStatus.Subbed, episodes)
         }
