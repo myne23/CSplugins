@@ -25,10 +25,12 @@ class SeriesDonghuaProvider : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie)
 
+    // Orden de las secciones del catálogo.
     override val mainPage = mainPageOf(
-        "$mainUrl/episodios/" to "Nuevos Episodios",
-        "$mainUrl/todos-los-donghuas/" to "Catálogo Completo",
-        "$DW_URL/anime/" to DW_LABEL
+        "$mainUrl/episodios/" to "Nuevos Episodios Seriesdonghua",
+        DW_NEW_URL to "Nuevos Episodios Donghuaworld",
+        "$mainUrl/todos-los-donghuas/" to "Catalogo Completo Seriesdonghua",
+        "$DW_URL/anime/" to "Catalogo Completo Donghuaworld"
     )
 
     private companion object {
@@ -36,7 +38,14 @@ class SeriesDonghuaProvider : MainAPI() {
         const val DEBUG = false
 
         const val DW_URL = "https://donghuaworld.com"
-        const val DW_LABEL = "Series de DonghuaWorld"
+
+        // Series ordenadas por última actualización (es el "View All" de Latest Release de la web).
+        const val DW_NEW_URL = "$DW_URL/anime/?status=&type=&order=update"
+
+        // Tiempos máximos (segundos) para DonghuaWorld: si la web no responde, se la deja de lado.
+        const val DW_FAST_TIMEOUT_S = 4L
+        const val DW_PAGE_TIMEOUT_S = 6L
+
         const val BROWSER_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
         const val ALTCHA_TIMEOUT_NS = 25_000_000_000L
@@ -121,7 +130,13 @@ class SeriesDonghuaProvider : MainAPI() {
         if (this == null) return null
         for (key in POSTER_ATTRS) {
             val value = attr(key).trim()
-            if (value.isNotBlank() && !value.startsWith("data:image/")) return value
+            if (
+                value.isNotBlank() &&
+                !value.startsWith("data:image/") &&
+                !value.contains("lazy_placeholder")
+            ) {
+                return value
+            }
         }
         return null
     }
@@ -217,23 +232,25 @@ class SeriesDonghuaProvider : MainAPI() {
             "${request.data}${separator}page=$page"
         }
 
-        val home = if (request.name == DW_LABEL) {
-            val document = try {
-                app.get(url, timeout = 4).document
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                debug { "DonghuaWorld catálogo timeout/error -> ${e.message}" }
-                return newHomePageResponse(emptyList(), hasNext = false)
-            }
-            parseDonghuaWorldHome(document)
-        } else {
-            val document = app.get(url).document
-            if (request.name == "Nuevos Episodios") {
-                parseNewEpisodes(document)
+        val isDonghuaWorld = request.data.startsWith(DW_URL)
+
+        // Cada sección falla por separado: si una página se cae, la sección queda vacía
+        // y el resto del catálogo sigue funcionando.
+        val home: List<SearchResponse> = attempt {
+            if (isDonghuaWorld) {
+                val document = app.get(url, timeout = DW_FAST_TIMEOUT_S).document
+                parseDonghuaWorldHome(document)
             } else {
-                document.select("article.donghua-card").mapNotNull { it.toSearchResult() }
+                val document = app.get(url).document
+                if (request.data.contains("/episodios/")) {
+                    parseNewEpisodes(document)
+                } else {
+                    document.select("article.donghua-card").mapNotNull { it.toSearchResult() }
+                }
             }
+        } ?: run {
+            debug { "sección '${request.name}' no disponible, se omite" }
+            return newHomePageResponse(emptyList(), hasNext = false)
         }
 
         return newHomePageResponse(
@@ -307,12 +324,15 @@ class SeriesDonghuaProvider : MainAPI() {
         val encodedQuery = URLEncoder.encode(query.trim(), "UTF-8")
 
         // Ambas páginas se consultan a la vez; el orden del resultado se mantiene.
+        // Si una falla, devuelve lista vacía y se muestran los resultados de la otra.
         val sources = listOf<suspend () -> List<SearchResponse>>(
             {
-                app.get("$mainUrl/buscar.php?s=$encodedQuery")
-                    .document
-                    .select("article.donghua-card")
-                    .mapNotNull { it.toSearchResult() }
+                attempt {
+                    app.get("$mainUrl/buscar.php?s=$encodedQuery")
+                        .document
+                        .select("article.donghua-card")
+                        .mapNotNull { it.toSearchResult() }
+                } ?: emptyList()
             },
             { searchDonghuaWorld(encodedQuery, normalizedQuery) }
         )
@@ -325,7 +345,7 @@ class SeriesDonghuaProvider : MainAPI() {
         normalizedQuery: String
     ): List<SearchResponse> {
         val document = attempt {
-            app.get("$DW_URL/?s=$encodedQuery", timeout = 4).document
+            app.get("$DW_URL/?s=$encodedQuery", timeout = DW_FAST_TIMEOUT_S).document
         } ?: return emptyList()
 
         return document
@@ -371,7 +391,7 @@ class SeriesDonghuaProvider : MainAPI() {
             return loadDonghuaWorldSeries(url)
         }
 
-        val document = app.get(url).document
+        val document = attempt { app.get(url).document } ?: return null
 
         val title = document.selectFirst("h1.hero-title")?.text()?.trim()
             ?: return null
@@ -413,7 +433,9 @@ class SeriesDonghuaProvider : MainAPI() {
     }
 
     private suspend fun loadDonghuaWorldSeries(url: String): LoadResponse? {
-        val document = app.get(url).document
+        val document = attempt {
+            app.get(url, timeout = DW_PAGE_TIMEOUT_S).document
+        } ?: return null
 
         val title = document
             .selectFirst("h1.entry-title[itemprop='name']")
@@ -476,7 +498,9 @@ class SeriesDonghuaProvider : MainAPI() {
 
         // Episodio que viene directo de DonghuaWorld.
         if (data.contains("donghuaworld.com/") && data.contains("-episode-")) {
-            loadDonghuaWorldEpisodeLinks(data, subtitleCallback, sink)
+            guarded("DonghuaWorld episodio") {
+                loadDonghuaWorldEpisodeLinks(data, subtitleCallback, sink)
+            }
             return sink.total > 0
         }
 
@@ -524,7 +548,8 @@ class SeriesDonghuaProvider : MainAPI() {
             }
         }
 
-        // Fuente adicional: DonghuaWorld.
+        // Fuente adicional: DonghuaWorld. Corre aparte y con timeouts cortos en cada request:
+        // si esa web está caída o lenta, no rompe los links de SeriesDonghua.
         tasks.add {
             guarded("DonghuaWorld") {
                 loadDonghuaWorldLinks(data, subtitleCallback, sink)
@@ -656,7 +681,9 @@ class SeriesDonghuaProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         sink: LinkSink
     ) {
-        val document = attempt { app.get(data).document } ?: return
+        val document = attempt {
+            app.get(data, timeout = DW_PAGE_TIMEOUT_S).document
+        } ?: return
         resolveDonghuaWorldEpisode(document, data, subtitleCallback, sink)
     }
 
@@ -683,7 +710,7 @@ class SeriesDonghuaProvider : MainAPI() {
         val seriesUrl = candidates.firstOrNull()?.second ?: return
         debug { "DonghuaWorld serie -> $seriesUrl" }
 
-        val seriesDocument = app.get(seriesUrl, timeout = 15).document
+        val seriesDocument = app.get(seriesUrl, timeout = DW_PAGE_TIMEOUT_S).document
         val episodeRegex = Regex("episode-$episodeNumber(?:-|/|\$)")
 
         val episodeUrl = seriesDocument
@@ -699,13 +726,13 @@ class SeriesDonghuaProvider : MainAPI() {
 
         debug { "DonghuaWorld episodio -> $episodeUrl" }
 
-        val episodeDocument = app.get(episodeUrl, timeout = 15).document
+        val episodeDocument = app.get(episodeUrl, timeout = DW_PAGE_TIMEOUT_S).document
         resolveDonghuaWorldEpisode(episodeDocument, episodeUrl, subtitleCallback, sink)
     }
 
     private suspend fun findDonghuaWorldSeries(query: String): List<Pair<Int, String>> {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val document = app.get("$DW_URL/?s=$encodedQuery", timeout = 15).document
+        val document = app.get("$DW_URL/?s=$encodedQuery", timeout = DW_PAGE_TIMEOUT_S).document
         val normalizedSearch = normalize(query)
 
         return document
@@ -790,7 +817,8 @@ class SeriesDonghuaProvider : MainAPI() {
                 headers = mapOf(
                     "Referer" to pageUrl,
                     "User-Agent" to BROWSER_UA
-                )
+                ),
+                timeout = DW_PAGE_TIMEOUT_S
             ).text
         } ?: return null
 
