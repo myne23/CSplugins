@@ -288,12 +288,26 @@ class SeriesDonghuaProvider : MainAPI() {
         }.distinctBy { it.url }
 
     /**
-     * "Latest Release" de la home de DonghuaWorld: cada ítem es un capítulo. Se muestra con el
+     * Solo "Latest Release" de la home de DonghuaWorld (no el carrusel "Series Update"):
+     * cada ítem es un capítulo. Se muestra con el
      * nombre de la serie y, al abrirlo, load() resuelve la serie para que elijas el capítulo.
      */
     private fun parseDonghuaWorldLatest(document: Document): List<SearchResponse> {
-        val container = document.select(".listupd").firstOrNull { it.selectFirst("article") != null }
-        val articles = container?.select("article") ?: document.select("article.bs")
+        // Solo la sección "Latest Release". Arriba está el carrusel "Series Update", que trae
+        // otras series y se repite en todas las páginas: no se debe mezclar.
+        val heading = document
+            .select("h1, h2, h3, h4")
+            .firstOrNull { it.text().trim().startsWith("Latest Release", ignoreCase = true) }
+            ?: run {
+                debug { "no se encontró el título 'Latest Release'" }
+                return emptyList()
+            }
+
+        // El primer ancestro del título que contiene ítems es la sección completa.
+        val section = heading.parents().firstOrNull { it.selectFirst("article, .bs") != null }
+            ?: return emptyList()
+
+        val articles = section.select("article, .bs")
 
         return articles.mapNotNull { article ->
             val link = article.selectFirst("a[href][title]")
