@@ -944,15 +944,25 @@ class SeriesDonghuaProvider : MainAPI() {
         if (tracksStart >= 0) {
             val tracksEnd = html.indexOf("]", tracksStart)
             if (tracksEnd > tracksStart) {
-                TRACK.findAll(html.substring(tracksStart, tracksEnd + 1)).distinctBy { match ->
-                    match.groupValues[1]
-                }.forEach { match ->
-                    subtitleCallback(
-                        SubtitleFile(
-                            lang = match.groupValues[2],
-                            url = match.groupValues[1].replace("\\", "")
-                        )
-                    )
+                val tracks = TRACK.findAll(html.substring(tracksStart, tracksEnd + 1))
+                    .map { match -> match.groupValues[2] to match.groupValues[1].replace("\\", "") }
+                    .distinctBy { (_, trackUrl) -> trackUrl }
+                    .toList()
+
+                // Si un mismo idioma trae varias pistas y una es "Genérico", se deja solo esa.
+                val selected = tracks
+                    .groupBy { (label, _) -> label.substringBefore("(").trim().lowercase() }
+                    .values
+                    .flatMap { group ->
+                        val generic = group.filter { (label, _) ->
+                            label.lowercase().replace("é", "e").contains("generic")
+                        }
+                        if (group.size > 1 && generic.isNotEmpty()) generic else group
+                    }
+
+                for ((label, trackUrl) in selected) {
+                    // El sufijo permite ver en el reproductor cuáles subs manda el plugin.
+                    subtitleCallback(SubtitleFile(lang = "$label · Dark Server", url = trackUrl))
                 }
             }
         }
