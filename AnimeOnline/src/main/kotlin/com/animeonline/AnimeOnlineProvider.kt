@@ -183,9 +183,16 @@ class AnimeOnlineProvider : MainAPI() {
                 applyPosterHeaders(this)
             }
         } else {
-            newAnimeSearchResponse(title, url, TvType.Anime) {
-                this.posterUrl = poster
-                applyPosterHeaders(this)
+            if (SEND_POSTER_HEADERS) {
+                newAnimeSearchResponse(title, url, TvType.Anime) {
+                    this.posterUrl = poster
+                    applyPosterHeaders(this)
+                }
+            } else {
+                // Fuera de CloudStream (Kino) se usa el tipo serie, como Megadede.
+                newTvSeriesSearchResponse(title, url, TvType.Anime) {
+                    this.posterUrl = poster
+                }
             }
         }
     }
@@ -447,6 +454,15 @@ class AnimeOnlineProvider : MainAPI() {
             }
 
             return null
+        }
+
+        // Fuera de CloudStream (Kino) se usa el tipo serie, como Megadede.
+        if (!SEND_POSTER_HEADERS) {
+            return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
+                this.posterUrl = mainPoster
+                this.backgroundPosterUrl = mainPoster
+                this.plot = description
+            }
         }
 
         return newAnimeLoadResponse(title, url, TvType.Anime) {
