@@ -153,7 +153,6 @@ class AnimeOnlineProvider : MainAPI() {
     private val posterSetterCache = ConcurrentHashMap<Class<*>, Optional<Method>>()
 
     private fun applyPosterHeaders(response: Any) {
-        if (!SEND_POSTER_HEADERS) return
         try {
             val setter = posterSetterCache.getOrPut(response.javaClass) {
                 Optional.ofNullable(
@@ -194,6 +193,7 @@ class AnimeOnlineProvider : MainAPI() {
                 // Fuera de CloudStream (Kino) se usa el tipo serie, como Megadede.
                 newTvSeriesSearchResponse(title, url, TvType.Anime) {
                     this.posterUrl = poster
+                    applyPosterHeaders(this)
                 }
             }
         }
