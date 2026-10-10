@@ -119,6 +119,8 @@ class DonghuaLifeProvider : MainAPI() {
         const val BACKGROUND_CONCURRENCY = 3
         const val INDEX_PARTIAL_TTL_MS = 2L * 60_000L
         const val INDEX_FILE_NAME = "donghualife_index_v1.json"
+        val SIG_PARAM = Regex("[?&]signature=([^&]+)")
+        val SIG_TS_PARAM = Regex("[?&]signature_ts=([^&]+)")
         val UUID_FIND = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
         val SUB_WORD = Regex("subtitle|subs|subtitulo", RegexOption.IGNORE_CASE)
         val UUID_RE = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -1082,14 +1084,9 @@ class DonghuaLifeProvider : MainAPI() {
             val subtitles = ArrayList<Pair<String, String>>()
             collectSubtitleKeys(json, subtitles)
 
+            // UUIDs a cualquier profundidad (los subtítulos pueden venir anidados en la fuente).
             val uuids = LinkedHashSet<String>()
-            json.optString("id").takeIf { UUID_RE.matches(it) }?.let { uuids.add(it) }
-            val fieldNames = json.keys()
-            while (fieldNames.hasNext()) {
-                val field = fieldNames.next()
-                val value = json.opt(field)
-                if (field != "token" && value is String && UUID_RE.matches(value)) uuids.add(value)
-            }
+            collectUuids(json, uuids)
 
             result += PlayerSource(
                 uuids = uuids.toList(),
@@ -1117,6 +1114,21 @@ class DonghuaLifeProvider : MainAPI() {
         }
 
         return result.sortedBy { it.priority }
+    }
+
+    private fun collectUuids(node: Any?, out: MutableSet<String>) {
+        when (node) {
+            is JSONObject -> {
+                val keys = node.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    if (key == "token") continue
+                    collectUuids(node.opt(key), out)
+                }
+            }
+            is JSONArray -> for (i in 0 until node.length()) collectUuids(node.opt(i), out)
+            is String -> if (UUID_RE.matches(node)) out.add(node)
+        }
     }
 
     private fun displayName(label: String): String {
@@ -1220,7 +1232,89 @@ class DonghuaLifeProvider : MainAPI() {
             if (out.size >= 12) break
         }
 
+        // Último recurso: cualquier uuid del payload (cada intento es un GET chico que da 404).
+        UUID_FIND.findAll(text).forEach { if (out.size < 80) out.add(it.value) }
+        debug {
+            "payload ${text.length} chars, contiene 'subtitle'=${text.contains("subtitle", ignoreCase = true)}, " +
+                "uuids=${out.size}, slug=$slug"
+        }
+
         return out.toList()
+    }
+
+    /**
+     * /api/subtitles/{uuid} devuelve JSON con el subtítulo dentro ("content"), no un archivo.
+     * Para dárselo al reproductor como URL se sirve desde un mini servidor HTTP en 127.0.0.1.
+     */
+    private object LocalTextServer {
+        private val files = ConcurrentHashMap<String, ByteArray>()
+
+        @Volatile
+        private var socket: java.net.ServerSocket? = null
+
+        @Synchronized
+        private fun ensureStarted(): java.net.ServerSocket? {
+            socket?.let { if (!it.isClosed) return it }
+            return try {
+                val created = java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+                socket = created
+                val acceptor = Thread {
+                    while (!created.isClosed) {
+                        try {
+                            val client = created.accept()
+                            Thread { serve(client) }.apply { isDaemon = true }.start()
+                        } catch (e: Exception) {
+                            if (created.isClosed) break
+                        }
+                    }
+                }
+                acceptor.isDaemon = true
+                acceptor.start()
+                created
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+        private fun serve(client: java.net.Socket) {
+            try {
+                client.soTimeout = 10_000
+                val reader = client.getInputStream().bufferedReader(Charsets.ISO_8859_1)
+                val requestLine = reader.readLine() ?: return
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (line.isEmpty()) break
+                }
+                val parts = requestLine.split(" ")
+                val method = parts.getOrNull(0) ?: "GET"
+                val name = (parts.getOrNull(1) ?: "/").substringBefore("?").trimStart('/')
+                val body = files[name]
+                val out = client.getOutputStream()
+                if (body == null) {
+                    out.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+                } else {
+                    val header = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+                        "Content-Length: ${body.size}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+                    out.write(header.toByteArray(Charsets.ISO_8859_1))
+                    if (method != "HEAD") out.write(body)
+                }
+                out.flush()
+            } catch (e: Exception) {
+                // conexión cortada por el reproductor: nada que hacer
+            } finally {
+                try {
+                    client.close()
+                } catch (e: Exception) {
+                }
+            }
+        }
+
+        /** Publica el texto con el nombre dado (la extensión indica el formato) y devuelve su URL. */
+        fun publish(name: String, content: String): String? {
+            val server = ensureStarted() ?: return null
+            files[name] = content.removePrefix("\uFEFF").toByteArray(Charsets.UTF_8)
+            return "http://127.0.0.1:${server.localPort}/$name"
+        }
     }
 
     private fun looksLikeSubtitleText(body: String): Boolean {
@@ -1264,11 +1358,26 @@ class DonghuaLifeProvider : MainAPI() {
         if (response.code !in 200..299) return emptyList()
 
         val body = response.text
+        val trimmed = body.trim()
+
+        // Formato real de la API: {"success":true,"label":"Español (Estilos)","language":"es","content":"[Script Info]..."}
+        if (trimmed.startsWith("{")) {
+            val json = attempt0 { JSONObject(trimmed) }
+            val content = json?.optString("content").orEmpty()
+            if (json != null && content.isNotBlank()) {
+                val trackLabel = json.optString("label").takeIf { it.isNotBlank() && it != "null" }
+                    ?: json.optString("language").takeIf { it.isNotBlank() && it != "null" }?.let { langLabel(it) }
+                    ?: label
+                val local = LocalTextServer.publish(id + subtitleFormatSuffix(content), content)
+                debug { "subtítulo '$trackLabel' (${content.length} chars) servido en $local" }
+                return if (local != null) listOf(trackLabel to local) else emptyList()
+            }
+        }
+
         if (looksLikeSubtitleText(body)) {
             return listOf(label to apiUrl + "#" + subtitleFormatSuffix(body))
         }
 
-        val trimmed = body.trim()
         val node: Any? = attempt0 {
             when {
                 trimmed.startsWith("[") -> JSONArray(trimmed)
@@ -1396,15 +1505,22 @@ class DonghuaLifeProvider : MainAPI() {
         var finalSubtitles = resolvedSubtitles
         if (isR2 && finalSubtitles.isEmpty()) {
             // R2 (video directo) pide sus subtítulos a /api/subtitles/{uuid}.
-            val candidates = (source.uuids + extraUuids).distinct().take(14)
-            debug { "R2 ${source.label}: candidatos de subtítulos=$candidates" }
-            for (candidate in candidates) {
-                val fetched = fetchSubtitlesById(candidate, pageUrl, cookies, "Español")
-                if (fetched.isNotEmpty()) {
-                    finalSubtitles = fetched
-                    break
+            val candidates = (source.uuids + extraUuids).distinct()
+            debug { "R2 ${source.label}: probando ${candidates.size} uuids de subtítulos" }
+            var index = 0
+            while (index < candidates.size && finalSubtitles.isEmpty()) {
+                val batch = candidates.subList(index, minOf(candidates.size, index + 5))
+                val results = batch.amap { candidate ->
+                    candidate to fetchSubtitlesById(candidate, pageUrl, cookies, "Español")
                 }
+                val hits = results.filter { it.second.isNotEmpty() }
+                if (hits.isNotEmpty()) {
+                    debug { "SUBTÍTULOS ENCONTRADOS uuids=${hits.map { it.first }}" }
+                    finalSubtitles = hits.flatMap { it.second }.distinctBy { it.second }
+                }
+                index += 5
             }
+            if (finalSubtitles.isEmpty()) debug { "R2: ningún uuid de la página devolvió subtítulos" }
         }
         emitSubtitles(finalSubtitles, subtitleCallback, sink)
 
@@ -1769,6 +1885,7 @@ class DonghuaLifeProvider : MainAPI() {
             )
 
             val master = app.get(masterUrl, headers = headers, timeout = HLS_TIMEOUT_S).text
+            debug { "master HLS (${master.length} chars): ${master.take(700)}" }
             if (!master.contains("#EXTM3U")) return@guarded
 
             val found = ArrayList<Pair<String, String>>()
@@ -1949,9 +2066,9 @@ class DonghuaLifeProvider : MainAPI() {
     }
 
     /**
-     * Mismo método que usa SeriesDonghua (y funciona allá): contentUrl de la página del embed con
-     * referer = embed y sin headers extra. Si además se logra armar el stream directo por la API de
-     * Odysee y es distinto, se ofrece como segundo link "(directo)".
+     * Mismo método base que SeriesDonghua: contentUrl de la página del embed con referer = embed.
+     * La diferencia: acá el embed viene firmado (signature + signature_ts), y el stream de contenido
+     * restringido necesita esos mismos parámetros, así que se ofrece la URL firmada y la lisa.
      */
     private suspend fun resolveOdyseeLinks(embedUrl: String, display: String): List<ExtractorLink> {
         val links = ArrayList<ExtractorLink>()
@@ -1960,42 +2077,67 @@ class DonghuaLifeProvider : MainAPI() {
         val contentUrl = page?.let {
             ODYSEE_CONTENT_URL.find(it)?.groupValues?.getOrNull(1)?.trim()?.takeIf { v -> v.isNotBlank() }
         }
-        debug { "odysee embed=$embedUrl página=${page?.length ?: "sin respuesta"} contentUrl=$contentUrl" }
+        val direct = odyseeStreamUrl(embedUrl)
+            ?: contentUrl?.takeIf { it.contains("/\$/download/") }?.let { odyseeStreamUrl(it) }
+        debug { "odysee embed página=${page?.length ?: "sin respuesta"} contentUrl=$contentUrl directo=$direct" }
 
-        if (contentUrl != null) {
-            val type = if (contentUrl.contains(".m3u8", ignoreCase = true)) {
+        val signature = SIG_PARAM.find(embedUrl)?.groupValues?.getOrNull(1)
+        val signatureTs = SIG_TS_PARAM.find(embedUrl)?.groupValues?.getOrNull(1)
+        val hasSignature = signature != null && signatureTs != null
+
+        fun signed(base: String): String =
+            base + (if (base.contains("?")) "&" else "?") + "signature=$signature&signature_ts=$signatureTs"
+
+        suspend fun add(label: String, mediaUrl: String, viaEmbedReferer: Boolean) {
+            val type = if (mediaUrl.contains(".m3u8", ignoreCase = true)) {
                 ExtractorLinkType.M3U8
             } else {
                 ExtractorLinkType.VIDEO
             }
-            links += newExtractorLink(
+            val link = newExtractorLink(
                 source = name,
-                name = "$name · $display",
-                url = contentUrl,
+                name = label,
+                url = mediaUrl,
                 type = type
             ) {
-                this.referer = embedUrl
                 this.quality = Qualities.Unknown.value
+                if (viaEmbedReferer) {
+                    this.referer = embedUrl
+                } else {
+                    this.referer = "$ODYSEE_ORIGIN/"
+                    this.headers = mapOf("Origin" to ODYSEE_ORIGIN, "User-Agent" to BROWSER_UA)
+                }
             }
+            links += link
+            debug { "odysee link [$label] $mediaUrl" }
         }
 
-        val direct = odyseeStreamUrl(embedUrl)
-            ?: contentUrl?.takeIf { it.contains("/\$/download/") }?.let { odyseeStreamUrl(it) }
-        debug { "odysee directo=$direct" }
+        val candidates = listOfNotNull(contentUrl, direct).distinct()
+        for (candidate in candidates) {
+            if (hasSignature && !candidate.contains("signature=")) {
+                add("$name · $display", signed(candidate), viaEmbedReferer = true)
+                add("$name · $display (sin firma)", candidate, viaEmbedReferer = true)
+            } else {
+                add("$name · $display", candidate, viaEmbedReferer = true)
+            }
+        }
+        // Variante con Referer/Origin de odysee.com, por si el CDN valida el origen.
+        candidates.firstOrNull()?.let { first ->
+            val url = if (hasSignature && !first.contains("signature=")) signed(first) else first
+            add("$name · $display (odysee.com)", url, viaEmbedReferer = false)
+        }
 
-        if (direct != null && direct != contentUrl) {
-            links += newExtractorLink(
-                source = name,
-                name = "$name · $display (directo)",
-                url = direct,
-                type = ExtractorLinkType.VIDEO
-            ) {
-                this.referer = "$ODYSEE_ORIGIN/"
-                this.quality = Qualities.Unknown.value
-                this.headers = mapOf(
-                    "Origin" to ODYSEE_ORIGIN,
-                    "User-Agent" to BROWSER_UA
-                )
+        // Diagnóstico: código HTTP de cada variante (HEAD, no descarga el video).
+        if (DEBUG) {
+            for (link in links) {
+                val code = attempt {
+                    app.head(
+                        link.url,
+                        headers = mapOf("User-Agent" to BROWSER_UA, "Referer" to (link.referer.ifBlank { embedUrl })),
+                        timeout = HLS_TIMEOUT_S
+                    ).code
+                }
+                debug { "odysee HEAD ${link.name} -> $code" }
             }
         }
 
