@@ -44,6 +44,34 @@ class AnimeOnlineProvider : MainAPI() {
         // Kino mostraba el banner en gris con esos headers. Los catálogos y el buscador no cambian.
         private val LOAD_POSTER_HEADERS = false
 
+        // Kino (bridge) deja las imágenes en gris cuando se mandan posterHeaders.
+        // Solo se mandan si el proceso es la app real de CloudStream; si no se puede
+        // detectar el paquete, se mandan (comportamiento de siempre).
+        private val SEND_POSTER_HEADERS: Boolean by lazy {
+            val pkg = detectHostPackage()
+            val send = pkg == null || pkg.startsWith("com.lagradost.cloudstream3")
+            Log.i(TAG, "host=$pkg -> posterHeaders=$send")
+            send
+        }
+
+        private fun detectHostPackage(): String? {
+            try {
+                val bytes = java.io.FileInputStream("/proc/self/cmdline").use { it.readBytes() }
+                val name = String(bytes, Charsets.UTF_8).substringBefore(0.toChar()).trim()
+                if (name.isNotBlank()) return name.substringBefore(':')
+            } catch (e: Throwable) {
+            }
+
+            try {
+                val activityThread = Class.forName("android.app.ActivityThread")
+                val name = activityThread.getMethod("currentPackageName").invoke(null) as? String
+                if (!name.isNullOrBlank()) return name
+            } catch (e: Throwable) {
+            }
+
+            return null
+        }
+
         private const val PLAYER_TIMEOUT_MS = 25_000L
 
         private const val HEADER_LATEST_ANIME = "ÚLTIMOS ANIMES AGREGADOS"
@@ -60,6 +88,7 @@ class AnimeOnlineProvider : MainAPI() {
     }
 
     private val cloudflareKiller by lazy { CloudflareKiller() }
+    private val posterLogged = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private val posterHeaders = mapOf(
         "Referer" to "$mainUrl/",
@@ -102,6 +131,7 @@ class AnimeOnlineProvider : MainAPI() {
     private val posterSetterCache = ConcurrentHashMap<Class<*>, Optional<Method>>()
 
     private fun applyPosterHeaders(response: Any) {
+        if (!SEND_POSTER_HEADERS) return
         try {
             val setter = posterSetterCache.getOrPut(response.javaClass) {
                 Optional.ofNullable(
@@ -127,6 +157,7 @@ class AnimeOnlineProvider : MainAPI() {
         poster: String?,
         isMovie: Boolean
     ): SearchResponse {
+        if (!posterLogged.getAndSet(true)) Log.i(TAG, "primer poster del catálogo: $poster")
         return if (isMovie) {
             newMovieSearchResponse(title, url, TvType.Movie) {
                 this.posterUrl = poster
