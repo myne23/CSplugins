@@ -163,41 +163,6 @@ class DonghuaLifeProvider : MainAPI() {
         val DM_PATH_ID = Regex("/video/([A-Za-z0-9]+)")
         val OK_HLS_URL = Regex("\"hlsManifestUrl\":\"([^\"]+)\"", RegexOption.IGNORE_CASE)
 
-        // Odysee: una sola llamada a la vez, con pausa mínima entre ellas, reintentos y caché.
-        const val ODYSEE_API = "https://api.na-backend.odysee.com/api/v1/proxy"
-        const val ODYSEE_ORIGIN = "https://odysee.com"
-        const val ODYSEE_MIN_GAP_MS = 450L
-        const val ODYSEE_MAX_TRIES = 4
-        const val ODYSEE_CACHE_MS = 5L * 60_000L
-        const val CDN_PROBE_TRIES = 12
-        const val CDN_PROBE_PAUSE_MS = 2_000L
-        val ODYSEE_CONTENT_URL = Regex("\"contentUrl\"\\s*:\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
-        val ODYSEE_CONTENT_PATH = Regex(
-            """/(?:api/v\d+/streams/free|\$/download)/([^/?#]+)/([0-9a-fA-F]{6,40})""",
-            RegexOption.IGNORE_CASE
-        )
-        val ODYSEE_CLAIM_ID = Regex("^[0-9a-fA-F]{6,40}$")
-        val SIG_PARAM = Regex("[?&]signature=([^&#]+)")
-        val SIG_TS_PARAM = Regex("[?&]signature_ts=([^&#]+)")
-        val ODYSEE_API_HEADERS = mapOf(
-            "User-Agent" to BROWSER_UA,
-            "Content-Type" to "application/json",
-            "Origin" to ODYSEE_ORIGIN,
-            "Accept" to "*/*",
-            "Referer" to "$ODYSEE_ORIGIN/"
-        )
-
-        // Juegos de headers para el CDN de Odysee (sin Referer responde 403). Se recuerda el que sirvió.
-        val ODYSEE_PROFILES = listOf(
-            mapOf(
-                "User-Agent" to BROWSER_UA,
-                "Origin" to ODYSEE_ORIGIN,
-                "Accept" to "*/*",
-                "Referer" to "$ODYSEE_ORIGIN/"
-            ),
-            mapOf("User-Agent" to MOBILE_UA, "Referer" to "$ODYSEE_ORIGIN/")
-        )
-
         // VOE
         val HEX_CHARS = "0123456789abcdef".toCharArray()
         val VOE_REDIRECT = Regex("""window\.location\.href\s*=\s*['"]([^'"]+/e/[^'"]+)['"]""")
@@ -1728,10 +1693,7 @@ class DonghuaLifeProvider : MainAPI() {
             }
 
             host.contains("odysee.com") || host.contains("lbry.tv") || provider == "odysee" -> {
-                // Un embed de Odysee se resuelve una sola vez por episodio aunque varias fuentes lo repitan.
-                if (!sink.claim("odysee:" + url.substringBefore("?"))) return
-                val link = resolveOdysee(url, display)
-                if (link != null) sink.emit(link) else extractWithExtractors(url, pageUrl, sink)
+                extractWithExtractors(url, pageUrl, sink)
             }
 
             host.contains("ok.ru") || host.contains("odnoklassniki") || provider == "okru" || provider == "ok.ru" -> {
@@ -1876,33 +1838,15 @@ class DonghuaLifeProvider : MainAPI() {
         return makeLink(display, streamUrl, ExtractorLinkType.M3U8, dmReferer, dmHeaders)
     }
 
-    // ───────────────────────── Odysee ─────────────────────────
-
-    private class OdyseeClaim(val name: String, val claimId: String, val sdHash: String?)
-
-    /** URL del video ya elegida y el índice del juego de headers (ODYSEE_PROFILES) con el que sirve. */
-    private class OdyseeStream(val url: String, val profile: Int)
-
-    // Todas las llamadas al proxy pasan por este candado: de a una y con una pausa mínima entre ellas.
-    // Disparar varias juntas (varias fuentes, reintentos, cambio rápido de capítulo) hace que el proxy
-    // empiece a rechazar con 429/5xx.
-    private val odyseeLock = SuspendLock()
-
-    @Volatile
-    private var odyseeLastCall = 0L
-
-    @Volatile
-    private var odyseeProfile = 0
-
-    private val odyseeCache = ConcurrentHashMap<String, Pair<Long, OdyseeStream>>()
+    // ───────────────────────── OK.ru ─────────────────────────
 
     private fun cleanEscapes(text: String): String =
         text.replace("&quot;", "\"")
             .replace("&amp;", "&")
             .replace("\\u0026", "&")
             .replace("\\u003D", "=")
-            .replace("\\/", "/")
-            .replace("\\\\", "\\")
+            .replace("\\\\/", "/")
+            .replace("\\\\\\\\", "\\\\")
 
     private suspend fun fetchEmbed(embedUrl: String): String? {
         val response = attempt {
@@ -1915,235 +1859,6 @@ class DonghuaLifeProvider : MainAPI() {
 
         return if (response.code in 200..299) cleanEscapes(response.text) else null
     }
-
-    /** Convierte la URL de Odysee (embed, /@canal/video, /$/download/...) en un lbry:// URI. */
-    private fun odyseeUri(url: String): String? {
-        val path = attempt {
-            URLDecoder.decode(
-                url.substringAfter("://", url).substringAfter("/", "")
-                    .substringBefore("?").substringBefore("#"),
-                "UTF-8"
-            )
-        } ?: return null
-
-        val segments = path.split('/').filter { it.isNotBlank() }.toMutableList()
-        if (segments.isEmpty()) return null
-
-        if (segments.first() == "$") {
-            segments.removeAt(0)
-            val kind = segments.firstOrNull()
-            // /$/download/{nombre}/{claimId}
-            if (kind == "download" && segments.size >= 3) return "lbry://${segments[1]}#${segments[2]}"
-            if (kind == "embed" || kind == "stream") segments.removeAt(0)
-        }
-        if (segments.isEmpty()) return null
-
-        // Embed estándar: /$/embed/{nombre}/{claimId} (sin ':' ni '#').
-        if (segments.size == 2 && !segments[0].startsWith("@") && ODYSEE_CLAIM_ID.matches(segments[1])) {
-            return "lbry://${segments[0]}#${segments[1]}"
-        }
-
-        return "lbry://" + segments.joinToString("/") { it.replace(':', '#') }
-    }
-
-    /** Lee un parámetro de la URL (ya sin &amp;) y lo decodifica. */
-    private fun urlParam(url: String, regex: Regex): String? {
-        val raw = regex.find(url)?.groupValues?.getOrNull(1) ?: return null
-        return attempt { URLDecoder.decode(raw.replace("+", "%2B"), "UTF-8") } ?: raw
-    }
-
-    /** Llamada JSON-RPC al proxy de Odysee. Devuelve el objeto "result" o null si algo falla. */
-    private suspend fun odyseeRpc(method: String, params: JSONObject): JSONObject? {
-        val payload = JSONObject()
-            .put("jsonrpc", "2.0")
-            .put("method", method)
-            .put("params", params)
-            .put("id", 1)
-            .toString()
-
-        for (tryNumber in 1..ODYSEE_MAX_TRIES) {
-            val response = odyseeLock.withLock {
-                pause(ODYSEE_MIN_GAP_MS - (System.currentTimeMillis() - odyseeLastCall))
-                val result = attempt {
-                    app.post(
-                        "$ODYSEE_API?m=$method",
-                        headers = ODYSEE_API_HEADERS,
-                        json = JsonAsString(payload),
-                        timeout = SOURCE_TIMEOUT_S
-                    )
-                }
-                odyseeLastCall = System.currentTimeMillis()
-                result
-            }
-
-            val code = response?.code ?: -1
-            debug { "odysee $method intento $tryNumber -> HTTP $code" }
-
-            if (response != null && code in 200..299) {
-                val json = attempt { JSONObject(response.text) } ?: return null
-                // Error propio de la API (claim inexistente, firma inválida...): reintentar no cambia nada.
-                return if (json.has("error")) null else json.optJSONObject("result")
-            }
-
-            // Solo se reintenta lo transitorio: sin respuesta, 429 o 5xx. Otros 4xx son definitivos.
-            val transient = response == null || code == 429 || code >= 500
-            if (!transient || tryNumber == ODYSEE_MAX_TRIES) return null
-
-            val retryAfterMs: Long? = response?.headers?.get("Retry-After")
-                ?.trim()?.toLongOrNull()?.times(1000L)
-            pause((retryAfterMs ?: (700L shl (tryNumber - 1))).coerceAtMost(6_000L))
-        }
-        return null
-    }
-
-    /** `resolve` del proxy: nombre, claim id completo y sd_hash del video (el navegador hace lo mismo antes del `get`). */
-    private suspend fun odyseeResolveClaim(uri: String): OdyseeClaim? {
-        val result = odyseeRpc("resolve", JSONObject().put("urls", JSONArray().put(uri))) ?: return null
-        for ((_, value) in result.entries()) {
-            val claim = value as? JSONObject ?: continue
-            val claimId = claim.optString("claim_id").takeIf { it.isNotBlank() } ?: continue
-            val claimName = claim.optString("name").takeIf { it.isNotBlank() } ?: continue
-            val sdHash = claim.optJSONObject("value")?.optJSONObject("source")
-                ?.optString("sd_hash")?.takeIf { it.length >= 6 }
-            return OdyseeClaim(claimName, claimId, sdHash)
-        }
-        return null
-    }
-
-    /**
-     * `get` del proxy, idéntico al que hace el reproductor de Odysee: uri = lbry://nombre#claimIdCompleto,
-     * environment null y el par key/value con la firma. Con la uri del canal y sin key/value la
-     * respuesta traía una URL que el CDN rechazaba con 429; con esta forma da 206.
-     */
-    private suspend fun odyseeSignedStream(
-        uri: String,
-        claim: OdyseeClaim?,
-        signature: String?,
-        signatureTs: String?
-    ): String? {
-        val params = JSONObject()
-            .put("uri", if (claim != null) "lbry://${claim.name}#${claim.claimId}" else uri)
-            .put("environment", JSONObject.NULL)
-        if (!signature.isNullOrBlank() && !signatureTs.isNullOrBlank()) {
-            params.put("key", "signature")
-                .put("value", signature)
-                .put("signature", signature)
-                .put("signature_ts", signatureTs)
-        }
-        val result = odyseeRpc("get", params) ?: return null
-        return result.optString("streaming_url").takeIf { it.startsWith("https://") }
-    }
-
-    /** Stream libre armado con name/claim/sd_hash (player.odycdn.com), sin llamadas extra. */
-    private fun odyseeFreeStream(claim: OdyseeClaim?): String? {
-        if (claim == null || claim.sdHash == null) return null
-        return "https://player.odycdn.com/api/v3/streams/free/${claim.name}/${claim.claimId}/${claim.sdHash.take(6)}.mp4"
-    }
-
-    /** Último recurso: sacar name/claim del contentUrl de la página del embed (acepta /streams/free y /$/download). */
-    private suspend fun odyseeUriFromPage(embedUrl: String): String? {
-        val page = fetchEmbed(embedUrl) ?: return null
-        val contentUrl = ODYSEE_CONTENT_URL.find(page)?.groupValues?.getOrNull(1)?.trim() ?: return null
-        val parts = ODYSEE_CONTENT_PATH.find(contentUrl) ?: return null
-        val rawName = parts.groupValues[1]
-        val claimName = attempt { URLDecoder.decode(rawName.replace("+", "%2B"), "UTF-8") } ?: rawName
-        return "lbry://$claimName#${parts.groupValues[2]}"
-    }
-
-    /** Pide los primeros 2 bytes al CDN con los headers dados. Devuelve el código HTTP (-1 si no conectó). */
-    private fun probeMedia(url: String, headers: Map<String, String>): Int {
-        var connection: HttpURLConnection? = null
-        return try {
-            val opened = URL(url).openConnection() as HttpURLConnection
-            connection = opened
-            opened.connectTimeout = 8_000
-            opened.readTimeout = 8_000
-            opened.instanceFollowRedirects = true
-            for ((key, value) in headers) opened.setRequestProperty(key, value)
-            opened.setRequestProperty("Range", "bytes=0-1")
-            opened.responseCode
-        } catch (e: Exception) {
-            -1
-        } finally {
-            try {
-                connection?.disconnect()
-            } catch (e: Exception) {
-                // ya estaba cerrada
-            }
-        }
-    }
-
-    /**
-     * Índice del juego de headers con el que el CDN acepta la URL, o null si ninguno sirve.
-     * El CDN contesta 429 "Try again later": se espera y se reintenta la misma URL en vez de insistir
-     * al instante, y con 429 persistente no se prueba otro juego (los headers no cambian nada).
-     * Con otros errores (403...) sí se pasa al siguiente.
-     */
-    private suspend fun findWorkingProfile(url: String, tries: Int): Int? {
-        val order = listOf(odyseeProfile) + ODYSEE_PROFILES.indices.filter { it != odyseeProfile }
-        for (index in order) {
-            var code = -1
-            for (round in 1..tries) {
-                code = probeMedia(url, ODYSEE_PROFILES[index])
-                debug { "odysee CDN perfil=$index ronda=$round HTTP $code" }
-                if (code in 200..299) return index
-                val retryable = code == 429 || code == -1 || code >= 500
-                if (!retryable) break
-                if (round < tries) pause(CDN_PROBE_PAUSE_MS)
-            }
-            if (code == 429) return null
-        }
-        return null
-    }
-
-    /**
-     * Resuelve el claim, obtiene las dos URLs posibles (get firmado y stream libre) y se queda con
-     * la primera que el CDN acepte. Si ninguna responde bien se ofrece la primera igual (sin cachear).
-     */
-    private suspend fun odyseeStream(uri: String, signature: String?, signatureTs: String?): OdyseeStream? {
-        odyseeCache[uri]?.let { (time, stream) ->
-            if (System.currentTimeMillis() - time < ODYSEE_CACHE_MS) return stream
-        }
-
-        val claim = odyseeResolveClaim(uri)
-        val candidates = listOfNotNull(
-            odyseeSignedStream(uri, claim, signature, signatureTs),
-            odyseeFreeStream(claim)
-        ).distinct()
-        if (candidates.isEmpty()) return null
-
-        for ((position, candidate) in candidates.withIndex()) {
-            val profile = findWorkingProfile(candidate, if (position == 0) CDN_PROBE_TRIES else 2) ?: continue
-            odyseeProfile = profile
-            return OdyseeStream(candidate, profile).also {
-                odyseeCache[uri] = System.currentTimeMillis() to it
-            }
-        }
-        return OdyseeStream(candidates.first(), odyseeProfile)
-    }
-
-    /** Un único link de Odysee por embed. name y claimId salen de la propia URL (sin bajar la página). */
-    private suspend fun resolveOdysee(embedUrl: String, display: String): ExtractorLink? {
-        val url = embedUrl.replace("&amp;", "&").replace("\\u0026", "&")
-        val signature = urlParam(url, SIG_PARAM)
-        val signatureTs = urlParam(url, SIG_TS_PARAM)
-
-        val uri = odyseeUri(url)
-        val stream = uri?.let { odyseeStream(it, signature, signatureTs) }
-            ?: odyseeUriFromPage(url)?.takeIf { it != uri }?.let { odyseeStream(it, signature, signatureTs) }
-            ?: return null
-
-        val isHls = stream.url.substringBefore("?").endsWith(".m3u8", ignoreCase = true)
-        return makeLink(
-            display,
-            stream.url,
-            if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-            "$ODYSEE_ORIGIN/",
-            ODYSEE_PROFILES[stream.profile]
-        )
-    }
-
-    // ───────────────────────── OK.ru ─────────────────────────
 
     private suspend fun resolveOkRu(embedUrl: String, display: String): ExtractorLink? {
         val page = fetchEmbed(embedUrl) ?: return null
