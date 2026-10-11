@@ -2116,39 +2116,6 @@ class DonghuaLifeProvider : MainAPI() {
     }
 
     /**
-     * El CDN responde 429 ("Try again later") mientras prepara un video que no tiene en caché, y
-     * ExoPlayer reintenta pocas veces y se rinde. Acá se pide un tramo chico con espera creciente
-     * hasta que responda bien (tope ~20 s) y recién después se entrega el link al reproductor.
-     */
-    private suspend fun odyseeWarmUp(streamUrl: String) {
-        val start = System.currentTimeMillis()
-        var waitMs = 1_000L
-        var tryNo = 0
-        while (System.currentTimeMillis() - start < 20_000L) {
-            tryNo++
-            val response = attempt {
-                app.get(
-                    streamUrl,
-                    headers = mapOf(
-                        "User-Agent" to BROWSER_UA,
-                        "Origin" to ODYSEE_ORIGIN,
-                        "Referer" to "$ODYSEE_ORIGIN/",
-                        "Range" to "bytes=0-1023"
-                    ),
-                    timeout = HLS_TIMEOUT_S
-                )
-            }
-            val code = response?.code
-            attempt0 { response?.text }
-            debug { "Odysee warm-up #$tryNo -> HTTP $code (${System.currentTimeMillis() - start} ms)" }
-            if (code != null && code != 429) return
-            attempt0 { Thread.sleep(waitMs) }
-            waitMs = minOf(waitMs * 2, 4_000L)
-        }
-        debug { "Odysee warm-up: se agotó el tiempo, se entrega el link igual" }
-    }
-
-    /**
      * name y claimId salen del propio embed (sin bajar la página: menos requests y menos puntos de falla).
      * Orden: get con firma -> stream libre -> (si la URL no alcanzó) name/claim leídos de la página.
      */
@@ -2177,7 +2144,6 @@ class DonghuaLifeProvider : MainAPI() {
         debug { "Odysee: video final = ${finalUrl.take(150)}" }
 
         val isHls = finalUrl.substringBefore("?").endsWith(".m3u8", ignoreCase = true)
-        if (!isHls) odyseeWarmUp(finalUrl)
 
         return listOf(
             newExtractorLink(
