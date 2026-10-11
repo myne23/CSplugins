@@ -2183,6 +2183,11 @@ class DonghuaLifeProvider : MainAPI() {
                 type = ExtractorLinkType.VIDEO
             ) {
                 referer = "$ODYSEE_ORIGIN/"
+              this.headers = mapOf(
+                    "User-Agent" to BROWSER_UA,
+                    "Origin" to ODYSEE_ORIGIN,
+                    "Referer" to "$ODYSEE_ORIGIN/"
+                )
                 quality = Qualities.Unknown.value
             }
         )
