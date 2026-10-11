@@ -2086,6 +2086,14 @@ class DonghuaLifeProvider : MainAPI() {
      * restringido necesita esos mismos parámetros, así que se ofrece la URL firmada y la lisa.
      */
     private suspend fun resolveOdyseeLinks(embedUrl: String, display: String): List<ExtractorLink> {
+        val signature = SIG_PARAM.find(embedUrl)?.groupValues?.getOrNull(1)
+        val signatureTs = SIG_TS_PARAM.find(embedUrl)?.groupValues?.getOrNull(1)
+
+        if (signature.isNullOrBlank() || signatureTs.isNullOrBlank()) {
+            debug { "Odysee: falta signature o signature_ts en el embed" }
+            return emptyList()
+        }
+
         val page = fetchEmbed(embedUrl) ?: run {
             debug { "Odysee: no se pudo obtener el embed" }
             return emptyList()
@@ -2100,32 +2108,81 @@ class DonghuaLifeProvider : MainAPI() {
             .replace("\\\\", "\\")
 
         val contentUrl = ODYSEE_CONTENT_URL.find(normalized)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
+            ?.groupValues?.getOrNull(1)?.trim()
             ?.takeIf { it.startsWith("http", ignoreCase = true) }
 
         if (contentUrl == null) {
-            debug { "Odysee: no se encontró contentUrl en el embed (${page.length} caracteres)" }
+            debug { "Odysee: no se encontró contentUrl (${page.length} caracteres)" }
             return emptyList()
         }
 
-        val type = if (contentUrl.contains(".m3u8", ignoreCase = true)) {
-            ExtractorLinkType.M3U8
-        } else {
-            ExtractorLinkType.VIDEO
+        val streamParts = Regex(
+            """/api/v[0-9]+/streams/free/([^/]+)/([0-9a-fA-F]{40})/""",
+            RegexOption.IGNORE_CASE
+        ).find(contentUrl)
+
+        val claimName = streamParts?.groupValues?.getOrNull(1)
+        val claimId = streamParts?.groupValues?.getOrNull(2)
+
+        if (claimName.isNullOrBlank() || claimId.isNullOrBlank()) {
+            debug { "Odysee: no se pudo extraer name/claim_id del contentUrl" }
+            return emptyList()
         }
 
-        debug { "Odysee: contentUrl encontrado, tipo=$type, url=$contentUrl" }
+        val payload = JSONObject()
+            .put("jsonrpc", "2.0")
+            .put("method", "get")
+            .put(
+                "params",
+                JSONObject()
+                    .put("uri", "lbry://$claimName#$claimId")
+                    .put("signature", signature)
+                    .put("signature_ts", signatureTs)
+            )
+            .put("id", 1)
+
+        val response = attempt {
+            app.post(
+                "$ODYSEE_API?m=get",
+                headers = mapOf(
+                    "User-Agent" to BROWSER_UA,
+                    "Content-Type" to "application/json",
+                    "Origin" to ODYSEE_ORIGIN,
+                    "Referer" to "$ODYSEE_ORIGIN/"
+                ),
+                json = JsonAsString(payload.toString()),
+                timeout = SOURCE_TIMEOUT_S
+            )
+        } ?: run {
+            debug { "Odysee: error de red al solicitar streaming_url" }
+            return emptyList()
+        }
+
+        debug { "Odysee get -> HTTP ${response.code}: ${response.text.take(400)}" }
+        if (response.code !in 200..299) return emptyList()
+
+        val streamingUrl = attempt0 {
+            JSONObject(response.text)
+                .optJSONObject("result")
+                ?.optString("streaming_url")
+                ?.takeIf { it.startsWith("https://secure.odycdn.com/") }
+        }
+
+        if (streamingUrl.isNullOrBlank()) {
+            debug { "Odysee: la API no devolvió una streaming_url válida" }
+            return emptyList()
+        }
+
+        debug { "Odysee: streaming_url firmada obtenida correctamente" }
 
         return listOf(
             newExtractorLink(
                 source = name,
                 name = "$name · $display",
-                url = contentUrl,
-                type = type
+                url = streamingUrl,
+                type = ExtractorLinkType.VIDEO
             ) {
-                referer = embedUrl
+                referer = "$ODYSEE_ORIGIN/"
                 quality = Qualities.Unknown.value
             }
         )
