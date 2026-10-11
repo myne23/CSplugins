@@ -1770,7 +1770,11 @@ class DonghuaLifeProvider : MainAPI() {
 
             host.contains("odysee.com") || host.contains("lbry.tv") || provider == "odysee" -> {
                 val links = resolveOdyseeLinks(url, display)
-                if (links.isNotEmpty()) links.forEach { sink.emit(it) } else extractWithExtractors(url, pageUrl, sink)
+               if (links.isNotEmpty()) {
+                   links.forEach { sink.emit(it) }
+                   debug { "Odysee: probando también el extractor del embed original como alternativa" }
+                   extractWithExtractors(url, pageUrl, sink)
+               } else extractWithExtractors(url, pageUrl, sink)
             }
 
             host.contains("ok.ru") || host.contains("odnoklassniki") || provider == "okru" || provider == "ok.ru" -> {
