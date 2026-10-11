@@ -115,6 +115,13 @@ class DonghuaLifeProvider : MainAPI() {
         val ODYSEE_CONTENT_URL = Regex("\"contentUrl\"\\s*:\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
         const val ODYSEE_API = "https://api.na-backend.odysee.com/api/v1/proxy"
         const val ODYSEE_ORIGIN = "https://odysee.com"
+        // Odysee: una sola llamada a la vez, separadas por un mínimo, con reintentos y caché.
+        const val ODYSEE_MIN_GAP_MS = 450L
+        const val ODYSEE_MAX_TRIES = 4
+        const val ODYSEE_CACHE_MS = 5L * 60_000L
+        val EPISODE_ID_JSON = Regex(
+            "\"episodeId\"\\s*:\\s*\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""
+        )
         const val FOREGROUND_CONCURRENCY = 5
         const val BACKGROUND_CONCURRENCY = 3
         const val INDEX_PARTIAL_TTL_MS = 2L * 60_000L
@@ -1209,10 +1216,7 @@ class DonghuaLifeProvider : MainAPI() {
         cookies: String
     ): List<String> {
         val text = unescapePayload(pageText)
-        val episodeIdPattern = Regex(
-            "\"episodeId\"\\s*:\\s*\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""
-        )
-        val episodeId = episodeIdPattern.find(text)?.groupValues?.getOrNull(1)
+        val episodeId = EPISODE_ID_JSON.find(text)?.groupValues?.getOrNull(1)
         if (episodeId.isNullOrBlank()) {
             debug { "R2 subtítulos: no se encontró episodeId en el HTML" }
             return emptyList()
@@ -1769,12 +1773,15 @@ class DonghuaLifeProvider : MainAPI() {
             }
 
             host.contains("odysee.com") || host.contains("lbry.tv") || provider == "odysee" -> {
+                // Un embed de Odysee se resuelve una sola vez por episodio aunque varias fuentes lo repitan.
+                if (!sink.claim("odysee:" + url.substringBefore("?"))) return
                 val links = resolveOdyseeLinks(url, display)
-               if (links.isNotEmpty()) {
-                   links.forEach { sink.emit(it) }
-                   debug { "Odysee: probando también el extractor del embed original como alternativa" }
-                   extractWithExtractors(url, pageUrl, sink)
-               } else extractWithExtractors(url, pageUrl, sink)
+                if (links.isNotEmpty()) {
+                    // Antes se lanzaba además el extractor del embed: duplicaba requests y disparaba los bloqueos.
+                    links.forEach { sink.emit(it) }
+                } else {
+                    extractWithExtractors(url, pageUrl, sink)
+                }
             }
 
             host.contains("ok.ru") || host.contains("odnoklassniki") || provider == "okru" || provider == "ok.ru" -> {
@@ -2051,9 +2058,66 @@ class DonghuaLifeProvider : MainAPI() {
         "User-Agent" to BROWSER_UA,
         "Content-Type" to "application/json",
         "Origin" to ODYSEE_ORIGIN,
-                    "Accept" to "*/*",
+        "Accept" to "*/*",
         "Referer" to "$ODYSEE_ORIGIN/"
     )
+
+    // Todas las llamadas al proxy de Odysee pasan por acá: de a una y con una pausa mínima entre
+    // ellas. Disparar varias juntas (varias fuentes, reintentos, cambio rápido de capítulo) es lo
+    // que hace que el proxy empiece a rechazar con 429/5xx desde la app.
+    // Candado y pausa hechos solo con la stdlib de Kotlin (este proyecto no incluye kotlinx.coroutines).
+    private class SuspendLock {
+        private val monitor = Any()
+        private var held = false
+        private val waiters = java.util.ArrayDeque<Continuation<Unit>>()
+
+        suspend fun acquire() {
+            val mustWait = synchronized(monitor) {
+                if (!held) { held = true; false } else true
+            }
+            if (!mustWait) return
+            suspendCoroutine<Unit> { continuation ->
+                val granted = synchronized(monitor) {
+                    if (!held) { held = true; true } else { waiters.add(continuation); false }
+                }
+                if (granted) continuation.resume(Unit)
+            }
+        }
+
+        /** Si hay alguien esperando, el candado pasa directo a él (sigue "held"). */
+        fun release() {
+            val next = synchronized(monitor) {
+                val waiting = waiters.poll()
+                if (waiting == null) held = false
+                waiting
+            }
+            next?.resume(Unit)
+        }
+    }
+
+    private val odyseeLock = SuspendLock()
+
+    private val pauseScheduler by lazy {
+        java.util.concurrent.Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable).apply { isDaemon = true }
+        }
+    }
+
+    private suspend fun pause(ms: Long) {
+        if (ms <= 0) return
+        suspendCoroutine<Unit> { continuation ->
+            pauseScheduler.schedule(
+                { continuation.resume(Unit) },
+                ms,
+                java.util.concurrent.TimeUnit.MILLISECONDS
+            )
+        }
+    }
+
+    @Volatile
+    private var odyseeLastCall = 0L
+
+    private val odyseeStreamCache = ConcurrentHashMap<String, Pair<Long, String>>()
 
     /** Llamada JSON-RPC al proxy de Odysee. Devuelve el objeto "result" o null si algo falla. */
     private suspend fun odyseeRpc(method: String, params: JSONObject): JSONObject? {
@@ -2062,19 +2126,48 @@ class DonghuaLifeProvider : MainAPI() {
             .put("method", method)
             .put("params", params)
             .put("id", 1)
+            .toString()
 
-        val response = attempt {
-            app.post(
-                "$ODYSEE_API?m=$method",
-                headers = odyseeApiHeaders(),
-                json = JsonAsString(payload.toString()),
-                timeout = SOURCE_TIMEOUT_S
-            )
-        } ?: return null
+        for (tryNumber in 1..ODYSEE_MAX_TRIES) {
+            odyseeLock.acquire()
+            val response = try {
+                pause(ODYSEE_MIN_GAP_MS - (System.currentTimeMillis() - odyseeLastCall))
+                val result = attempt {
+                    app.post(
+                        "$ODYSEE_API?m=$method",
+                        headers = odyseeApiHeaders(),
+                        json = JsonAsString(payload),
+                        timeout = SOURCE_TIMEOUT_S
+                    )
+                }
+                odyseeLastCall = System.currentTimeMillis()
+                result
+            } finally {
+                odyseeLock.release()
+            }
 
-        debug { "odysee $method -> HTTP ${response.code}: ${response.text.take(400)}" }
-        if (response.code !in 200..299) return null
-        return attempt0 { JSONObject(response.text).optJSONObject("result") }
+            val code = response?.code ?: -1
+            debug { "odysee $method intento $tryNumber -> HTTP $code: ${response?.text?.take(400)}" }
+
+            if (response != null && code in 200..299) {
+                val json = attempt0 { JSONObject(response.text) } ?: return null
+                if (json.has("error")) {
+                    // Error propio de la API (claim inexistente, firma inválida...): reintentar no cambia nada.
+                    debug { "odysee $method error de API: ${json.opt("error")}" }
+                    return null
+                }
+                return json.optJSONObject("result")
+            }
+
+            // Solo se reintenta lo transitorio: sin respuesta, 429 o 5xx. Otros 4xx son definitivos.
+            val transient = response == null || code == 429 || code >= 500
+            if (!transient || tryNumber == ODYSEE_MAX_TRIES) return null
+
+            val retryAfterMs: Long? = response?.headers?.get("Retry-After")
+                ?.trim()?.toLongOrNull()?.times(1000L)
+            pause((retryAfterMs ?: (700L shl (tryNumber - 1))).coerceAtMost(6_000L))
+        }
+        return null
     }
 
     /** `get` del proxy: devuelve la streaming_url (firmada si el embed trae signature + signature_ts). */
@@ -2135,8 +2228,19 @@ class DonghuaLifeProvider : MainAPI() {
 
         suspend fun tryUri(uri: String) {
             if (streamUrl != null || !tried.add(uri)) return
+
+            val now = System.currentTimeMillis()
+            val cached = odyseeStreamCache[uri]
+            if (cached != null && now - cached.first < ODYSEE_CACHE_MS) {
+                debug { "Odysee: uri=$uri desde caché" }
+                streamUrl = cached.second
+                return
+            }
+
             debug { "Odysee: probando uri=$uri" }
-            streamUrl = odyseeSignedStream(uri, signature, signatureTs) ?: odyseeFreeStream(uri)
+            val found = odyseeSignedStream(uri, signature, signatureTs) ?: odyseeFreeStream(uri)
+            if (found != null) odyseeStreamCache[uri] = now to found
+            streamUrl = found
         }
 
         odyseeUri(url)?.let { tryUri(it) }
