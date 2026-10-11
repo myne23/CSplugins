@@ -2051,6 +2051,8 @@ class DonghuaLifeProvider : MainAPI() {
         "User-Agent" to BROWSER_UA,
         "Content-Type" to "application/json",
         "Origin" to ODYSEE_ORIGIN,
+                    "Accept" to "*/*",
+                    "Range" to "bytes=0-",
         "Referer" to "$ODYSEE_ORIGIN/"
     )
 
@@ -2160,6 +2162,8 @@ class DonghuaLifeProvider : MainAPI() {
                 this.headers = mapOf(
                     "User-Agent" to BROWSER_UA,
                     "Origin" to ODYSEE_ORIGIN,
+                    "Accept" to "*/*",
+                    "Range" to "bytes=0-",
                     "Referer" to "$ODYSEE_ORIGIN/"
                 )
                 quality = Qualities.Unknown.value
