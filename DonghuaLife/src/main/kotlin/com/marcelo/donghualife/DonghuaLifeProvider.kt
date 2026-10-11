@@ -116,6 +116,9 @@ class DonghuaLifeProvider : MainAPI() {
         const val ODYSEE_API = "https://api.na-backend.odysee.com/api/v1/proxy"
         const val ODYSEE_ORIGIN = "https://odysee.com"
         // Odysee: una sola llamada a la vez, separadas por un mínimo, con reintentos y caché.
+        const val MOBILE_UA =
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/130.0.0.0 Mobile Safari/537.36"
         const val ODYSEE_MIN_GAP_MS = 450L
         const val ODYSEE_MAX_TRIES = 4
         const val ODYSEE_CACHE_MS = 5L * 60_000L
@@ -2220,8 +2223,26 @@ class DonghuaLifeProvider : MainAPI() {
         "Referer" to "$ODYSEE_ORIGIN/"
     )
 
-    /** Pide los primeros 2 bytes con los mismos headers que usa el reproductor. Devuelve el código HTTP (-1 si no conectó). */
-    private fun probeMediaUrl(url: String): Int {
+    /**
+     * Juegos de headers para pedir el video al CDN de Odysee, del más parecido a un navegador móvil
+     * al original. El CDN contesta 429 según cómo se identifica el cliente, así que se prueba cuál
+     * acepta y se recuerda el que sirvió (odyseeProfileIndex).
+     */
+    private fun odyseeHeaderProfiles(): List<Map<String, String>> = listOf(
+        mapOf("User-Agent" to MOBILE_UA, "Referer" to "$ODYSEE_ORIGIN/"),
+        mapOf("User-Agent" to BROWSER_UA, "Referer" to "$ODYSEE_ORIGIN/"),
+        mapOf("User-Agent" to MOBILE_UA),
+        odyseeMediaHeaders()
+    )
+
+    @Volatile
+    private var odyseeProfileIndex = 0
+
+    /**
+     * Pide los primeros 2 bytes con los headers dados. Devuelve el código HTTP (-1 si no conectó)
+     * y un texto de diagnóstico (server, cf-ray, retry-after y el inicio del cuerpo si hubo error).
+     */
+    private fun probeMediaUrl(url: String, headers: Map<String, String>): Pair<Int, String> {
         var connection: java.net.HttpURLConnection? = null
         return try {
             val opened = java.net.URL(url).openConnection() as java.net.HttpURLConnection
@@ -2229,11 +2250,23 @@ class DonghuaLifeProvider : MainAPI() {
             opened.connectTimeout = 8_000
             opened.readTimeout = 8_000
             opened.instanceFollowRedirects = true
-            for ((key, value) in odyseeMediaHeaders()) opened.setRequestProperty(key, value)
+            for ((key, value) in headers) opened.setRequestProperty(key, value)
             opened.setRequestProperty("Range", "bytes=0-1")
-            opened.responseCode
+            val code = opened.responseCode
+            val info = StringBuilder()
+                .append("server=").append(opened.getHeaderField("Server"))
+                .append(" cf-ray=").append(opened.getHeaderField("CF-Ray"))
+                .append(" retry-after=").append(opened.getHeaderField("Retry-After"))
+                .append(" type=").append(opened.contentType)
+            if (code >= 400) {
+                val body = attempt0 {
+                    opened.errorStream?.bufferedReader()?.use { it.readText() }
+                }?.replace(Regex("\\s+"), " ")?.take(160)
+                info.append(" body=").append(body)
+            }
+            code to info.toString()
         } catch (e: Exception) {
-            -1
+            -1 to "error=${e.javaClass.simpleName}: ${e.message}"
         } finally {
             try {
                 connection?.disconnect()
@@ -2244,9 +2277,9 @@ class DonghuaLifeProvider : MainAPI() {
 
     /**
      * name y claimId salen del propio embed (sin bajar la página: menos requests y menos puntos de falla).
-     * Se obtienen las dos URLs posibles (get firmado y stream libre) y cada una se prueba antes de
-     * ofrecerla: así el reproductor no recibe un link que el CDN rechaza. Si las dos sirven, se
-     * ofrecen ambas ("Odysee" y "Odysee (alt)") para poder elegir.
+     * Se obtienen las dos URLs posibles (get firmado y stream libre) y se prueban contra el CDN con
+     * distintos juegos de headers hasta encontrar uno que responda bien. Si las dos sirven, se
+     * ofrecen ambas ("Odysee" y "Odysee (alt)").
      */
     private suspend fun resolveOdyseeLinks(embedUrl: String, display: String): List<ExtractorLink> {
         val url = embedUrl.replace("&amp;", "&").replace("\\u0026", "&")
@@ -2254,7 +2287,9 @@ class DonghuaLifeProvider : MainAPI() {
         val signatureTs = odyseeParam(url, "signature_ts")
         debug { "Odysee embed=$url firma=${!signature.isNullOrBlank()} ts=${!signatureTs.isNullOrBlank()}" }
 
+        val profiles = odyseeHeaderProfiles()
         var streamUrls: List<String> = emptyList()
+        var profileIndex = odyseeProfileIndex
         val tried = HashSet<String>()
 
         suspend fun tryUri(uri: String) {
@@ -2265,6 +2300,7 @@ class DonghuaLifeProvider : MainAPI() {
             if (cached != null && now - cached.first < ODYSEE_CACHE_MS) {
                 debug { "Odysee: uri=$uri desde caché" }
                 streamUrls = cached.second
+                profileIndex = odyseeProfileIndex
                 return
             }
 
@@ -2274,19 +2310,36 @@ class DonghuaLifeProvider : MainAPI() {
             odyseeFreeStream(uri)?.let { candidates.add(it) }
             if (candidates.isEmpty()) return
 
-            val codes = LinkedHashMap<String, Int>()
-            for (candidate in candidates) {
-                val code = probeMediaUrl(candidate)
-                codes[candidate] = code
-                debug { "Odysee: prueba HTTP $code -> ${candidate.take(150)}" }
+            val scanOrder = listOf(odyseeProfileIndex) + profiles.indices.filter { it != odyseeProfileIndex }
+            var chosen = -1
+            val working = ArrayList<String>()
+
+            for ((position, candidate) in candidates.withIndex()) {
+                // Solo la primera URL recorre todos los juegos de headers; las demás usan el que ya sirvió.
+                val order = when {
+                    chosen >= 0 -> listOf(chosen)
+                    position == 0 -> scanOrder
+                    else -> listOf(odyseeProfileIndex)
+                }
+                for (index in order) {
+                    val (code, info) = probeMediaUrl(candidate, profiles[index])
+                    debug { "Odysee: prueba perfil=$index HTTP $code $info -> ${candidate.take(110)}" }
+                    if (code in 200..299) {
+                        chosen = index
+                        working.add(candidate)
+                        break
+                    }
+                }
             }
 
-            val working = codes.filter { it.value in 200..299 }.keys.toList()
             if (working.isNotEmpty()) {
+                odyseeProfileIndex = chosen
+                profileIndex = chosen
                 odyseeStreamCache[uri] = now to working
                 streamUrls = working
             } else {
-                // Ninguna respondió bien: se ofrecen igual (puede ser un bloqueo solo de la prueba), sin cachear.
+                // Ninguna respondió bien con ningún perfil: se ofrecen igual, sin cachear.
+                profileIndex = odyseeProfileIndex
                 streamUrls = candidates.toList()
             }
         }
@@ -2299,6 +2352,7 @@ class DonghuaLifeProvider : MainAPI() {
             return emptyList()
         }
 
+        val finalHeaders = profiles[profileIndex]
         return streamUrls.mapIndexed { index, finalUrl ->
             val isHls = finalUrl.substringBefore("?").endsWith(".m3u8", ignoreCase = true)
             newExtractorLink(
@@ -2308,7 +2362,7 @@ class DonghuaLifeProvider : MainAPI() {
                 type = if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
             ) {
                 referer = "$ODYSEE_ORIGIN/"
-                this.headers = odyseeMediaHeaders()
+                this.headers = finalHeaders
                 quality = Qualities.Unknown.value
             }
         }
