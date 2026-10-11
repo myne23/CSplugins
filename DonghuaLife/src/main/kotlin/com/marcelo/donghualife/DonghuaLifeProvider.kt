@@ -2175,19 +2175,6 @@ class DonghuaLifeProvider : MainAPI() {
 
         debug { "Odysee: streaming_url firmada obtenida correctamente" }
 
-        val probe = attempt {
-            app.get(
-                streamingUrl,
-                headers = mapOf(
-                    "User-Agent" to BROWSER_UA,
-                    "Origin" to ODYSEE_ORIGIN,
-                    "Referer" to "$ODYSEE_ORIGIN/",
-                    "Range" to "bytes=0-1023"
-                ),
-                timeout = SOURCE_TIMEOUT_S
-            )
-        }
-        debug { "Odysee CDN probe -> HTTP ${probe?.code ?: "NETWORK_ERROR"}" }
 
 
         return listOf(
