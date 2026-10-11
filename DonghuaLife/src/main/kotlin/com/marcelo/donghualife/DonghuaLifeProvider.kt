@@ -1,5 +1,7 @@
 package com.marcelo.donghualife
 
+import android.util.Base64
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -12,11 +14,18 @@ import org.json.JSONObject
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.net.URI
+import java.net.URL
 import java.net.URLDecoder
 import java.text.Normalizer
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.Mac
@@ -48,30 +57,40 @@ class DonghuaLifeProvider : MainAPI() {
     )
 
     private companion object {
-        // DEBUG = true: logs en logcat con el tag "DonghuaLife" (ponelo en false para la versión final).
-        const val DEBUG = true
+        const val TAG = "DonghuaLife"
+
+        // true = logs en logcat con el tag "DonghuaLife".
+        const val DEBUG = false
 
         const val BROWSER_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
                 "Chrome/151.0.0.0 Safari/537.36"
+        const val MOBILE_UA =
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/130.0.0.0 Mobile Safari/537.36"
 
+        // Cachés y límites
         const val INDEX_CACHE_MS = 30L * 60_000L
+        const val INDEX_PARTIAL_TTL_MS = 2L * 60_000L
         const val HOME_CACHE_MS = 60_000L
         const val MAX_PAGES = 40
+        const val FOREGROUND_CONCURRENCY = 5
+        const val BACKGROUND_CONCURRENCY = 3
+        const val INDEX_FILE_NAME = "donghualife_index_v1.json"
 
         // Tiempos máximos (segundos) para que una fuente lenta no cuelgue la carga.
         const val SOURCE_TIMEOUT_S = 20L
         const val HLS_TIMEOUT_S = 10L
-
         const val ALTCHA_TIMEOUT_NS = 25_000_000_000L
-        val HEX_CHARS = "0123456789abcdef".toCharArray()
 
+        // Los capítulos VIP no se pueden reproducir: se ocultan de la lista.
+        const val VIP_MARK = "VIP"
+
+        // Portada / tarjetas / capítulos
         val CARD_HREF = Regex("""/(?:series|peliculas)/[^/?#]+/?$""")
         val WATCH_HREF = Regex("""/watch/[^/?#]+/?$""")
         val MOVIE_HREF = Regex("""/peliculas/[^/?#]+/?$""")
         val WATCH_SLUG = Regex("""/watch/([A-Za-z0-9][A-Za-z0-9_-]*)""")
-
-        // Texto de un link de capítulo: en la ficha "Capítulo 12 ...", en el reproductor "12 Capitulo ...".
         val EP_TEXT_START = Regex("""^\s*(?:\d+|(?:Cap[ií]tulo|Episodio|Ep\.?)\s*\d+)""", RegexOption.IGNORE_CASE)
         val EP_LEADING_NUMBER = Regex("""^\s*(\d+)""")
         val EP_TEXT = Regex("""(?:Cap[ií]tulo|Episodio)\s*(\d+)""", RegexOption.IGNORE_CASE)
@@ -83,19 +102,25 @@ class DonghuaLifeProvider : MainAPI() {
         val SEASON_HEADING = Regex("""^(.+?)\s*[—–-]\s*\d+\s+Episodios?""", RegexOption.IGNORE_CASE)
         val SEASON_COUNT = Regex("""(\d+)\s+Temporadas?""", RegexOption.IGNORE_CASE)
         val NEXT_IMAGE_URL = Regex("""[?&]url=([^&]+)""")
+
+        // Búsqueda
         val DIACRITICS = Regex("""\p{M}+""")
         val NON_ALNUM = Regex("[^a-z0-9]+")
-        val DM_PATH_ID = Regex("/video/([A-Za-z0-9]+)")
-        val IFRAME_SRC = Regex("""src=["']([^"']+)["']""")
-        val IMAGE_EXT = Regex("""\.(?:jpe?g|png|webp|gif|svg|avif)(?:\?.*)?$""", RegexOption.IGNORE_CASE)
-        val SUB_EXT = Regex("""\.(?:vtt|srt|ass|ssa)(?:\?.*)?$""", RegexOption.IGNORE_CASE)
-        val SUB_NOISE = Regex("thumb|sprite|storyboard|preview")
+        val STOPWORDS = setOf("el", "la", "los", "las", "de", "del", "the", "of", "a", "an", "and", "y", "en")
 
-        // Cada fuente del episodio trae un campo "token" (ver parseSources).
+        // Fuentes del episodio (cada una trae un campo "token")
         val TOKEN_FIELD = Regex("\"token\"\\s*:\\s*\"([^\"]+)\"")
         val SOURCE_OBJECT = Regex("""\{[^{}]*"token"\s*:\s*"[^"]+"[^{}]*\}""")
+        val EPISODE_ID_JSON = Regex(
+            "\"episodeId\"\\s*:\\s*\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""
+        )
+        val UUID_RE = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+        val IFRAME_SRC = Regex("""src=["']([^"']+)["']""")
+        val IMAGE_EXT = Regex("""\.(?:jpe?g|png|webp|gif|svg|avif)(?:\?.*)?$""", RegexOption.IGNORE_CASE)
 
         // Subtítulos: arrays/objetos bajo estas claves, o cualquier .vtt/.srt suelto como último recurso.
+        val SUB_EXT = Regex("""\.(?:vtt|srt|ass|ssa)(?:\?.*)?$""", RegexOption.IGNORE_CASE)
+        val SUB_NOISE = Regex("thumb|sprite|storyboard|preview")
         val SUB_ARRAY_KEY = Regex(
             "\"(?:subtitles?|tracks|captions|subs|textTracks|subtitleTracks)\"\\s*:\\s*[\\[{]",
             RegexOption.IGNORE_CASE
@@ -111,45 +136,9 @@ class DonghuaLifeProvider : MainAPI() {
         val HLS_URI = Regex("URI=\"([^\"]+)\"")
         val HLS_NAME = Regex("NAME=\"([^\"]+)\"")
         val HLS_LANG = Regex("LANGUAGE=\"([^\"]+)\"")
-
-        val ODYSEE_CONTENT_URL = Regex("\"contentUrl\"\\s*:\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
-        const val ODYSEE_API = "https://api.na-backend.odysee.com/api/v1/proxy"
-        const val ODYSEE_ORIGIN = "https://odysee.com"
-        // Odysee: una sola llamada a la vez, separadas por un mínimo, con reintentos y caché.
-        const val MOBILE_UA =
-            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) " +
-                "Chrome/130.0.0.0 Mobile Safari/537.36"
-        const val ODYSEE_MIN_GAP_MS = 450L
-        const val CDN_PROBE_TRIES = 12
-        const val CDN_PROBE_PAUSE_MS = 2_000L
-        const val ODYSEE_MAX_TRIES = 4
-        const val ODYSEE_CACHE_MS = 5L * 60_000L
-        val EPISODE_ID_JSON = Regex(
-            "\"episodeId\"\\s*:\\s*\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""
+        val IGNORE_KEY_PARTS = listOf(
+            "poster", "thumb", "image", "cover", "banner", "logo", "preview", "sprite", "storyboard", "icon"
         )
-        const val FOREGROUND_CONCURRENCY = 5
-        const val BACKGROUND_CONCURRENCY = 3
-        const val INDEX_PARTIAL_TTL_MS = 2L * 60_000L
-        const val INDEX_FILE_NAME = "donghualife_index_v1.json"
-        val SIG_PARAM = Regex("[?&]signature=([^&]+)")
-        val SIG_TS_PARAM = Regex("[?&]signature_ts=([^&]+)")
-        val UUID_FIND = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-        val SUB_WORD = Regex("subtitle|subs|subtitulo", RegexOption.IGNORE_CASE)
-        val UUID_RE = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-        val ODYSEE_CLAIM_ID = Regex("^[0-9a-fA-F]{6,40}$")
-        val OK_HLS_URL = Regex("\"hlsManifestUrl\":\"([^\"]+)\"", RegexOption.IGNORE_CASE)
-
-        val VOE_REDIRECT = Regex("""window\.location\.href\s*=\s*['"]([^'"]+/e/[^'"]+)['"]""")
-        val VOE_CONFIG = Regex("""<script[^>]+type=["']application/json["'][^>]*>\s*(?:\[\s*)?["']([^"']+)["']""")
-        val VOE_CONFIG_STRICT = Regex(
-            """<script[^>]+type=["']application/json["'][^>]*>\s*\[\s*["']([^"']+)["']\s*\]\s*</script>"""
-        )
-        val VOE_TOKEN = Regex("""name=["']_token["'][^>]+value=["']([^"']+)["']""")
-        val VOE_CHALLENGE = Regex("""<altcha-widget[^>]+challenge=["']([^"']+)["']""")
-        val VOE_SOURCE = Regex(""""source"\s*:\s*"([^"]+)"""")
-
-        val STOPWORDS = setOf("el", "la", "los", "las", "de", "del", "the", "of", "a", "an", "and", "y", "en")
-
         val LANG_NAMES = mapOf(
             "es" to "Español",
             "es-419" to "Español (Latino)",
@@ -170,46 +159,97 @@ class DonghuaLifeProvider : MainAPI() {
             "th" to "Tailandés"
         )
 
-        val IGNORE_KEY_PARTS = listOf(
-            "poster", "thumb", "image", "cover", "banner", "logo", "preview", "sprite", "storyboard", "icon"
+        // Dailymotion / OK.ru
+        val DM_PATH_ID = Regex("/video/([A-Za-z0-9]+)")
+        val OK_HLS_URL = Regex("\"hlsManifestUrl\":\"([^\"]+)\"", RegexOption.IGNORE_CASE)
+
+        // Odysee: una sola llamada a la vez, con pausa mínima entre ellas, reintentos y caché.
+        const val ODYSEE_API = "https://api.na-backend.odysee.com/api/v1/proxy"
+        const val ODYSEE_ORIGIN = "https://odysee.com"
+        const val ODYSEE_MIN_GAP_MS = 450L
+        const val ODYSEE_MAX_TRIES = 4
+        const val ODYSEE_CACHE_MS = 5L * 60_000L
+        const val CDN_PROBE_TRIES = 12
+        const val CDN_PROBE_PAUSE_MS = 2_000L
+        val ODYSEE_CONTENT_URL = Regex("\"contentUrl\"\\s*:\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
+        val ODYSEE_CONTENT_PATH = Regex(
+            """/(?:api/v\d+/streams/free|\$/download)/([^/?#]+)/([0-9a-fA-F]{6,40})""",
+            RegexOption.IGNORE_CASE
         )
+        val ODYSEE_CLAIM_ID = Regex("^[0-9a-fA-F]{6,40}$")
+        val SIG_PARAM = Regex("[?&]signature=([^&#]+)")
+        val SIG_TS_PARAM = Regex("[?&]signature_ts=([^&#]+)")
+        val ODYSEE_API_HEADERS = mapOf(
+            "User-Agent" to BROWSER_UA,
+            "Content-Type" to "application/json",
+            "Origin" to ODYSEE_ORIGIN,
+            "Accept" to "*/*",
+            "Referer" to "$ODYSEE_ORIGIN/"
+        )
+
+        // Juegos de headers para el CDN de Odysee (sin Referer responde 403). Se recuerda el que sirvió.
+        val ODYSEE_PROFILES = listOf(
+            mapOf(
+                "User-Agent" to BROWSER_UA,
+                "Origin" to ODYSEE_ORIGIN,
+                "Accept" to "*/*",
+                "Referer" to "$ODYSEE_ORIGIN/"
+            ),
+            mapOf("User-Agent" to MOBILE_UA, "Referer" to "$ODYSEE_ORIGIN/")
+        )
+
+        // VOE
+        val HEX_CHARS = "0123456789abcdef".toCharArray()
+        val VOE_REDIRECT = Regex("""window\.location\.href\s*=\s*['"]([^'"]+/e/[^'"]+)['"]""")
+        val VOE_CONFIG = Regex("""<script[^>]+type=["']application/json["'][^>]*>\s*(?:\[\s*)?["']([^"']+)["']""")
+        val VOE_CONFIG_STRICT = Regex(
+            """<script[^>]+type=["']application/json["'][^>]*>\s*\[\s*["']([^"']+)["']\s*\]\s*</script>"""
+        )
+        val VOE_TOKEN = Regex("""name=["']_token["'][^>]+value=["']([^"']+)["']""")
+        val VOE_CHALLENGE = Regex("""<altcha-widget[^>]+challenge=["']([^"']+)["']""")
+        val VOE_SOURCE = Regex(""""source"\s*:\s*"([^"]+)"""")
+        val VOE_SEPARATORS = listOf("@$", "^^", "~@", "%?", "*~", "!!", "#&")
     }
 
     // ───────────────────────── Utilidades ─────────────────────────
 
     private inline fun debug(message: () -> String) {
-        if (DEBUG) android.util.Log.d("DonghuaLife", message())
+        if (DEBUG) Log.d(TAG, message())
     }
 
-    /** Ejecuta el bloque y devuelve null si falla (sin tragarse la cancelación). */
-    private suspend inline fun <T> attempt(block: () -> T): T? {
-        return try {
-            block()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            debug { "ERROR ${e.javaClass.simpleName}: ${e.message}" }
-            null
-        }
-    }
-
-    private suspend fun guarded(tag: String, block: suspend () -> Unit) {
+    /** Ejecuta el bloque y devuelve null si falla (la cancelación sí se propaga). */
+    private inline fun <T> attempt(block: () -> T): T? =
         try {
             block()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            debug { "ERROR $tag -> ${e.javaClass.simpleName}: ${e.message}" }
-        }
-    }
-
-    // Versión no suspendida de attempt() para usar dentro de secuencias y funciones comunes.
-    private inline fun <T> attempt0(block: () -> T): T? =
-        try {
-            block()
-        } catch (e: Exception) {
+            debug { "${e.javaClass.simpleName}: ${e.message}" }
             null
         }
+
+    private fun JSONObject.firstString(keys: List<String>): String? =
+        keys.asSequence().map { optString(it).trim() }.firstOrNull { it.isNotBlank() && it != "null" }
+
+    private fun JSONObject.entries(): List<Pair<String, Any?>> =
+        keys().asSequence().map { it to opt(it) }.toList()
+
+    private fun JSONArray.items(): List<Any?> = (0 until length()).map { opt(it) }
+
+    private fun siteHeaders() = mapOf("User-Agent" to BROWSER_UA, "Referer" to "$mainUrl/")
+
+    private fun apiHeaders(
+        pageUrl: String,
+        cookies: String,
+        accept: String = "*/*",
+        extra: Map<String, String> = emptyMap()
+    ): Map<String, String> = buildMap {
+        put("User-Agent", BROWSER_UA)
+        put("Referer", pageUrl)
+        put("Accept", accept)
+        if (cookies.isNotBlank()) put("Cookie", cookies)
+        putAll(extra)
+    }
 
     private fun normalize(text: String): String =
         Normalizer.normalize(text.lowercase(), Normalizer.Form.NFD)
@@ -222,9 +262,14 @@ class DonghuaLifeProvider : MainAPI() {
         return if (value.startsWith("//")) "https:$value" else value
     }
 
-    private fun slugTitle(url: String): String =
+    private fun hostOf(url: String): String =
+        url.substringAfter("://", url).substringBefore("/").substringBefore("?").lowercase()
+
+    private fun slugOf(url: String): String =
         url.substringBefore("?").trimEnd('/').substringAfterLast('/')
-            .split('-')
+
+    private fun slugTitle(url: String): String =
+        slugOf(url).split('-')
             .filter { it.isNotBlank() }
             .joinToString(" ") { part -> part.replaceFirstChar { it.uppercase() } }
 
@@ -251,20 +296,13 @@ class DonghuaLifeProvider : MainAPI() {
     }
 
     private fun Element.firstPoster(): String? =
-        select("img")
-            .firstOrNull { !it.attr("src").contains("logo", ignoreCase = true) }
-            .imageUrl()
+        select("img").firstOrNull { !it.attr("src").contains("logo", ignoreCase = true) }.imageUrl()
 
-    private fun cardTitle(anchor: Element): String? {
+    private fun cardTitle(anchor: Element): String? =
         anchor.selectFirst("img[alt]")?.attr("alt")?.trim()
             ?.takeIf { it.isNotBlank() && !it.equals("DonghuaLife", ignoreCase = true) }
-            ?.let { return it }
-        anchor.attr("title").trim().takeIf { it.isNotBlank() }?.let { return it }
-        anchor.selectFirst("h1, h2, h3, h4, h5")?.text()?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?.let { return it }
-        return null
-    }
+            ?: anchor.attr("title").trim().takeIf { it.isNotBlank() }
+            ?: anchor.selectFirst("h1, h2, h3, h4, h5")?.text()?.trim()?.takeIf { it.isNotBlank() }
 
     private fun maxPage(root: Element): Int =
         root.select("a[href*='page=']")
@@ -277,6 +315,11 @@ class DonghuaLifeProvider : MainAPI() {
     /** El payload de Next.js trae el JSON con las comillas escapadas; se normaliza antes de buscar. */
     private fun unescapePayload(text: String): String =
         text.replace("\\\"", "\"").replace("\\u0026", "&").replace("\\/", "/")
+
+    private fun langLabel(code: String): String {
+        val value = code.trim()
+        return LANG_NAMES[value.lowercase()] ?: value.replaceFirstChar { it.uppercase() }
+    }
 
     /** Recolecta links sin repetir URLs ni trabajo ya hecho; seguro para uso paralelo. */
     private class LinkSink(private val callback: (ExtractorLink) -> Unit) {
@@ -297,7 +340,83 @@ class DonghuaLifeProvider : MainAPI() {
         }
     }
 
+    /** Candado de corrutinas hecho solo con la stdlib de Kotlin (el proyecto no incluye kotlinx.coroutines). */
+    private class SuspendLock {
+        private val monitor = Any()
+        private var held = false
+        private val waiters = java.util.ArrayDeque<Continuation<Unit>>()
+
+        suspend fun acquire() {
+            val mustWait = synchronized(monitor) {
+                if (!held) { held = true; false } else true
+            }
+            if (!mustWait) return
+            suspendCoroutine<Unit> { continuation ->
+                val granted = synchronized(monitor) {
+                    if (!held) { held = true; true } else { waiters.add(continuation); false }
+                }
+                if (granted) continuation.resume(Unit)
+            }
+        }
+
+        /** Si hay alguien esperando, el candado pasa directo a él (sigue "held"). */
+        fun release() {
+            val next = synchronized(monitor) {
+                val waiting = waiters.poll()
+                if (waiting == null) held = false
+                waiting
+            }
+            next?.resume(Unit)
+        }
+
+        suspend inline fun <T> withLock(block: () -> T): T {
+            acquire()
+            try {
+                return block()
+            } finally {
+                release()
+            }
+        }
+    }
+
+    private val pauseScheduler by lazy {
+        Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable).apply { isDaemon = true }
+        }
+    }
+
+    private suspend fun pause(ms: Long) {
+        if (ms <= 0) return
+        suspendCoroutine<Unit> { continuation ->
+            pauseScheduler.schedule(
+                { continuation.resume(Unit) },
+                ms,
+                TimeUnit.MILLISECONDS
+            )
+        }
+    }
+
+    /** Lanza una corrutina "fire and forget" sin depender de kotlinx.coroutines. */
+    private fun launchBackground(block: suspend () -> Unit) {
+        block.startCoroutine(object : Continuation<Unit> {
+            override val context = EmptyCoroutineContext
+            override fun resumeWith(result: Result<Unit>) {}
+        })
+    }
+
     // ───────────────────────── Parseo de tarjetas ─────────────────────────
+
+    private fun searchResponse(
+        title: String,
+        url: String,
+        poster: String?,
+        movie: Boolean = url.contains("/peliculas/")
+    ): SearchResponse =
+        if (movie) {
+            newMovieSearchResponse(title, url, TvType.AnimeMovie) { this.posterUrl = poster }
+        } else {
+            newAnimeSearchResponse(title, url, TvType.Anime) { this.posterUrl = poster }
+        }
 
     private class CardInfo(val url: String, var title: String?, var poster: String?)
 
@@ -317,32 +436,22 @@ class DonghuaLifeProvider : MainAPI() {
 
         return cards.values.mapNotNull { info ->
             val title = info.title ?: slugTitle(info.url)
-            if (title.isBlank()) return@mapNotNull null
-
-            if (info.url.contains("/peliculas/")) {
-                newMovieSearchResponse(title, info.url, TvType.AnimeMovie) {
-                    this.posterUrl = info.poster
-                }
-            } else {
-                newAnimeSearchResponse(title, info.url, TvType.Anime) {
-                    this.posterUrl = info.poster
-                }
-            }
+            if (title.isBlank()) null else searchResponse(title, info.url, info.poster)
         }
     }
 
-    /** Tarjetas de capítulos (/watch/...): al abrirlas, load() resuelve la serie. */
+    /** Tarjetas de capítulos (/watch/...), sin los VIP: al abrirlas, load() resuelve la serie. */
     private fun parseEpisodeCards(root: Element): List<SearchResponse> {
         val seen = HashSet<String>()
 
         return root.select("a[href*='/watch/']").mapNotNull { anchor ->
             val path = anchorPath(anchor)
             if (!WATCH_HREF.containsMatchIn(path) || !seen.add(path)) return@mapNotNull null
+            if (anchor.text().contains(VIP_MARK)) return@mapNotNull null
 
             val title = cardTitle(anchor)
                 ?: EP_IN_CARD.find(anchor.text())?.groupValues?.getOrNull(1)?.trim()
-                ?: return@mapNotNull null
-            if (title.isBlank()) return@mapNotNull null
+            if (title.isNullOrBlank()) return@mapNotNull null
 
             val episode = SLUG_TAIL_NUMBER.find(path)?.groupValues?.getOrNull(1)?.toIntOrNull()
             val poster = anchor.firstPoster()
@@ -370,7 +479,6 @@ class DonghuaLifeProvider : MainAPI() {
                 val container = anchor.parents().firstOrNull {
                     it.selectFirst("h1, h2") != null && it.selectFirst("img") != null
                 }
-
                 val title = container?.selectFirst("h1, h2")?.text()?.trim()
                     ?.takeIf { it.isNotBlank() }
                     ?: slugTitle(url)
@@ -402,66 +510,47 @@ class DonghuaLifeProvider : MainAPI() {
     private var homeCache: Pair<Long, Document>? = null
 
     private suspend fun homeDocument(): Document? {
-        val cached = homeCache
-        if (cached != null && System.currentTimeMillis() - cached.first < HOME_CACHE_MS) {
-            return cached.second
+        homeCache?.let { (time, document) ->
+            if (System.currentTimeMillis() - time < HOME_CACHE_MS) return document
         }
         val document = attempt { app.get(mainUrl).document } ?: return null
         homeCache = System.currentTimeMillis() to document
         return document
     }
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val data = request.data
+    private suspend fun emptyHome(): HomePageResponse = newHomePageResponse(emptyList(), hasNext = false)
 
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         prefetchIndex()
+        return if (request.data.startsWith("home:")) homeSection(page, request) else catalogPage(page, request)
+    }
 
-        if (data.startsWith("home:")) {
-            if (page > 1) return newHomePageResponse(emptyList(), hasNext = false)
+    private suspend fun homeSection(page: Int, request: MainPageRequest): HomePageResponse {
+        if (page > 1) return emptyHome()
+        val document = homeDocument() ?: return emptyHome()
 
-            val document = homeDocument()
-                ?: return newHomePageResponse(emptyList(), hasNext = false)
-
-            val items: List<SearchResponse> = when (data) {
-                "home:featured" -> parseFeatured(document)
-                "home:latest" ->
-                    sectionRoot(document, "Últimos episodios", "/watch/")
-                        ?.let { parseEpisodeCards(it) }.orEmpty()
-                "home:trending" ->
-                    sectionRoot(document, "Tendencias", "/series/")
-                        ?.let { parseSeriesCards(it) }.orEmpty()
-                "home:recommended" ->
-                    sectionRoot(document, "Te recomendamos", "/series/")
-                        ?.let { parseSeriesCards(it) }.orEmpty()
-                else -> emptyList()
-            }
-
-            if (items.isEmpty()) return newHomePageResponse(emptyList(), hasNext = false)
-
-            return newHomePageResponse(
-                listOf(
-                    HomePageList(
-                        request.name,
-                        items,
-                        isHorizontalImages = data == "home:featured"
-                    )
-                ),
-                hasNext = false
-            )
+        val items: List<SearchResponse> = when (request.data) {
+            "home:featured" -> parseFeatured(document)
+            "home:latest" ->
+                sectionRoot(document, "Últimos episodios", "/watch/")?.let { parseEpisodeCards(it) }.orEmpty()
+            "home:trending" ->
+                sectionRoot(document, "Tendencias", "/series/")?.let { parseSeriesCards(it) }.orEmpty()
+            else -> emptyList()
         }
+        if (items.isEmpty()) return emptyHome()
 
-        val url = if (page == 1) {
-            data
-        } else {
-            data + (if (data.contains("?")) "&" else "?") + "page=$page"
-        }
+        return newHomePageResponse(
+            listOf(HomePageList(request.name, items, isHorizontalImages = request.data == "home:featured")),
+            hasNext = false
+        )
+    }
+
+    private suspend fun catalogPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val data = request.data
+        val url = if (page == 1) data else data + (if (data.contains("?")) "&" else "?") + "page=$page"
 
         // Si una sección falla, queda vacía y el resto del catálogo sigue funcionando.
-        val document = attempt { app.get(url).document }
-            ?: return newHomePageResponse(emptyList(), hasNext = false)
+        val document = attempt { app.get(url).document } ?: return emptyHome()
 
         val items = parseSeriesCards(document)
         val last = maxPage(document)
@@ -472,26 +561,14 @@ class DonghuaLifeProvider : MainAPI() {
         )
     }
 
-    // ───────────────────────── Búsqueda ─────────────────────────
+    // ───────────────────────── Índice y búsqueda ─────────────────────────
 
     @Volatile
     private var indexCache: Pair<Long, List<SearchResponse>>? = null
 
     private val prefetchStarted = AtomicBoolean(false)
     private val refreshing = AtomicBoolean(false)
-
-    // Un solo recorrido del catálogo a la vez; los demás esperan su resultado (solo stdlib de Kotlin).
-    private val indexLock = Any()
-    private var indexBuilding = false
-    private val indexWaiters = ArrayList<Continuation<List<SearchResponse>>>()
-
-    /** Lanza una corrutina "fire and forget" sin depender de kotlinx.coroutines. */
-    private fun launchBackground(block: suspend () -> Unit) {
-        block.startCoroutine(object : Continuation<Unit> {
-            override val context = EmptyCoroutineContext
-            override fun resumeWith(result: Result<Unit>) {}
-        })
-    }
+    private val indexLock = SuspendLock()
 
     // En Android java.io.tmpdir apunta al cache de la app: el índice sobrevive entre sesiones.
     private val indexFile: File by lazy {
@@ -499,7 +576,7 @@ class DonghuaLifeProvider : MainAPI() {
     }
 
     private fun saveIndexToDisk(index: List<SearchResponse>) {
-        try {
+        attempt {
             val array = JSONArray()
             for (item in index) {
                 array.put(
@@ -511,33 +588,22 @@ class DonghuaLifeProvider : MainAPI() {
                 )
             }
             indexFile.writeText(array.toString())
-        } catch (e: Exception) {
-            debug { "no se pudo guardar el índice: ${e.message}" }
         }
     }
 
-    private fun loadIndexFromDisk(): Pair<Long, List<SearchResponse>>? {
-        return try {
-            if (!indexFile.exists()) return null
-            val array = JSONArray(indexFile.readText())
-            val items = ArrayList<SearchResponse>(array.length())
-            for (i in 0 until array.length()) {
-                val row = array.getJSONArray(i)
-                val isMovie = row.optInt(0) == 1
-                val title = row.optString(1)
-                val itemUrl = row.optString(2)
-                val poster = row.optString(3).takeIf { it.isNotBlank() }
-                if (title.isBlank() || itemUrl.isBlank()) continue
-                items += if (isMovie) {
-                    newMovieSearchResponse(title, itemUrl, TvType.AnimeMovie) { this.posterUrl = poster }
-                } else {
-                    newAnimeSearchResponse(title, itemUrl, TvType.Anime) { this.posterUrl = poster }
-                }
-            }
-            if (items.isEmpty()) null else indexFile.lastModified() to items
-        } catch (e: Exception) {
-            null
+    private fun loadIndexFromDisk(): Pair<Long, List<SearchResponse>>? = attempt {
+        if (!indexFile.exists()) return@attempt null
+
+        val array = JSONArray(indexFile.readText())
+        val items = ArrayList<SearchResponse>(array.length())
+        for (i in 0 until array.length()) {
+            val row = array.getJSONArray(i)
+            val title = row.optString(1)
+            val itemUrl = row.optString(2)
+            if (title.isBlank() || itemUrl.isBlank()) continue
+            items += searchResponse(title, itemUrl, row.optString(3).takeIf { it.isNotBlank() }, row.optInt(0) == 1)
         }
+        if (items.isEmpty()) null else indexFile.lastModified() to items
     }
 
     /**
@@ -580,36 +646,16 @@ class DonghuaLifeProvider : MainAPI() {
         launchBackground { attempt { fullIndex(BACKGROUND_CONCURRENCY) } }
     }
 
+    /** Un solo recorrido del catálogo a la vez: quien espera el candado reutiliza lo que armó el anterior. */
     private suspend fun buildIndex(force: Boolean, concurrency: Int): List<SearchResponse> {
-        val cached = indexCache
-        if (!force && cached != null && System.currentTimeMillis() - cached.first < INDEX_CACHE_MS) {
-            return cached.second
+        val requestedAt = System.currentTimeMillis()
+        return indexLock.withLock {
+            val cached = indexCache
+            // Con force solo vale lo que se armó mientras esperábamos; sin force, lo que no esté vencido.
+            val usable = cached != null &&
+                (if (force) cached.first >= requestedAt else System.currentTimeMillis() - cached.first < INDEX_CACHE_MS)
+            if (cached != null && usable) cached.second else crawlIndex(cached?.second.orEmpty(), concurrency)
         }
-
-        val mustWait = synchronized(indexLock) {
-            if (indexBuilding) true else { indexBuilding = true; false }
-        }
-
-        if (mustWait) {
-            return suspendCoroutine { continuation ->
-                val finished = synchronized(indexLock) {
-                    if (indexBuilding) { indexWaiters.add(continuation); false } else true
-                }
-                if (finished) continuation.resume(indexCache?.second.orEmpty())
-            }
-        }
-
-        var result: List<SearchResponse> = cached?.second.orEmpty()
-        try {
-            result = crawlIndex(cached?.second.orEmpty(), concurrency)
-        } finally {
-            val waiting = synchronized(indexLock) {
-                indexBuilding = false
-                ArrayList(indexWaiters).also { indexWaiters.clear() }
-            }
-            for (waiter in waiting) waiter.resume(result)
-        }
-        return result
     }
 
     private suspend fun crawlIndex(previous: List<SearchResponse>, concurrency: Int): List<SearchResponse> {
@@ -622,8 +668,8 @@ class DonghuaLifeProvider : MainAPI() {
         }
 
         // Primero la página 1 de cada catálogo (para saber cuántas hay) y luego el resto en tandas.
-        // Las tandas limitan las conexiones simultáneas: en segundo plano se dejan libres para que
-        // la portada no quede trabada esperando.
+        // Las tandas limitan las conexiones simultáneas: en segundo plano quedan libres para que
+        // la portada no se trabe esperando.
         val bases = listOf("$mainUrl/series", "$mainUrl/peliculas")
         val firsts = bases.amap { base -> base to page(base) }
 
@@ -636,12 +682,11 @@ class DonghuaLifeProvider : MainAPI() {
         }
 
         for (batch in rest.chunked(concurrency.coerceAtLeast(1))) {
-            val parsed = batch.amap { pageUrl -> page(pageUrl)?.let { parseSeriesCards(it) } ?: emptyList() }
-            for (items in parsed) crawled += items
+            batch.amap { pageUrl -> page(pageUrl)?.let { parseSeriesCards(it) }.orEmpty() }
+                .forEach { crawled += it }
         }
 
         val index = crawled.distinctBy { it.url }
-
         if (index.isEmpty()) return previous
 
         if (failures.get() == 0) {
@@ -674,16 +719,35 @@ class DonghuaLifeProvider : MainAPI() {
     /** 1.0 igual, 0.9 prefijo, 0.85 con una o dos letras de diferencia (renegade/renegado), 0 si no se parecen. */
     private fun tokenSimilarity(a: String, b: String): Double {
         if (a == b) return 1.0
-        val shortLen = minOf(a.length, b.length)
-        if (shortLen >= 3 && (a.startsWith(b) || b.startsWith(a))) return 0.9
-        val maxLen = maxOf(a.length, b.length)
+        if (minOf(a.length, b.length) >= 3 && (a.startsWith(b) || b.startsWith(a))) return 0.9
         val allowed = when {
-            maxLen >= 9 -> 2
-            maxLen >= 5 -> 1
+            maxOf(a.length, b.length) >= 9 -> 2
+            maxOf(a.length, b.length) >= 5 -> 1
             else -> 0
         }
-        if (allowed == 0) return 0.0
-        return if (levenshtein(a, b) <= allowed) 0.85 else 0.0
+        return if (allowed > 0 && levenshtein(a, b) <= allowed) 0.85 else 0.0
+    }
+
+    /** Título, slug y palabras ya normalizados: se calculan una vez por índice, no en cada búsqueda. */
+    private class SearchEntry(
+        val item: SearchResponse,
+        val title: String,
+        val slug: String,
+        val tokens: List<String>
+    )
+
+    @Volatile
+    private var entryCache: Pair<List<SearchResponse>, List<SearchEntry>>? = null
+
+    private fun entriesFor(index: List<SearchResponse>): List<SearchEntry> {
+        entryCache?.let { (source, entries) -> if (source === index) return entries }
+        val entries = index.map { item ->
+            val title = normalize(item.name)
+            val slug = normalize(slugOf(item.url).replace('-', ' '))
+            SearchEntry(item, title, slug, (title.split(" ") + slug.split(" ")).filter { it.isNotBlank() }.distinct())
+        }
+        entryCache = index to entries
+        return entries
     }
 
     /**
@@ -691,28 +755,21 @@ class DonghuaLifeProvider : MainAPI() {
      * por eso se compara palabra por palabra, sin importar el orden y tolerando letras de diferencia.
      * También se mira el slug del link, que a veces conserva el nombre en inglés.
      */
-    private fun searchScore(item: SearchResponse, query: String, queryTokens: List<String>): Int {
-        val title = normalize(item.name)
-        if (title.isBlank()) return 0
-
-        val slug = normalize(
-            item.url.substringBefore("?").trimEnd('/').substringAfterLast('/').replace('-', ' ')
-        )
+    private fun searchScore(entry: SearchEntry, query: String, queryTokens: List<String>): Int {
+        if (entry.title.isBlank()) return 0
 
         when {
-            title == query || slug == query -> return 100
-            title.startsWith(query) -> return 95
-            title.contains(query) || slug.contains(query) -> return 90
+            entry.title == query || entry.slug == query -> return 100
+            entry.title.startsWith(query) -> return 95
+            entry.title.contains(query) || entry.slug.contains(query) -> return 90
         }
 
-        if (queryTokens.isEmpty()) return 0
-        val candidateTokens = (title.split(" ") + slug.split(" ")).filter { it.isNotBlank() }.distinct()
-        if (candidateTokens.isEmpty()) return 0
+        if (queryTokens.isEmpty() || entry.tokens.isEmpty()) return 0
 
         var matched = 0
         var total = 0.0
         for (token in queryTokens) {
-            val best = candidateTokens.maxOf { tokenSimilarity(token, it) }
+            val best = entry.tokens.maxOf { tokenSimilarity(token, it) }
             if (best >= 0.75) {
                 matched++
                 total += best
@@ -733,10 +790,10 @@ class DonghuaLifeProvider : MainAPI() {
         val allTokens = normalizedQuery.split(" ").filter { it.isNotBlank() }
         val tokens = allTokens.filter { it !in STOPWORDS }.ifEmpty { allTokens }
 
-        return fullIndex()
-            .mapNotNull { response ->
-                val score = searchScore(response, normalizedQuery, tokens)
-                if (score > 0) score to response else null
+        return entriesFor(fullIndex())
+            .mapNotNull { entry ->
+                val score = searchScore(entry, normalizedQuery, tokens)
+                if (score > 0) score to entry.item else null
             }
             .sortedByDescending { it.first }
             .map { it.second }
@@ -748,12 +805,12 @@ class DonghuaLifeProvider : MainAPI() {
         val clean = url.substringBefore("#")
 
         // Un capítulo suelto (p. ej. de "Últimos episodios"): se abre la serie completa.
-        if (WATCH_HREF.containsMatchIn(clean.substringBefore("?"))) {
-            val seriesUrl = resolveSeriesFromWatch(clean) ?: return null
-            return loadSeries(seriesUrl)
+        val seriesUrl = if (WATCH_HREF.containsMatchIn(clean.substringBefore("?"))) {
+            resolveSeriesFromWatch(clean) ?: return null
+        } else {
+            clean
         }
-
-        return loadSeries(clean)
+        return loadSeries(seriesUrl)
     }
 
     private suspend fun resolveSeriesFromWatch(watchUrl: String): String? {
@@ -771,6 +828,14 @@ class DonghuaLifeProvider : MainAPI() {
 
     private class SeasonBucket(val index: Int, val label: String, val episodes: List<EpisodeRaw>)
 
+    private class ShowMeta(
+        val title: String,
+        val poster: String?,
+        val plot: String?,
+        val tags: List<String>,
+        val status: ShowStatus?
+    )
+
     private fun isNavigationText(text: String): Boolean {
         val lower = text.lowercase()
         return lower.contains("ver último") ||
@@ -786,9 +851,10 @@ class DonghuaLifeProvider : MainAPI() {
             ?: SLUG_TAIL_NUMBER.find(path)?.groupValues?.getOrNull(1)?.toIntOrNull()
 
     /**
-     * Capítulos de la lista visible. El número sale del texto del link, NO del slug: los slugs de
-     * películas/especiales terminan en números que no son temporada ("...-peli-ep-151--152-1").
-     * Se descartan "Ver Último", "Siguiente", los links de pestañas (?s=N), etc.
+     * Capítulos de la lista visible (VIP incluidos: se filtran después, porque el primero de la
+     * lista sirve de ancla para pedir las otras temporadas). El número sale del texto del link,
+     * NO del slug: los slugs de películas/especiales terminan en números que no son temporada
+     * ("...-peli-ep-151--152-1"). Se descartan "Ver Último", "Siguiente", los links de pestañas (?s=N), etc.
      */
     private fun harvestEpisodes(root: Element): List<EpisodeRaw> {
         val anchors = root.select("a[href*='/watch/']").filter { anchor ->
@@ -800,17 +866,14 @@ class DonghuaLifeProvider : MainAPI() {
         val chosen = anchors.filter { EP_TEXT_START.containsMatchIn(it.text()) }.ifEmpty { anchors }
 
         val result = LinkedHashMap<String, EpisodeRaw>()
-        var position = 0
         for (anchor in chosen) {
             val path = anchorPath(anchor)
             if (result.containsKey(path)) continue
-            position++
 
             val text = anchor.text().trim()
-            val number = episodeNumber(text, path) ?: position
-            result[path] = EpisodeRaw(path, number, text.contains("VIP"))
+            val number = episodeNumber(text, path) ?: (result.size + 1)
+            result[path] = EpisodeRaw(path, number, text.contains(VIP_MARK))
         }
-
         return result.values.toList()
     }
 
@@ -838,14 +901,14 @@ class DonghuaLifeProvider : MainAPI() {
      * HTML o del payload de Next.js que empiece con el slug de la película → probar slugs típicos.
      */
     private suspend fun findMovieWatchUrl(document: Document, movieUrl: String): String? {
-        harvestEpisodes(document).firstOrNull()?.let { return it.url }
+        harvestEpisodes(document).firstOrNull { !it.vip }?.let { return it.url }
 
         document.select("a[href*='/watch/']")
             .map { anchorPath(it) }
             .firstOrNull { WATCH_HREF.containsMatchIn(it) }
             ?.let { return it.trimEnd('/') }
 
-        val slug = movieUrl.substringBefore("?").trimEnd('/').substringAfterLast('/')
+        val slug = slugOf(movieUrl)
         if (slug.isBlank()) return null
 
         val fromPayload = WATCH_SLUG.findAll(unescapePayload(document.html()))
@@ -856,11 +919,7 @@ class DonghuaLifeProvider : MainAPI() {
 
         for (candidate in listOf("$mainUrl/watch/$slug-1", "$mainUrl/watch/$slug")) {
             val response = attempt {
-                app.get(
-                    candidate,
-                    headers = mapOf("User-Agent" to BROWSER_UA, "Referer" to "$mainUrl/"),
-                    timeout = SOURCE_TIMEOUT_S
-                )
+                app.get(candidate, headers = siteHeaders(), timeout = SOURCE_TIMEOUT_S)
             } ?: continue
             if (response.code in 200..299 && TOKEN_FIELD.containsMatchIn(unescapePayload(response.text))) {
                 return candidate
@@ -871,9 +930,9 @@ class DonghuaLifeProvider : MainAPI() {
 
     private suspend fun loadSeries(url: String): LoadResponse? {
         val document = attempt { app.get(url).document } ?: return null
+        val h1 = document.selectFirst("h1")
 
-        val title = document.selectFirst("h1")?.text()?.trim()
-            ?.takeIf { it.isNotBlank() }
+        val title = h1?.text()?.trim()?.takeIf { it.isNotBlank() }
             ?: document.selectFirst("meta[property=og:title]")?.attr("content")
                 ?.substringBefore("|")?.trim()?.takeIf { it.isNotBlank() }
             ?: return null
@@ -895,36 +954,43 @@ class DonghuaLifeProvider : MainAPI() {
             .distinct()
 
         // El estado se busca junto al título, no en toda la página.
-        val h1: Element? = document.selectFirst("h1")
-        val h1Parent: Element? = h1?.parent()
-        val h1Grand: Element? = h1Parent?.parent()
-        val statusScope: String = (h1Grand ?: h1Parent)?.text() ?: ""
+        val statusScope = (h1?.parent()?.parent() ?: h1?.parent())?.text().orEmpty()
         val status = when {
             statusScope.contains("Finalizad", ignoreCase = true) -> ShowStatus.Completed
             statusScope.contains("Emisi", ignoreCase = true) -> ShowStatus.Ongoing
             else -> null
         }
 
-        // ── Películas ──
-        // Se resuelven antes y sin pedir temporadas. Si la ficha no trae un <a href="/watch/...">
-        // (el botón puede ir en el payload de Next.js), se busca por otras vías; si aun así no se
-        // encuentra, se entrega la propia URL de la película y loadLinks vuelve a intentarlo.
-        if (MOVIE_HREF.containsMatchIn(url.substringBefore("?"))) {
-            // La ficha de la película ya trae el reproductor y sus fuentes (con token) embebidos:
-            // loadLinks lee la propia URL. Solo si no hay fuentes se busca un /watch/ aparte.
-            val hasSources = TOKEN_FIELD.containsMatchIn(unescapePayload(document.html()))
-            val watch = if (hasSources) url else (findMovieWatchUrl(document, url) ?: url)
-            return newMovieLoadResponse(title, url, TvType.AnimeMovie, watch) {
-                this.posterUrl = poster
-                this.plot = plot
-                this.tags = tags
-            }
+        val meta = ShowMeta(title, poster, plot, tags, status)
+        return if (MOVIE_HREF.containsMatchIn(url.substringBefore("?"))) {
+            loadMovie(url, document, meta)
+        } else {
+            loadShow(url, document, meta)
         }
+    }
 
-        // ── Temporadas ──
-        // La ficha solo trae la lista de la pestaña activa. Las demás se piden en paralelo a través
-        // de la página de un capítulo (?s=N), donde N es la posición de la pestaña (no el número de
-        // temporada: "Especial" y "Peli" ocupan lugar).
+    /**
+     * Las películas se resuelven antes y sin pedir temporadas. La ficha ya trae el reproductor y sus
+     * fuentes (con token) embebidos: loadLinks lee la propia URL. Solo si no hay fuentes se busca un
+     * /watch/ aparte; si tampoco aparece, se entrega la URL de la película y loadLinks reintenta.
+     */
+    private suspend fun loadMovie(url: String, document: Document, meta: ShowMeta): LoadResponse {
+        val hasSources = TOKEN_FIELD.containsMatchIn(unescapePayload(document.html()))
+        val watch = if (hasSources) url else (findMovieWatchUrl(document, url) ?: url)
+
+        return newMovieLoadResponse(meta.title, url, TvType.AnimeMovie, watch) {
+            this.posterUrl = meta.poster
+            this.plot = meta.plot
+            this.tags = meta.tags
+        }
+    }
+
+    /**
+     * La ficha solo trae la lista de la pestaña activa. Las demás se piden en paralelo a través de
+     * la página de un capítulo (?s=N), donde N es la posición de la pestaña (no el número de
+     * temporada: "Especial" y "Peli" ocupan lugar).
+     */
+    private suspend fun collectSeasons(document: Document, title: String): List<SeasonBucket> {
         val heading = document.select("h2, h3, h4")
             .firstOrNull { SEASON_HEADING.containsMatchIn(it.text().trim()) }
 
@@ -937,8 +1003,8 @@ class DonghuaLifeProvider : MainAPI() {
 
         val pageLabels = seasonLabelsFromPage(document, title)
         val declaredCount = document.getElementsContainingOwnText("Temporada")
-            .mapNotNull { SEASON_COUNT.matchEntire(it.ownText().trim())?.groupValues?.getOrNull(1)?.toIntOrNull() }
-            .firstOrNull() ?: 0
+            .firstNotNullOfOrNull { SEASON_COUNT.matchEntire(it.ownText().trim())?.groupValues?.getOrNull(1)?.toIntOrNull() }
+            ?: 0
 
         val seasonCount = maxOf(pageLabels.size, declaredCount, 1)
         val activeIndex = pageLabels.indexOfFirst { it.equals(activeLabel, ignoreCase = true) }
@@ -951,7 +1017,7 @@ class DonghuaLifeProvider : MainAPI() {
 
         val fetched: Map<Int, List<EpisodeRaw>> =
             if (seasonCount > 1 && anchorEpisode != null) {
-                (1..seasonCount).filter { it != activeIndex }.toList()
+                (1..seasonCount).filter { it != activeIndex }
                     .amap { index ->
                         val seasonDocument = attempt { app.get("$anchorEpisode?s=$index").document }
                         if (seasonDocument == null) {
@@ -971,47 +1037,48 @@ class DonghuaLifeProvider : MainAPI() {
                 emptyMap()
             }
 
-        // Si la web ignora ?s=N y devuelve siempre la misma lista, esa pestaña se descarta
-        // en vez de duplicar capítulos.
+        // Si la web ignora ?s=N y devuelve siempre la misma lista, esa pestaña se descarta en vez de
+        // duplicar capítulos. Los VIP se reclaman igual (para detectar duplicados) pero no se muestran.
         val claimed = HashSet<String>()
         val buckets = ArrayList<SeasonBucket>()
         for (index in 1..seasonCount) {
             val raw = if (index == activeIndex) activeEpisodes else fetched[index].orEmpty()
-            val fresh = raw.filter { claimed.add(it.url) }
-            if (fresh.isEmpty()) continue
+            val playable = raw.filter { claimed.add(it.url) && !it.vip }
+            if (playable.isEmpty()) continue
 
             val label = tabLabels[index]
                 ?: pageLabels.getOrNull(index - 1)
                 ?: activeLabel.takeIf { index == activeIndex }
                 ?: "Temporada $index"
 
-            buckets += SeasonBucket(index, label, fresh)
+            buckets += SeasonBucket(index, label, playable)
         }
+        return buckets
+    }
+
+    private suspend fun loadShow(url: String, document: Document, meta: ShowMeta): LoadResponse {
+        val buckets = collectSeasons(document, meta.title)
 
         val episodes = buckets.flatMap { bucket ->
-            val numbered = SEASON_LABEL.matches(bucket.label.trim())
-            val single = bucket.episodes.size == 1
+            // Una pestaña con un solo capítulo que no es "Temporada N" (Especial, Peli...) usa su etiqueta.
+            val useLabel = !SEASON_LABEL.matches(bucket.label.trim()) && bucket.episodes.size == 1
 
             bucket.episodes
                 .sortedBy { it.number }
                 .map { item ->
                     newEpisode(item.url) {
-                        this.name = if (!numbered && single) {
-                            bucket.label
-                        } else {
-                            "Capítulo ${item.number}" + if (item.vip) " · VIP" else ""
-                        }
+                        this.name = if (useLabel) bucket.label else "Capítulo ${item.number}"
                         this.season = bucket.index
                         this.episode = item.number
                     }
                 }
         }
 
-        return newAnimeLoadResponse(title, url, TvType.Anime) {
-            this.posterUrl = poster
-            this.plot = plot
-            this.tags = tags
-            if (status != null) this.showStatus = status
+        return newAnimeLoadResponse(meta.title, url, TvType.Anime) {
+            this.posterUrl = meta.poster
+            this.plot = meta.plot
+            this.tags = meta.tags
+            if (meta.status != null) this.showStatus = meta.status
             if (buckets.size > 1) {
                 this.seasonNames = buckets.map { SeasonData(season = it.index, name = it.label) }
             }
@@ -1019,18 +1086,20 @@ class DonghuaLifeProvider : MainAPI() {
         }
     }
 
-    // ───────────────────────── Links ─────────────────────────
+    // ───────────────────────── Fuentes del episodio ─────────────────────────
 
     private class PlayerSource(
-        val id: String,
         val label: String,
         val token: String,
         val provider: String,
         val priority: Int,
         val subtitles: List<Pair<String, String>>,
-        // UUIDs que trae la fuente (id, etc.): candidatos para /api/subtitles/{uuid}.
+        // UUIDs que trae la fuente: candidatos para /api/subtitles/{uuid}.
         val uuids: List<String>
-    )
+    ) {
+        val isR2: Boolean
+            get() = provider.equals("r2", ignoreCase = true) || label.equals("r2", ignoreCase = true)
+    }
 
     /** Devuelve el objeto JSON { ... } que contiene la posición dada (aguanta objetos anidados). */
     private fun enclosingObject(text: String, position: Int): String? {
@@ -1050,8 +1119,7 @@ class DonghuaLifeProvider : MainAPI() {
             }
             i--
         }
-        if (start < 0) return null
-        return balanced(text, start, 60_000)
+        return if (start < 0) null else balanced(text, start, 60_000)
     }
 
     /** Texto balanceado desde `start` (que debe ser '{' o '[') hasta su cierre. */
@@ -1059,17 +1127,14 @@ class DonghuaLifeProvider : MainAPI() {
         val open = text[start]
         val close = if (open == '[') ']' else '}'
         var depth = 0
-        var i = start
         val end = minOf(text.length, start + limit)
-        while (i < end) {
+        for (i in start until end) {
             val c = text[i]
             if (c == open) {
                 depth++
-            } else if (c == close) {
-                depth--
-                if (depth == 0) return text.substring(start, i + 1)
+            } else if (c == close && --depth == 0) {
+                return text.substring(start, i + 1)
             }
-            i++
         }
         return null
     }
@@ -1101,27 +1166,24 @@ class DonghuaLifeProvider : MainAPI() {
             collectUuids(json, uuids)
 
             result += PlayerSource(
-                uuids = uuids.toList(),
-                id = json.optString("id"),
                 label = label.ifBlank { provider.ifBlank { "Servidor" } },
                 token = token,
                 provider = provider,
                 priority = json.optInt("priority", 99),
-                subtitles = subtitles
+                subtitles = subtitles,
+                uuids = uuids.toList()
             )
         }
 
         for (match in TOKEN_FIELD.findAll(text)) {
-            val objectText = enclosingObject(text, match.range.first) ?: continue
-            val json = attempt0 { JSONObject(objectText) } ?: continue
+            val json = enclosingObject(text, match.range.first)?.let { attempt { JSONObject(it) } } ?: continue
             add(json)
         }
 
         // Respaldo: objetos planos sin anidar.
         if (result.isEmpty()) {
             for (match in SOURCE_OBJECT.findAll(text)) {
-                val json = attempt0 { JSONObject(match.value) } ?: continue
-                add(json)
+                add(attempt { JSONObject(match.value) } ?: continue)
             }
         }
 
@@ -1130,15 +1192,10 @@ class DonghuaLifeProvider : MainAPI() {
 
     private fun collectUuids(node: Any?, out: MutableSet<String>) {
         when (node) {
-            is JSONObject -> {
-                val keys = node.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    if (key == "token") continue
-                    collectUuids(node.opt(key), out)
-                }
+            is JSONObject -> for ((key, value) in node.entries()) {
+                if (key != "token") collectUuids(value, out)
             }
-            is JSONArray -> for (i in 0 until node.length()) collectUuids(node.opt(i), out)
+            is JSONArray -> node.items().forEach { collectUuids(it, out) }
             is String -> if (UUID_RE.matches(node)) out.add(node)
         }
     }
@@ -1152,6 +1209,8 @@ class DonghuaLifeProvider : MainAPI() {
         }
     }
 
+    // ───────────────────────── Links ─────────────────────────
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -1161,40 +1220,24 @@ class DonghuaLifeProvider : MainAPI() {
         val sink = LinkSink(callback)
 
         val page = attempt {
-            app.get(
-                data,
-                headers = mapOf("User-Agent" to BROWSER_UA, "Referer" to "$mainUrl/"),
-                timeout = SOURCE_TIMEOUT_S
-            )
+            app.get(data, headers = siteHeaders(), timeout = SOURCE_TIMEOUT_S)
         } ?: return false
 
         val pageText = page.text
         val sources = parseSources(pageText)
-        debug { "loadLinks data=$data fuentes=${sources.map { "${it.label}/${it.provider}/ids=${it.uuids}" }}" }
-        debug { "fuentes encontradas: ${sources.map { "${it.label}/${it.provider}" }}" }
+        debug { "fuentes: ${sources.map { "${it.label}/${it.provider}" }}" }
 
         // Subtítulos que vengan en el payload de la página (valen para todas las fuentes).
-        guarded("subtítulos de la página") {
-            emitSubtitles(harvestSubtitles(pageText), subtitleCallback, sink)
-        }
+        attempt { emitSubtitles(harvestSubtitles(pageText), subtitleCallback, sink) }
 
-        val cookies = page.cookies.entries
-            .joinToString("; ") { (cookieName, cookieValue) -> "$cookieName=$cookieValue" }
+        val cookies = page.cookies.entries.joinToString("; ") { (cookieName, cookieValue) -> "$cookieName=$cookieValue" }
+        val extraUuids = if (sources.any { it.isR2 }) fetchR2SubtitleIds(pageText, data, cookies) else emptyList()
 
         // Todas las fuentes se resuelven en paralelo; si una falla, las demás siguen.
-        val extraUuids = if (sources.any { it.provider.equals("r2", true) || it.label.equals("r2", true) }) {
-            fetchR2SubtitleIds(pageText, data, cookies)
-        } else {
-            emptyList()
-        }
-
         sources.amap { source ->
-            guarded(source.label) {
-                resolveSource(source, data, cookies, subtitleCallback, sink, extraUuids)
-            }
+            attempt { resolveSource(source, data, cookies, subtitleCallback, sink, extraUuids) }
         }
 
-        debug { "loadLinks final linkCount=${sink.total}" }
         return sink.total > 0
     }
 
@@ -1204,107 +1247,193 @@ class DonghuaLifeProvider : MainAPI() {
         sink: LinkSink
     ) {
         for ((label, subtitleUrl) in subtitles) {
-            if (sink.claim("sub:$subtitleUrl")) {
-                debug { "subtítulo $label -> $subtitleUrl" }
-                subtitleCallback(newSubtitleFile(label, subtitleUrl))
-            }
+            if (sink.claim("sub:$subtitleUrl")) subtitleCallback(newSubtitleFile(label, subtitleUrl))
         }
     }
+
+    /** POST a /api/player/source con el token de una fuente (o de un subtítulo). Devuelve el cuerpo si fue 2xx. */
+    private suspend fun postSource(token: String, pageUrl: String, cookies: String): String? {
+        val response = attempt {
+            app.post(
+                "$mainUrl/api/player/source",
+                headers = apiHeaders(
+                    pageUrl,
+                    cookies,
+                    extra = mapOf("Origin" to mainUrl, "Content-Type" to "application/json")
+                ),
+                json = JsonAsString(JSONObject().put("token", token).toString()),
+                timeout = SOURCE_TIMEOUT_S
+            )
+        } ?: return null
+
+        if (response.code !in 200..299) return null
+        return response.text.trim()
+    }
+
+    private class SourcePayload(
+        val urls: List<String>,
+        val subtitles: List<Pair<String, String>>,
+        // URL del video: las rutas relativas de los subtítulos se resuelven contra ella.
+        val mediaBase: String?
+    )
+
+    /** Saca de la respuesta de /api/player/source las URLs de video y los subtítulos. */
+    private fun parseSourceBody(body: String): SourcePayload {
+        val urls = ArrayList<String>()
+        val subtitles = ArrayList<Pair<String, String>>()
+        var mediaBase: String? = null
+
+        val parsed: Any? = attempt {
+            when {
+                body.startsWith("{") -> JSONObject(body)
+                body.startsWith("[") -> JSONArray(body)
+                else -> null
+            }
+        }
+
+        if (parsed != null) {
+            // 1.ª pasada: ver cuál es la URL del video. 2.ª: resolver subtítulos relativos contra ella.
+            collectFromJson(parsed, urls, subtitles)
+            mediaBase = urls.map { normalizeUrl(it) }.firstOrNull { it.startsWith("http") }
+            if (mediaBase != null) {
+                subtitles.clear()
+                collectFromJson(parsed, ArrayList(), subtitles, mediaBase)
+            }
+        } else if (body.startsWith("http") || body.startsWith("//")) {
+            urls.add(body)
+        } else {
+            IFRAME_SRC.find(body)?.groupValues?.getOrNull(1)?.let { urls.add(it) }
+        }
+
+        subtitles += harvestSubtitles(body, mediaBase ?: mainUrl)
+        return SourcePayload(urls, subtitles, mediaBase)
+    }
+
+    private suspend fun resolveSource(
+        source: PlayerSource,
+        pageUrl: String,
+        cookies: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        sink: LinkSink,
+        extraUuids: List<String>
+    ) {
+        val body = postSource(source.token, pageUrl, cookies) ?: return
+        val payload = parseSourceBody(body)
+        val base = payload.mediaBase ?: mainUrl
+
+        // Subtítulos que la API entrega como objetos con su propio token: se piden aparte.
+        var subtitles = (source.subtitles + payload.subtitles)
+            .distinctBy { it.second }
+            .mapNotNull { (label, subtitleUrl) ->
+                if (!subtitleUrl.startsWith("token:")) return@mapNotNull label to subtitleUrl
+                resolveTokenSubtitle(subtitleUrl.removePrefix("token:"), pageUrl, cookies, base)?.let { label to it }
+            }
+
+        // R2 (video directo) pide sus subtítulos a /api/subtitles/{uuid}.
+        if (subtitles.isEmpty() && source.isR2) {
+            subtitles = findR2Subtitles((source.uuids + extraUuids).distinct(), pageUrl, cookies)
+        }
+        emitSubtitles(subtitles, subtitleCallback, sink)
+
+        for (candidate in payload.urls.map { normalizeUrl(it) }.distinct()) {
+            emitUrl(candidate, source, pageUrl, sink, subtitleCallback)
+        }
+    }
+
+    private suspend fun resolveTokenSubtitle(token: String, pageUrl: String, cookies: String, base: String): String? {
+        val body = postSource(token, pageUrl, cookies) ?: return null
+        return harvestSubtitles(body, base).firstOrNull()?.second
+            ?: body.takeIf { it.startsWith("http") }
+            ?: attempt { JSONObject(body) }?.let { json ->
+                val found = ArrayList<String>()
+                collectFromJson(json, found, ArrayList(), base)
+                found.firstOrNull()
+            }
+    }
+
+    // ───────────────────────── Subtítulos de R2 ─────────────────────────
 
     /**
      * Consulta la lista oficial de pistas del episodio. Los UUID se obtienen de la API,
      * no se adivinan buscando UUID aleatorios dentro del HTML.
      */
-    private suspend fun fetchR2SubtitleIds(
-        pageText: String,
-        pageUrl: String,
-        cookies: String
-    ): List<String> {
-        val text = unescapePayload(pageText)
-        val episodeId = EPISODE_ID_JSON.find(text)?.groupValues?.getOrNull(1)
-        if (episodeId.isNullOrBlank()) {
-            debug { "R2 subtítulos: no se encontró episodeId en el HTML" }
-            return emptyList()
-        }
-
-        val headers = mutableMapOf(
-            "User-Agent" to BROWSER_UA,
-            "Referer" to pageUrl,
-            "Accept" to "application/json"
-        )
-        if (cookies.isNotBlank()) headers["Cookie"] = cookies
+    private suspend fun fetchR2SubtitleIds(pageText: String, pageUrl: String, cookies: String): List<String> {
+        val episodeId = EPISODE_ID_JSON.find(unescapePayload(pageText))?.groupValues?.getOrNull(1)
+        if (episodeId.isNullOrBlank()) return emptyList()
 
         val response = attempt {
             app.get(
                 "$mainUrl/api/subtitles?episodeId=$episodeId",
-                headers = headers,
+                headers = apiHeaders(pageUrl, cookies, accept = "application/json"),
                 timeout = HLS_TIMEOUT_S
             )
         } ?: return emptyList()
+        if (response.code !in 200..299) return emptyList()
 
-        if (response.code !in 200..299) {
-            debug { "R2 subtítulos episodio=$episodeId -> HTTP ${response.code}" }
-            return emptyList()
+        val tracks = attempt { JSONObject(response.text) }?.optJSONArray("subtitles") ?: return emptyList()
+        return tracks.items()
+            .mapNotNull { (it as? JSONObject)?.optString("id")?.trim() }
+            .filter { UUID_RE.matches(it) }
+            .distinct()
+    }
+
+    /** Prueba los UUID de a 5 en paralelo y se queda con la primera tanda que devuelva subtítulos. */
+    private suspend fun findR2Subtitles(
+        candidates: List<String>,
+        pageUrl: String,
+        cookies: String
+    ): List<Pair<String, String>> {
+        for (batch in candidates.chunked(5)) {
+            val hits = batch.amap { fetchSubtitlesById(it, pageUrl, cookies) }.flatten()
+            if (hits.isNotEmpty()) return hits.distinctBy { it.second }
         }
-
-        val json = attempt0 { JSONObject(response.text) } ?: return emptyList()
-        val tracks = json.optJSONArray("subtitles") ?: return emptyList()
-        val ids = LinkedHashSet<String>()
-
-        for (i in 0 until tracks.length()) {
-            val track = tracks.optJSONObject(i) ?: continue
-            val id = track.optString("id").trim()
-            if (UUID_RE.matches(id)) ids.add(id)
-        }
-
-        debug { "R2 subtítulos episodio=$episodeId: pistas=${ids.size} ids=$ids" }
-        return ids.toList()
+        return emptyList()
     }
 
     /** Servidor local para entregar subtítulos al reproductor. */
     private object LocalTextServer {
         private val files = ConcurrentHashMap<String, ByteArray>()
+        private val workers = Executors.newCachedThreadPool { runnable ->
+            Thread(runnable).apply { isDaemon = true }
+        }
 
         @Volatile
-        private var socket: java.net.ServerSocket? = null
+        private var socket: ServerSocket? = null
 
         @Synchronized
-        private fun ensureStarted(): java.net.ServerSocket? {
+        private fun ensureStarted(): ServerSocket? {
             socket?.let { if (!it.isClosed) return it }
             return try {
-                val created = java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+                val created = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
                 socket = created
-                val acceptor = Thread {
+                Thread {
                     while (!created.isClosed) {
                         try {
                             val client = created.accept()
-                            Thread { serve(client) }.apply { isDaemon = true }.start()
+                            workers.execute { serve(client) }
                         } catch (e: Exception) {
                             if (created.isClosed) break
                         }
                     }
-                }
-                acceptor.isDaemon = true
-                acceptor.start()
+                }.apply { isDaemon = true }.start()
                 created
             } catch (e: Exception) {
                 null
             }
         }
 
-        private fun serve(client: java.net.Socket) {
+        private fun serve(client: Socket) {
             try {
                 client.soTimeout = 10_000
                 val reader = client.getInputStream().bufferedReader(Charsets.ISO_8859_1)
                 val requestLine = reader.readLine() ?: return
-                while (true) {
-                    val line = reader.readLine() ?: break
-                    if (line.isEmpty()) break
+                while (reader.readLine()?.isNotEmpty() == true) {
+                    // se descartan los headers de la petición
                 }
                 val parts = requestLine.split(" ")
                 val method = parts.getOrNull(0) ?: "GET"
-                val name = (parts.getOrNull(1) ?: "/").substringBefore("?").trimStart('/')
-                val body = files[name]
+                val fileName = (parts.getOrNull(1) ?: "/").substringBefore("?").trimStart('/')
+                val body = files[fileName]
                 val out = client.getOutputStream()
                 if (body == null) {
                     out.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
@@ -1321,15 +1450,16 @@ class DonghuaLifeProvider : MainAPI() {
                 try {
                     client.close()
                 } catch (e: Exception) {
+                    // ya estaba cerrada
                 }
             }
         }
 
         /** Publica el texto con el nombre dado (la extensión indica el formato) y devuelve su URL. */
-        fun publish(name: String, content: String): String? {
+        fun publish(fileName: String, content: String): String? {
             val server = ensureStarted() ?: return null
-            files[name] = content.removePrefix("\uFEFF").toByteArray(Charsets.UTF_8)
-            return "http://127.0.0.1:${server.localPort}/$name"
+            files[fileName] = content.removePrefix("\uFEFF").toByteArray(Charsets.UTF_8)
+            return "http://127.0.0.1:${server.localPort}/$fileName"
         }
     }
 
@@ -1338,8 +1468,7 @@ class DonghuaLifeProvider : MainAPI() {
         return text.startsWith("WEBVTT") || text.contains("-->") || text.startsWith("[Script Info]")
     }
 
-    // La URL del endpoint no tiene extensión: se añade como fragmento (no viaja en la petición)
-    // para que el reproductor sepa en qué formato interpretarla.
+    // La URL del endpoint no tiene extensión: se añade para que el reproductor sepa en qué formato interpretarla.
     private fun subtitleFormatSuffix(body: String): String {
         val head = body.trimStart().take(200)
         return when {
@@ -1350,51 +1479,40 @@ class DonghuaLifeProvider : MainAPI() {
     }
 
     /**
-     * GET /api/subtitles/{uuid}. Acepta que la respuesta sea el propio archivo de subtítulos o un
-     * JSON (lista de pistas con url, o con ids que a su vez se piden a este mismo endpoint).
+     * GET /api/subtitles/{uuid}. Formato real: {"success":true,"label":"Español (Estilos)","language":"es",
+     * "content":"[Script Info]..."}, que se sirve desde el servidor local. También se acepta que la
+     * respuesta sea el propio archivo de subtítulos o un JSON con URLs.
      */
     private suspend fun fetchSubtitlesById(
         id: String,
         pageUrl: String,
         cookies: String,
-        label: String,
-        depth: Int = 0
+        label: String = "Español"
     ): List<Pair<String, String>> {
         val apiUrl = "$mainUrl/api/subtitles/$id"
-        val headers = mutableMapOf(
-            "User-Agent" to BROWSER_UA,
-            "Referer" to pageUrl,
-            "Accept" to "*/*"
-        )
-        if (cookies.isNotBlank()) headers["Cookie"] = cookies
-
-        val response = attempt { app.get(apiUrl, headers = headers, timeout = HLS_TIMEOUT_S) }
-            ?: return emptyList()
-        debug { "subtítulos $id -> HTTP ${response.code}: ${response.text.take(800)}" }
+        val response = attempt {
+            app.get(apiUrl, headers = apiHeaders(pageUrl, cookies), timeout = HLS_TIMEOUT_S)
+        } ?: return emptyList()
         if (response.code !in 200..299) return emptyList()
 
         val body = response.text
         val trimmed = body.trim()
 
-        // Formato real de la API: {"success":true,"label":"Español (Estilos)","language":"es","content":"[Script Info]..."}
         if (trimmed.startsWith("{")) {
-            val json = attempt0 { JSONObject(trimmed) }
+            val json = attempt { JSONObject(trimmed) }
             val content = json?.optString("content").orEmpty()
             if (json != null && content.isNotBlank()) {
-                val trackLabel = json.optString("label").takeIf { it.isNotBlank() && it != "null" }
-                    ?: json.optString("language").takeIf { it.isNotBlank() && it != "null" }?.let { langLabel(it) }
+                val trackLabel = json.firstString(listOf("label"))
+                    ?: json.firstString(listOf("language"))?.let { langLabel(it) }
                     ?: label
                 val local = LocalTextServer.publish(id + subtitleFormatSuffix(content), content)
-                debug { "subtítulo '$trackLabel' (${content.length} chars) servido en $local" }
                 return if (local != null) listOf(trackLabel to local) else emptyList()
             }
         }
 
-        if (looksLikeSubtitleText(body)) {
-            return listOf(label to apiUrl + "#" + subtitleFormatSuffix(body))
-        }
+        if (looksLikeSubtitleText(body)) return listOf(label to "$apiUrl#${subtitleFormatSuffix(body)}")
 
-        val node: Any? = attempt0 {
+        val node: Any? = attempt {
             when {
                 trimmed.startsWith("[") -> JSONArray(trimmed)
                 trimmed.startsWith("{") -> JSONObject(trimmed)
@@ -1404,173 +1522,29 @@ class DonghuaLifeProvider : MainAPI() {
 
         val found = ArrayList<Pair<String, String>>()
         collectSubtitles(node, found, null, apiUrl)
-        found.removeAll { it.second.startsWith("token:") }
-        if (found.isNotEmpty() || depth >= 1) return found.distinctBy { it.second }
-
-        // Pistas que solo traen un id: se piden una por una.
-        val pending = ArrayList<Pair<String, String>>()
-        fun walk(n: Any?) {
-            when (n) {
-                is JSONArray -> for (i in 0 until n.length()) walk(n.opt(i))
-                is JSONObject -> {
-                    val trackId = n.optString("id")
-                    if (UUID_RE.matches(trackId)) {
-                        val trackLabel = SUB_LABEL_KEYS
-                            .map { n.optString(it).trim() }
-                            .firstOrNull { it.isNotBlank() && it != "null" }
-                            ?.let { langLabel(it) } ?: label
-                        pending += trackLabel to trackId
-                    } else {
-                        val keys = n.keys()
-                        while (keys.hasNext()) walk(n.opt(keys.next()))
-                    }
-                }
-            }
-        }
-        walk(node)
-
-        val result = ArrayList<Pair<String, String>>()
-        for ((trackLabel, trackId) in pending.take(12)) {
-            result += fetchSubtitlesById(trackId, pageUrl, cookies, trackLabel, depth + 1)
-        }
-        return result.distinctBy { it.second }
-    }
-
-    /** POST a /api/player/source con el token de una fuente (o de un subtítulo). Devuelve el cuerpo si fue 2xx. */
-    private suspend fun postSource(token: String, pageUrl: String, cookies: String, tag: String): String? {
-        val headers = mutableMapOf(
-            "User-Agent" to BROWSER_UA,
-            "Referer" to pageUrl,
-            "Origin" to mainUrl,
-            "Content-Type" to "application/json",
-            "Accept" to "*/*"
-        )
-        if (cookies.isNotBlank()) headers["Cookie"] = cookies
-
-        val response = attempt {
-            app.post(
-                "$mainUrl/api/player/source",
-                headers = headers,
-                json = JsonAsString(JSONObject().put("token", token).toString()),
-                timeout = SOURCE_TIMEOUT_S
-            )
-        } ?: return null
-
-        debug { "$tag -> HTTP ${response.code}: ${response.text.take(1500)}" }
-        if (response.code !in 200..299) return null
-        return response.text.trim()
-    }
-
-    private suspend fun resolveSource(
-        source: PlayerSource,
-        pageUrl: String,
-        cookies: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        sink: LinkSink,
-        extraUuids: List<String> = emptyList()
-    ) {
-        val body = postSource(source.token, pageUrl, cookies, source.label) ?: return
-
-        val urls = ArrayList<String>()
-        val subtitles = ArrayList<Pair<String, String>>(source.subtitles)
-        val parsed: Any? = attempt0 {
-            when {
-                body.startsWith("{") -> JSONObject(body)
-                body.startsWith("[") -> JSONArray(body)
-                else -> null
-            }
-        }
-
-        var mediaBase: String? = null
-
-        if (parsed != null) {
-            // 1.ª pasada: ver cuál es la URL del video. 2.ª: resolver subtítulos relativos contra ella.
-            val jsonSubtitles = ArrayList<Pair<String, String>>()
-            collectFromJson(parsed, urls, jsonSubtitles)
-            mediaBase = urls.map { normalizeUrl(it) }.firstOrNull { it.startsWith("http") }
-            if (mediaBase != null) {
-                jsonSubtitles.clear()
-                collectFromJson(parsed, ArrayList(), jsonSubtitles, mediaBase)
-            }
-            subtitles += jsonSubtitles
-        } else if (body.startsWith("http") || body.startsWith("//")) {
-            urls.add(body)
-        } else {
-            IFRAME_SRC.find(body)?.groupValues?.getOrNull(1)?.let { urls.add(it) }
-        }
-
-        subtitles += harvestSubtitles(body, mediaBase ?: mainUrl)
-
-        // Subtítulos que la API entrega como objetos con su propio token: se piden aparte.
-        val resolvedSubtitles = subtitles.distinctBy { it.second }.mapNotNull { (label, subtitleUrl) ->
-            if (!subtitleUrl.startsWith("token:")) return@mapNotNull label to subtitleUrl
-            val subBody = postSource(subtitleUrl.removePrefix("token:"), pageUrl, cookies, "sub $label")
-                ?: return@mapNotNull null
-            val direct = harvestSubtitles(subBody, mediaBase ?: mainUrl).firstOrNull()?.second
-                ?: subBody.takeIf { it.startsWith("http") }
-                ?: attempt0 { JSONObject(subBody) }?.let { json ->
-                    val found = ArrayList<String>()
-                    collectFromJson(json, found, ArrayList(), mediaBase ?: mainUrl)
-                    found.firstOrNull()
-                }
-            direct?.let { label to it }
-        }
-        val isR2 = source.provider.equals("r2", ignoreCase = true) ||
-            source.label.equals("r2", ignoreCase = true)
-
-        var finalSubtitles = resolvedSubtitles
-        if (isR2 && finalSubtitles.isEmpty()) {
-            // R2 (video directo) pide sus subtítulos a /api/subtitles/{uuid}.
-            val candidates = (source.uuids + extraUuids).distinct()
-            debug { "R2 ${source.label}: probando ${candidates.size} uuids de subtítulos" }
-            var index = 0
-            while (index < candidates.size && finalSubtitles.isEmpty()) {
-                val batch = candidates.subList(index, minOf(candidates.size, index + 5))
-                val results = batch.amap { candidate ->
-                    candidate to fetchSubtitlesById(candidate, pageUrl, cookies, "Español")
-                }
-                val hits = results.filter { it.second.isNotEmpty() }
-                if (hits.isNotEmpty()) {
-                    debug { "SUBTÍTULOS ENCONTRADOS uuids=${hits.map { it.first }}" }
-                    finalSubtitles = hits.flatMap { it.second }.distinctBy { it.second }
-                }
-                index += 5
-            }
-            if (finalSubtitles.isEmpty()) debug { "R2: ningún uuid de la página devolvió subtítulos" }
-        }
-        emitSubtitles(finalSubtitles, subtitleCallback, sink)
-
-        for (candidate in urls.map { normalizeUrl(it) }.distinct()) {
-            emitUrl(candidate, source, pageUrl, sink, subtitleCallback)
-        }
+        return found.filterNot { it.second.startsWith("token:") }.distinctBy { it.second }
     }
 
     // ───────────────────────── JSON y subtítulos ─────────────────────────
 
-    private fun isSubtitleKey(lowerKey: String): Boolean =
-        lowerKey == "subs" ||
-            lowerKey == "sub" ||
-            lowerKey == "cc" ||
-            lowerKey.startsWith("subt") ||
-            lowerKey == "vtt" ||
-            lowerKey == "srt" ||
-            lowerKey.contains("subtitle") ||
-            lowerKey.contains("caption") ||
-            lowerKey.endsWith("tracks") ||
-            lowerKey == "track"
-
-    private fun isIgnoredKey(lowerKey: String): Boolean =
-        IGNORE_KEY_PARTS.any { lowerKey.contains(it) }
-
-    private fun langLabel(code: String): String {
-        val value = code.trim()
-        return LANG_NAMES[value.lowercase()] ?: value.replaceFirstChar { it.uppercase() }
-    }
+    private fun isSubtitleKey(key: String): Boolean =
+        key == "subs" || key == "sub" || key == "cc" || key == "vtt" || key == "srt" || key == "track" ||
+            key.startsWith("subt") || key.contains("subtitle") || key.contains("caption") || key.endsWith("tracks")
 
     private fun guessSubtitleLabel(subtitleUrl: String): String {
         val file = subtitleUrl.substringBefore("?").substringAfterLast('/').lowercase()
-        val code = FILE_LANG.find(file)?.groupValues?.getOrNull(1)
-        return if (code != null) langLabel(code) else "Español"
+        return FILE_LANG.find(file)?.groupValues?.getOrNull(1)?.let { langLabel(it) } ?: "Español"
+    }
+
+    private fun resolveRelative(base: String, ref: String): String? {
+        attempt { URI(base).resolve(ref).toString() }?.let { return it }
+        // Respaldo manual para URLs con caracteres que URI rechaza (espacios, '|', etc.).
+        return when {
+            ref.startsWith("http") -> ref
+            ref.startsWith("//") -> "https:$ref"
+            ref.startsWith("/") -> base.substringBefore("://", "https") + "://" + hostOf(base) + ref
+            else -> base.substringBefore("?").substringBeforeLast('/') + "/" + ref
+        }
     }
 
     /** `base` es la URL del video: las rutas relativas de los subtítulos se resuelven contra ella. */
@@ -1596,37 +1570,20 @@ class DonghuaLifeProvider : MainAPI() {
         base: String = mainUrl
     ) {
         when (node) {
-            is JSONArray -> {
-                for (index in 0 until node.length()) collectSubtitles(node.opt(index), out, hint, base)
-            }
+            is JSONArray -> node.items().forEach { collectSubtitles(it, out, hint, base) }
 
             is JSONObject -> {
-                val subtitleUrl = SUB_URL_KEYS
-                    .map { node.optString(it).trim() }
-                    .firstOrNull { it.isNotBlank() && it != "null" }
+                val directUrl = node.firstString(SUB_URL_KEYS)
+                val token = node.optString("token").trim()
+                val label = node.firstString(SUB_LABEL_KEYS)?.let { langLabel(it) }
 
-                if (subtitleUrl != null) {
-                    val full = subtitleUrlOf(subtitleUrl, base) ?: return
-                    val label = SUB_LABEL_KEYS
-                        .map { node.optString(it).trim() }
-                        .firstOrNull { it.isNotBlank() && it != "null" }
-                        ?.let { langLabel(it) }
-                        ?: hint
-                        ?: guessSubtitleLabel(full)
-                    out.add(label to full)
-                } else if (node.optString("token").isNotBlank()) {
-                    val label = SUB_LABEL_KEYS
-                        .map { node.optString(it).trim() }
-                        .firstOrNull { it.isNotBlank() && it != "null" }
-                        ?.let { langLabel(it) }
-                        ?: hint
-                        ?: "Español"
-                    out.add(label to "token:" + node.optString("token").trim())
+                if (directUrl != null) {
+                    val full = subtitleUrlOf(directUrl, base) ?: return
+                    out.add((label ?: hint ?: guessSubtitleLabel(full)) to full)
+                } else if (token.isNotBlank()) {
+                    out.add((label ?: hint ?: "Español") to "token:$token")
                 } else {
-                    val keys = node.keys()
-                    while (keys.hasNext()) {
-                        val key = keys.next()
-                        val value = node.opt(key)
+                    for ((key, value) in node.entries()) {
                         if (value is String) {
                             subtitleUrlOf(value, base)?.let { out.add(langLabel(key) to it) }
                         } else if (value is JSONArray || value is JSONObject) {
@@ -1650,22 +1607,14 @@ class DonghuaLifeProvider : MainAPI() {
         base: String = mainUrl
     ) {
         when (node) {
-            is JSONObject -> {
-                val keys = node.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    val value = node.opt(key)
-                    if (isSubtitleKey(key.lowercase())) {
-                        collectSubtitles(value, out, null, base)
-                    } else {
-                        collectSubtitleKeys(value, out, base)
-                    }
+            is JSONObject -> for ((key, value) in node.entries()) {
+                if (isSubtitleKey(key.lowercase())) {
+                    collectSubtitles(value, out, null, base)
+                } else {
+                    collectSubtitleKeys(value, out, base)
                 }
             }
-
-            is JSONArray -> {
-                for (index in 0 until node.length()) collectSubtitleKeys(node.opt(index), out, base)
-            }
+            is JSONArray -> node.items().forEach { collectSubtitleKeys(it, out, base) }
         }
     }
 
@@ -1679,9 +1628,7 @@ class DonghuaLifeProvider : MainAPI() {
 
         for (match in SUB_ARRAY_KEY.findAll(text)) {
             val chunk = balanced(text, match.range.last, 60_000) ?: continue
-            val node: Any? = attempt0 {
-                if (chunk.startsWith("[")) JSONArray(chunk) else JSONObject(chunk)
-            }
+            val node: Any? = attempt { if (chunk.startsWith("[")) JSONArray(chunk) else JSONObject(chunk) }
             if (node != null) collectSubtitles(node, out, null, base)
         }
 
@@ -1695,6 +1642,7 @@ class DonghuaLifeProvider : MainAPI() {
         return out.distinctBy { it.second }
     }
 
+    /** URLs de video (y subtítulos) dentro de la respuesta JSON de la API de fuentes. */
     private fun collectFromJson(
         node: Any?,
         urls: MutableList<String>,
@@ -1702,43 +1650,28 @@ class DonghuaLifeProvider : MainAPI() {
         base: String = mainUrl
     ) {
         when (node) {
-            is JSONObject -> {
-                val keys = node.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    val value = node.opt(key)
-                    val lowerKey = key.lowercase()
-
-                    when {
-                        isSubtitleKey(lowerKey) -> collectSubtitles(value, subtitles, null, base)
-                        isIgnoredKey(lowerKey) -> Unit
-                        else -> collectFromJson(value, urls, subtitles, base)
-                    }
+            is JSONObject -> for ((key, value) in node.entries()) {
+                val lowerKey = key.lowercase()
+                if (isSubtitleKey(lowerKey)) {
+                    collectSubtitles(value, subtitles, null, base)
+                } else if (IGNORE_KEY_PARTS.none { lowerKey.contains(it) }) {
+                    collectFromJson(value, urls, subtitles, base)
                 }
             }
 
-            is JSONArray -> {
-                for (index in 0 until node.length()) {
-                    collectFromJson(node.opt(index), urls, subtitles, base)
-                }
-            }
+            is JSONArray -> node.items().forEach { collectFromJson(it, urls, subtitles, base) }
 
             is String -> {
                 val value = node.trim()
-                when {
-                    value.startsWith("http") || value.startsWith("//") -> {
-                        val full = normalizeUrl(value)
-                        when {
-                            SUB_EXT.containsMatchIn(full) ->
-                                subtitleUrlOf(full, base)?.let { subtitles.add(guessSubtitleLabel(it) to it) }
-
-                            IMAGE_EXT.containsMatchIn(full) -> Unit
-                            else -> urls.add(full)
-                        }
+                if (value.startsWith("http") || value.startsWith("//")) {
+                    val full = normalizeUrl(value)
+                    if (SUB_EXT.containsMatchIn(full)) {
+                        subtitleUrlOf(full, base)?.let { subtitles.add(guessSubtitleLabel(it) to it) }
+                    } else if (!IMAGE_EXT.containsMatchIn(full)) {
+                        urls.add(full)
                     }
-
-                    value.contains("<iframe", ignoreCase = true) ->
-                        IFRAME_SRC.find(value)?.groupValues?.getOrNull(1)?.let { urls.add(it) }
+                } else if (value.contains("<iframe", ignoreCase = true)) {
+                    IFRAME_SRC.find(value)?.groupValues?.getOrNull(1)?.let { urls.add(it) }
                 }
             }
         }
@@ -1746,8 +1679,32 @@ class DonghuaLifeProvider : MainAPI() {
 
     // ───────────────────────── Emisión de links ─────────────────────────
 
-    private fun hostOf(url: String): String =
-        url.substringAfter("://", url).substringBefore("/").substringBefore("?").lowercase()
+    private suspend fun makeLink(
+        display: String,
+        url: String,
+        type: ExtractorLinkType,
+        linkReferer: String,
+        linkHeaders: Map<String, String> = emptyMap()
+    ): ExtractorLink =
+        newExtractorLink(
+            source = name,
+            name = "$name · $display",
+            url = url,
+            type = type
+        ) {
+            this.referer = linkReferer
+            this.quality = Qualities.Unknown.value
+            this.headers = linkHeaders
+        }
+
+    private suspend fun emitDirect(url: String, display: String, type: ExtractorLinkType, sink: LinkSink) {
+        sink.emit(
+            makeLink(
+                display, url, type, "$mainUrl/",
+                mapOf("Origin" to mainUrl, "User-Agent" to BROWSER_UA)
+            )
+        )
+    }
 
     private suspend fun emitUrl(
         url: String,
@@ -1760,33 +1717,21 @@ class DonghuaLifeProvider : MainAPI() {
         val host = hostOf(url)
         val provider = source.provider.lowercase()
         val display = displayName(source.label)
-        val isOwnVideo = provider == "r2" || host.endsWith("donghualife.com")
-        debug { "emitUrl [${source.label}/${source.provider}] host=$host url=$url" }
+        val isOwnVideo = source.isR2 || host.endsWith("donghualife.com")
 
         when {
             lower.contains("dailymotion.com") || lower.contains("dai.ly") || provider == "dailymotion" -> {
                 val id = dailymotionVideoId(url)
-                if (id != null) {
-                    if (!sink.claim("dm:$id")) return
-                    val link = resolveDailymotion(id, display)
-                    if (link != null) {
-                        sink.emit(link)
-                        return
-                    }
-                }
-                extractWithExtractors(url, pageUrl, sink)
+                if (id != null && !sink.claim("dm:$id")) return
+                val link = id?.let { resolveDailymotion(it, display) }
+                if (link != null) sink.emit(link) else extractWithExtractors(url, pageUrl, sink)
             }
 
             host.contains("odysee.com") || host.contains("lbry.tv") || provider == "odysee" -> {
                 // Un embed de Odysee se resuelve una sola vez por episodio aunque varias fuentes lo repitan.
                 if (!sink.claim("odysee:" + url.substringBefore("?"))) return
-                val links = resolveOdyseeLinks(url, display)
-                if (links.isNotEmpty()) {
-                    // Antes se lanzaba además el extractor del embed: duplicaba requests y disparaba los bloqueos.
-                    links.forEach { sink.emit(it) }
-                } else {
-                    extractWithExtractors(url, pageUrl, sink)
-                }
+                val link = resolveOdysee(url, display)
+                if (link != null) sink.emit(link) else extractWithExtractors(url, pageUrl, sink)
             }
 
             host.contains("ok.ru") || host.contains("odnoklassniki") || provider == "okru" || provider == "ok.ru" -> {
@@ -1797,17 +1742,7 @@ class DonghuaLifeProvider : MainAPI() {
             host.contains("voe") || provider == "voe" -> {
                 val voeUrl = attempt { resolveVoe(url) }
                 if (voeUrl != null) {
-                    sink.emit(
-                        newExtractorLink(
-                            source = name,
-                            name = "$name · $display",
-                            url = voeUrl,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = url
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
+                    sink.emit(makeLink(display, voeUrl, ExtractorLinkType.M3U8, url))
                 } else {
                     extractWithExtractors(url, pageUrl, sink)
                 }
@@ -1829,28 +1764,6 @@ class DonghuaLifeProvider : MainAPI() {
 
             else -> extractWithExtractors(url, pageUrl, sink)
         }
-    }
-
-    private suspend fun emitDirect(
-        url: String,
-        display: String,
-        type: ExtractorLinkType,
-        sink: LinkSink
-    ) {
-        val link = newExtractorLink(
-            source = name,
-            name = "$name · $display",
-            url = url,
-            type = type
-        ) {
-            this.referer = "$mainUrl/"
-            this.quality = Qualities.Unknown.value
-            this.headers = mapOf(
-                "Origin" to mainUrl,
-                "User-Agent" to BROWSER_UA
-            )
-        }
-        sink.emit(link)
     }
 
     /** Rumble, Filemoon, Streamwish y cualquier otro embed: se resuelve con los extractores de CloudStream. */
@@ -1883,81 +1796,59 @@ class DonghuaLifeProvider : MainAPI() {
 
     // ───────────────────────── Subtítulos dentro del HLS de R2 ─────────────────────────
 
-    private fun resolveRelative(base: String, ref: String): String? {
-        attempt0 { URI(base).resolve(ref).toString() }?.let { return it }
-        // Respaldo manual para URLs con caracteres que URI rechaza (espacios, '|', etc.).
-        return when {
-            ref.startsWith("http") -> ref
-            ref.startsWith("//") -> "https:$ref"
-            ref.startsWith("/") -> base.substringBefore("://", "https") + "://" + hostOf(base) + ref
-            else -> base.substringBefore("?").substringBeforeLast('/') + "/" + ref
-        }
+    /** Si el master .m3u8 declara pistas #EXT-X-MEDIA:TYPE=SUBTITLES, se ofrecen como subtítulos. */
+    private suspend fun emitHlsSubtitles(masterUrl: String, subtitleCallback: (SubtitleFile) -> Unit, sink: LinkSink) {
+        val found = attempt { readHlsSubtitles(masterUrl) }.orEmpty()
+        emitSubtitles(found, subtitleCallback, sink)
     }
 
-    /** Si el master .m3u8 declara pistas #EXT-X-MEDIA:TYPE=SUBTITLES, se ofrecen como subtítulos. */
-    private suspend fun emitHlsSubtitles(
-        masterUrl: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        sink: LinkSink
-    ) {
-        guarded("subtítulos HLS") {
-            val headers = mapOf(
-                "User-Agent" to BROWSER_UA,
-                "Referer" to "$mainUrl/",
-                "Origin" to mainUrl
-            )
+    private suspend fun readHlsSubtitles(masterUrl: String): List<Pair<String, String>> {
+        val headers = siteHeaders() + ("Origin" to mainUrl)
 
-            val master = app.get(masterUrl, headers = headers, timeout = HLS_TIMEOUT_S).text
-            debug { "master HLS (${master.length} chars): ${master.take(700)}" }
-            if (!master.contains("#EXTM3U")) return@guarded
+        val master = app.get(masterUrl, headers = headers, timeout = HLS_TIMEOUT_S).text
+        if (!master.contains("#EXTM3U")) return emptyList()
 
-            val found = ArrayList<Pair<String, String>>()
+        val found = ArrayList<Pair<String, String>>()
 
-            for (rawLine in master.lineSequence()) {
-                val line = rawLine.trim()
-                if (!line.startsWith("#EXT-X-MEDIA")) continue
-                if (!line.contains("TYPE=SUBTITLES") && !line.contains("TYPE=CLOSED-CAPTIONS")) continue
+        for (rawLine in master.lineSequence()) {
+            val line = rawLine.trim()
+            if (!line.startsWith("#EXT-X-MEDIA")) continue
+            if (!line.contains("TYPE=SUBTITLES") && !line.contains("TYPE=CLOSED-CAPTIONS")) continue
 
-                val uri = HLS_URI.find(line)?.groupValues?.getOrNull(1) ?: continue
-                val absolute = resolveRelative(masterUrl, uri) ?: continue
+            val uri = HLS_URI.find(line)?.groupValues?.getOrNull(1) ?: continue
+            val absolute = resolveRelative(masterUrl, uri) ?: continue
 
-                val label = HLS_NAME.find(line)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
-                    ?: HLS_LANG.find(line)?.groupValues?.getOrNull(1)?.let { langLabel(it) }
-                    ?: "Español"
+            val label = HLS_NAME.find(line)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+                ?: HLS_LANG.find(line)?.groupValues?.getOrNull(1)?.let { langLabel(it) }
+                ?: "Español"
 
-                val direct = when {
-                    SUB_EXT.containsMatchIn(absolute) -> absolute
-                    absolute.contains(".m3u8", ignoreCase = true) -> {
-                        // Playlist de subtítulos con un único .vtt: se usa ese archivo directamente.
-                        val playlist = attempt {
-                            app.get(absolute, headers = headers, timeout = HLS_TIMEOUT_S).text
-                        }
-                        val files = playlist?.lineSequence()
-                            ?.map { it.trim() }
-                            ?.filter { it.isNotBlank() && !it.startsWith("#") }
-                            ?.toList()
-                            .orEmpty()
-                        debug { "playlist de subs $label: ${files.size} segmentos" }
-                        if (files.size == 1) resolveRelative(absolute, files.first()) else null
-                    }
-                    else -> null
+            val direct = when {
+                SUB_EXT.containsMatchIn(absolute) -> absolute
+
+                // Playlist de subtítulos con un único .vtt: se usa ese archivo directamente.
+                absolute.contains(".m3u8", ignoreCase = true) -> {
+                    val playlist = attempt { app.get(absolute, headers = headers, timeout = HLS_TIMEOUT_S).text }
+                    val files = playlist?.lineSequence()
+                        ?.map { it.trim() }
+                        ?.filter { it.isNotBlank() && !it.startsWith("#") }
+                        ?.toList()
+                        .orEmpty()
+                    if (files.size == 1) resolveRelative(absolute, files.first()) else null
                 }
 
-                if (direct != null) found.add(label to direct)
+                else -> null
             }
 
-            debug { "subtítulos HLS de $masterUrl -> ${found.size}" }
-            emitSubtitles(found.distinctBy { it.second }, subtitleCallback, sink)
+            if (direct != null) found.add(label to direct)
         }
+
+        return found.distinctBy { it.second }
     }
 
     // ───────────────────────── Dailymotion ─────────────────────────
 
     private fun dailymotionVideoId(embedUrl: String): String? =
-        embedUrl
-            .substringAfter("video=", "")
-            .substringBefore("&")
-            .takeIf { it.isNotBlank() }
+        embedUrl.substringAfter("video=", "").substringBefore("&").takeIf { it.isNotBlank() }
             ?: DM_PATH_ID.find(embedUrl)?.groupValues?.getOrNull(1)
 
     private suspend fun resolveDailymotion(videoId: String, display: String): ExtractorLink? {
@@ -1982,21 +1873,28 @@ class DonghuaLifeProvider : MainAPI() {
             JSONObject(response.text).getJSONObject("stream").optString("url")
         }?.takeIf { it.isNotBlank() } ?: return null
 
-        debug { "Dailymotion: manifiesto encontrado para $videoId" }
-
-        return newExtractorLink(
-            source = name,
-            name = "$name · $display",
-            url = streamUrl,
-            type = ExtractorLinkType.M3U8
-        ) {
-            this.referer = dmReferer
-            this.quality = Qualities.Unknown.value
-            this.headers = dmHeaders
-        }
+        return makeLink(display, streamUrl, ExtractorLinkType.M3U8, dmReferer, dmHeaders)
     }
 
-    // ───────────────────────── Odysee / OK.ru ─────────────────────────
+    // ───────────────────────── Odysee ─────────────────────────
+
+    private class OdyseeClaim(val name: String, val claimId: String, val sdHash: String?)
+
+    /** URL del video ya elegida y el índice del juego de headers (ODYSEE_PROFILES) con el que sirve. */
+    private class OdyseeStream(val url: String, val profile: Int)
+
+    // Todas las llamadas al proxy pasan por este candado: de a una y con una pausa mínima entre ellas.
+    // Disparar varias juntas (varias fuentes, reintentos, cambio rápido de capítulo) hace que el proxy
+    // empiece a rechazar con 429/5xx.
+    private val odyseeLock = SuspendLock()
+
+    @Volatile
+    private var odyseeLastCall = 0L
+
+    @Volatile
+    private var odyseeProfile = 0
+
+    private val odyseeCache = ConcurrentHashMap<String, Pair<Long, OdyseeStream>>()
 
     private fun cleanEscapes(text: String): String =
         text.replace("&quot;", "\"")
@@ -2015,13 +1913,12 @@ class DonghuaLifeProvider : MainAPI() {
             )
         } ?: return null
 
-        if (response.code !in 200..299) return null
-        return cleanEscapes(response.text)
+        return if (response.code in 200..299) cleanEscapes(response.text) else null
     }
 
     /** Convierte la URL de Odysee (embed, /@canal/video, /$/download/...) en un lbry:// URI. */
     private fun odyseeUri(url: String): String? {
-        val path = attempt0 {
+        val path = attempt {
             URLDecoder.decode(
                 url.substringAfter("://", url).substringAfter("/", "")
                     .substringBefore("?").substringBefore("#"),
@@ -2035,10 +1932,8 @@ class DonghuaLifeProvider : MainAPI() {
         if (segments.first() == "$") {
             segments.removeAt(0)
             val kind = segments.firstOrNull()
-            if (kind == "download" && segments.size >= 3) {
-                // /$/download/{nombre}/{claimId}
-                return "lbry://${segments[1]}#${segments[2]}"
-            }
+            // /$/download/{nombre}/{claimId}
+            if (kind == "download" && segments.size >= 3) return "lbry://${segments[1]}#${segments[2]}"
             if (kind == "embed" || kind == "stream") segments.removeAt(0)
         }
         if (segments.isEmpty()) return null
@@ -2051,78 +1946,11 @@ class DonghuaLifeProvider : MainAPI() {
         return "lbry://" + segments.joinToString("/") { it.replace(':', '#') }
     }
 
-    /** Lee un parámetro de la URL aunque venga con &amp; (HTML) y lo decodifica. */
-    private fun odyseeParam(url: String, key: String): String? {
-        val clean = url.replace("&amp;", "&").replace("\\u0026", "&")
-        val raw = Regex("[?&]" + Regex.escape(key) + "=([^&#]+)").find(clean)
-            ?.groupValues?.getOrNull(1) ?: return null
-        return attempt0 { URLDecoder.decode(raw.replace("+", "%2B"), "UTF-8") } ?: raw
+    /** Lee un parámetro de la URL (ya sin &amp;) y lo decodifica. */
+    private fun urlParam(url: String, regex: Regex): String? {
+        val raw = regex.find(url)?.groupValues?.getOrNull(1) ?: return null
+        return attempt { URLDecoder.decode(raw.replace("+", "%2B"), "UTF-8") } ?: raw
     }
-
-    private fun odyseeApiHeaders(): Map<String, String> = mapOf(
-        "User-Agent" to BROWSER_UA,
-        "Content-Type" to "application/json",
-        "Origin" to ODYSEE_ORIGIN,
-        "Accept" to "*/*",
-        "Referer" to "$ODYSEE_ORIGIN/"
-    )
-
-    // Todas las llamadas al proxy de Odysee pasan por acá: de a una y con una pausa mínima entre
-    // ellas. Disparar varias juntas (varias fuentes, reintentos, cambio rápido de capítulo) es lo
-    // que hace que el proxy empiece a rechazar con 429/5xx desde la app.
-    // Candado y pausa hechos solo con la stdlib de Kotlin (este proyecto no incluye kotlinx.coroutines).
-    private class SuspendLock {
-        private val monitor = Any()
-        private var held = false
-        private val waiters = java.util.ArrayDeque<Continuation<Unit>>()
-
-        suspend fun acquire() {
-            val mustWait = synchronized(monitor) {
-                if (!held) { held = true; false } else true
-            }
-            if (!mustWait) return
-            suspendCoroutine<Unit> { continuation ->
-                val granted = synchronized(monitor) {
-                    if (!held) { held = true; true } else { waiters.add(continuation); false }
-                }
-                if (granted) continuation.resume(Unit)
-            }
-        }
-
-        /** Si hay alguien esperando, el candado pasa directo a él (sigue "held"). */
-        fun release() {
-            val next = synchronized(monitor) {
-                val waiting = waiters.poll()
-                if (waiting == null) held = false
-                waiting
-            }
-            next?.resume(Unit)
-        }
-    }
-
-    private val odyseeLock = SuspendLock()
-
-    private val pauseScheduler by lazy {
-        java.util.concurrent.Executors.newSingleThreadScheduledExecutor { runnable ->
-            Thread(runnable).apply { isDaemon = true }
-        }
-    }
-
-    private suspend fun pause(ms: Long) {
-        if (ms <= 0) return
-        suspendCoroutine<Unit> { continuation ->
-            pauseScheduler.schedule(
-                { continuation.resume(Unit) },
-                ms,
-                java.util.concurrent.TimeUnit.MILLISECONDS
-            )
-        }
-    }
-
-    @Volatile
-    private var odyseeLastCall = 0L
-
-    private val odyseeStreamCache = ConcurrentHashMap<String, Pair<Long, List<String>>>()
 
     /** Llamada JSON-RPC al proxy de Odysee. Devuelve el objeto "result" o null si algo falla. */
     private suspend fun odyseeRpc(method: String, params: JSONObject): JSONObject? {
@@ -2134,34 +1962,27 @@ class DonghuaLifeProvider : MainAPI() {
             .toString()
 
         for (tryNumber in 1..ODYSEE_MAX_TRIES) {
-            odyseeLock.acquire()
-            val response = try {
+            val response = odyseeLock.withLock {
                 pause(ODYSEE_MIN_GAP_MS - (System.currentTimeMillis() - odyseeLastCall))
                 val result = attempt {
                     app.post(
                         "$ODYSEE_API?m=$method",
-                        headers = odyseeApiHeaders(),
+                        headers = ODYSEE_API_HEADERS,
                         json = JsonAsString(payload),
                         timeout = SOURCE_TIMEOUT_S
                     )
                 }
                 odyseeLastCall = System.currentTimeMillis()
                 result
-            } finally {
-                odyseeLock.release()
             }
 
             val code = response?.code ?: -1
-            debug { "odysee $method intento $tryNumber -> HTTP $code: ${response?.text?.take(400)}" }
+            debug { "odysee $method intento $tryNumber -> HTTP $code" }
 
             if (response != null && code in 200..299) {
-                val json = attempt0 { JSONObject(response.text) } ?: return null
-                if (json.has("error")) {
-                    // Error propio de la API (claim inexistente, firma inválida...): reintentar no cambia nada.
-                    debug { "odysee $method error de API: ${json.opt("error")}" }
-                    return null
-                }
-                return json.optJSONObject("result")
+                val json = attempt { JSONObject(response.text) } ?: return null
+                // Error propio de la API (claim inexistente, firma inválida...): reintentar no cambia nada.
+                return if (json.has("error")) null else json.optJSONObject("result")
             }
 
             // Solo se reintenta lo transitorio: sin respuesta, 429 o 5xx. Otros 4xx son definitivos.
@@ -2175,14 +1996,11 @@ class DonghuaLifeProvider : MainAPI() {
         return null
     }
 
-    private class OdyseeClaim(val name: String, val claimId: String, val sdHash: String?)
-
     /** `resolve` del proxy: nombre, claim id completo y sd_hash del video (el navegador hace lo mismo antes del `get`). */
     private suspend fun odyseeResolveClaim(uri: String): OdyseeClaim? {
         val result = odyseeRpc("resolve", JSONObject().put("urls", JSONArray().put(uri))) ?: return null
-        val keys = result.keys()
-        while (keys.hasNext()) {
-            val claim = result.optJSONObject(keys.next()) ?: continue
+        for ((_, value) in result.entries()) {
+            val claim = value as? JSONObject ?: continue
             val claimId = claim.optString("claim_id").takeIf { it.isNotBlank() } ?: continue
             val claimName = claim.optString("name").takeIf { it.isNotBlank() } ?: continue
             val sdHash = claim.optJSONObject("value")?.optJSONObject("source")
@@ -2204,13 +2022,13 @@ class DonghuaLifeProvider : MainAPI() {
         signatureTs: String?
     ): String? {
         val params = JSONObject()
-        params.put("uri", if (claim != null) "lbry://${claim.name}#${claim.claimId}" else uri)
-        params.put("environment", JSONObject.NULL)
+            .put("uri", if (claim != null) "lbry://${claim.name}#${claim.claimId}" else uri)
+            .put("environment", JSONObject.NULL)
         if (!signature.isNullOrBlank() && !signatureTs.isNullOrBlank()) {
             params.put("key", "signature")
-            params.put("value", signature)
-            params.put("signature", signature)
-            params.put("signature_ts", signatureTs)
+                .put("value", signature)
+                .put("signature", signature)
+                .put("signature_ts", signatureTs)
         }
         val result = odyseeRpc("get", params) ?: return null
         return result.optString("streaming_url").takeIf { it.startsWith("https://") }
@@ -2222,202 +2040,116 @@ class DonghuaLifeProvider : MainAPI() {
         return "https://player.odycdn.com/api/v3/streams/free/${claim.name}/${claim.claimId}/${claim.sdHash.take(6)}.mp4"
     }
 
-    private val odyseeContentPath = Regex(
-        """/(?:api/v\d+/streams/free|\$/download)/([^/?#]+)/([0-9a-fA-F]{6,40})""",
-        RegexOption.IGNORE_CASE
-    )
-
     /** Último recurso: sacar name/claim del contentUrl de la página del embed (acepta /streams/free y /$/download). */
     private suspend fun odyseeUriFromPage(embedUrl: String): String? {
         val page = fetchEmbed(embedUrl) ?: return null
         val contentUrl = ODYSEE_CONTENT_URL.find(page)?.groupValues?.getOrNull(1)?.trim() ?: return null
-        val parts = odyseeContentPath.find(contentUrl) ?: return null
+        val parts = ODYSEE_CONTENT_PATH.find(contentUrl) ?: return null
         val rawName = parts.groupValues[1]
-        val claimName = attempt0 { URLDecoder.decode(rawName.replace("+", "%2B"), "UTF-8") } ?: rawName
+        val claimName = attempt { URLDecoder.decode(rawName.replace("+", "%2B"), "UTF-8") } ?: rawName
         return "lbry://$claimName#${parts.groupValues[2]}"
     }
 
-    private fun odyseeMediaHeaders(): Map<String, String> = mapOf(
-        "User-Agent" to BROWSER_UA,
-        "Origin" to ODYSEE_ORIGIN,
-        "Accept" to "*/*",
-        "Referer" to "$ODYSEE_ORIGIN/"
-    )
-
-    /**
-     * Juegos de headers para pedir el video al CDN de Odysee, del más parecido a un navegador móvil
-     * al original. El CDN contesta 429 según cómo se identifica el cliente, así que se prueba cuál
-     * acepta y se recuerda el que sirvió (odyseeProfileIndex).
-     */
-    private fun odyseeHeaderProfiles(): List<Map<String, String>> = listOf(
-        odyseeMediaHeaders(),
-        // Sin Referer el CDN responde 403: es obligatorio en todos los perfiles.
-        mapOf("User-Agent" to MOBILE_UA, "Referer" to "$ODYSEE_ORIGIN/")
-    )
-
-    @Volatile
-    private var odyseeProfileIndex = 0
-
-    /**
-     * Pide los primeros 2 bytes con los headers dados. Devuelve el código HTTP (-1 si no conectó)
-     * y un texto de diagnóstico (server, cf-ray, retry-after y el inicio del cuerpo si hubo error).
-     */
-    private fun probeMediaUrl(url: String, headers: Map<String, String>): Pair<Int, String> {
-        var connection: java.net.HttpURLConnection? = null
+    /** Pide los primeros 2 bytes al CDN con los headers dados. Devuelve el código HTTP (-1 si no conectó). */
+    private fun probeMedia(url: String, headers: Map<String, String>): Int {
+        var connection: HttpURLConnection? = null
         return try {
-            val opened = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+            val opened = URL(url).openConnection() as HttpURLConnection
             connection = opened
             opened.connectTimeout = 8_000
             opened.readTimeout = 8_000
             opened.instanceFollowRedirects = true
             for ((key, value) in headers) opened.setRequestProperty(key, value)
             opened.setRequestProperty("Range", "bytes=0-1")
-            val code = opened.responseCode
-            val info = StringBuilder()
-                .append("server=").append(opened.getHeaderField("Server"))
-                .append(" cf-ray=").append(opened.getHeaderField("CF-Ray"))
-                .append(" retry-after=").append(opened.getHeaderField("Retry-After"))
-                .append(" type=").append(opened.contentType)
-            if (code >= 400) {
-                val body = attempt0 {
-                    opened.errorStream?.bufferedReader()?.use { it.readText() }
-                }?.replace(Regex("\\s+"), " ")?.take(160)
-                info.append(" body=").append(body)
-            }
-            code to info.toString()
+            opened.responseCode
         } catch (e: Exception) {
-            -1 to "error=${e.javaClass.simpleName}: ${e.message}"
+            -1
         } finally {
             try {
                 connection?.disconnect()
             } catch (e: Exception) {
+                // ya estaba cerrada
             }
         }
     }
 
     /**
-     * name y claimId salen del propio embed (sin bajar la página: menos requests y menos puntos de falla).
-     * Se obtienen las dos URLs posibles (get firmado y stream libre) y se prueban contra el CDN con
-     * distintos juegos de headers hasta encontrar uno que responda bien. Si las dos sirven, se
-     * ofrecen ambas ("Odysee" y "Odysee (alt)").
+     * Índice del juego de headers con el que el CDN acepta la URL, o null si ninguno sirve.
+     * El CDN contesta 429 "Try again later": se espera y se reintenta la misma URL en vez de insistir
+     * al instante, y con 429 persistente no se prueba otro juego (los headers no cambian nada).
+     * Con otros errores (403...) sí se pasa al siguiente.
      */
-    private suspend fun resolveOdyseeLinks(embedUrl: String, display: String): List<ExtractorLink> {
-        val url = embedUrl.replace("&amp;", "&").replace("\\u0026", "&")
-        val signature = odyseeParam(url, "signature")
-        val signatureTs = odyseeParam(url, "signature_ts")
-        debug { "Odysee embed=$url firma=${!signature.isNullOrBlank()} ts=${!signatureTs.isNullOrBlank()}" }
-
-        val profiles = odyseeHeaderProfiles()
-        var streamUrls: List<String> = emptyList()
-        var profileIndex = odyseeProfileIndex
-        val tried = HashSet<String>()
-
-        suspend fun tryUri(uri: String) {
-            if (streamUrls.isNotEmpty() || !tried.add(uri)) return
-
-            val now = System.currentTimeMillis()
-            val cached = odyseeStreamCache[uri]
-            if (cached != null && now - cached.first < ODYSEE_CACHE_MS) {
-                debug { "Odysee: uri=$uri desde caché" }
-                streamUrls = cached.second
-                profileIndex = odyseeProfileIndex
-                return
+    private suspend fun findWorkingProfile(url: String, tries: Int): Int? {
+        val order = listOf(odyseeProfile) + ODYSEE_PROFILES.indices.filter { it != odyseeProfile }
+        for (index in order) {
+            var code = -1
+            for (round in 1..tries) {
+                code = probeMedia(url, ODYSEE_PROFILES[index])
+                debug { "odysee CDN perfil=$index ronda=$round HTTP $code" }
+                if (code in 200..299) return index
+                val retryable = code == 429 || code == -1 || code >= 500
+                if (!retryable) break
+                if (round < tries) pause(CDN_PROBE_PAUSE_MS)
             }
-
-            debug { "Odysee: probando uri=$uri" }
-            val candidates = LinkedHashSet<String>()
-            val claim = odyseeResolveClaim(uri)
-            odyseeSignedStream(uri, claim, signature, signatureTs)?.let { candidates.add(it) }
-            odyseeFreeStream(claim)?.let { candidates.add(it) }
-            if (candidates.isEmpty()) return
-
-            val scanOrder = listOf(odyseeProfileIndex) + profiles.indices.filter { it != odyseeProfileIndex }
-            var chosen = -1
-            val working = ArrayList<String>()
-
-            // El CDN contesta 429 "Try again later": se espera y se reintenta la misma URL en vez de
-            // insistir al instante. Cambiar de headers solo tiene sentido ante otros errores (403...).
-            suspend fun serve(candidate: String, index: Int, maxTries: Int): Int {
-                var code = -1
-                for (tryNumber in 1..maxTries) {
-                    val (result, info) = probeMediaUrl(candidate, profiles[index])
-                    code = result
-                    debug { "Odysee: prueba perfil=$index intento=$tryNumber HTTP $code $info -> ${candidate.take(110)}" }
-                    if (code in 200..299) return code
-                    val retryable = code == 429 || code == -1 || code >= 500
-                    if (!retryable || tryNumber == maxTries) return code
-                    pause(CDN_PROBE_PAUSE_MS)
-                }
-                return code
-            }
-
-            for ((position, candidate) in candidates.withIndex()) {
-                val order = if (chosen >= 0) listOf(chosen) else scanOrder
-                val tries = if (position == 0) CDN_PROBE_TRIES else 2
-                for (index in order) {
-                    val code = serve(candidate, index, tries)
-                    if (code in 200..299) {
-                        chosen = index
-                        working.add(candidate)
-                        break
-                    }
-                    // 429 persistente: los headers no cambian nada, no se prueba otro perfil.
-                    if (code == 429) break
-                }
-            }
-
-            if (working.isNotEmpty()) {
-                odyseeProfileIndex = chosen
-                profileIndex = chosen
-                odyseeStreamCache[uri] = now to working
-                streamUrls = working
-            } else {
-                // Ninguna respondió bien con ningún perfil: se ofrecen igual, sin cachear.
-                profileIndex = odyseeProfileIndex
-                streamUrls = candidates.toList()
-            }
+            if (code == 429) return null
         }
-
-        odyseeUri(url)?.let { tryUri(it) }
-        if (streamUrls.isEmpty()) odyseeUriFromPage(url)?.let { tryUri(it) }
-
-        if (streamUrls.isEmpty()) {
-            debug { "Odysee: no se pudo obtener ninguna URL de video" }
-            return emptyList()
-        }
-
-        val finalHeaders = profiles[profileIndex]
-        return streamUrls.mapIndexed { index, finalUrl ->
-            val isHls = finalUrl.substringBefore("?").endsWith(".m3u8", ignoreCase = true)
-            newExtractorLink(
-                source = name,
-                name = "$name · $display" + if (index > 0) " (alt)" else "",
-                url = finalUrl,
-                type = if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-            ) {
-                referer = "$ODYSEE_ORIGIN/"
-                this.headers = finalHeaders
-                quality = Qualities.Unknown.value
-            }
-        }
+        return null
     }
+
+    /**
+     * Resuelve el claim, obtiene las dos URLs posibles (get firmado y stream libre) y se queda con
+     * la primera que el CDN acepte. Si ninguna responde bien se ofrece la primera igual (sin cachear).
+     */
+    private suspend fun odyseeStream(uri: String, signature: String?, signatureTs: String?): OdyseeStream? {
+        odyseeCache[uri]?.let { (time, stream) ->
+            if (System.currentTimeMillis() - time < ODYSEE_CACHE_MS) return stream
+        }
+
+        val claim = odyseeResolveClaim(uri)
+        val candidates = listOfNotNull(
+            odyseeSignedStream(uri, claim, signature, signatureTs),
+            odyseeFreeStream(claim)
+        ).distinct()
+        if (candidates.isEmpty()) return null
+
+        for ((position, candidate) in candidates.withIndex()) {
+            val profile = findWorkingProfile(candidate, if (position == 0) CDN_PROBE_TRIES else 2) ?: continue
+            odyseeProfile = profile
+            return OdyseeStream(candidate, profile).also {
+                odyseeCache[uri] = System.currentTimeMillis() to it
+            }
+        }
+        return OdyseeStream(candidates.first(), odyseeProfile)
+    }
+
+    /** Un único link de Odysee por embed. name y claimId salen de la propia URL (sin bajar la página). */
+    private suspend fun resolveOdysee(embedUrl: String, display: String): ExtractorLink? {
+        val url = embedUrl.replace("&amp;", "&").replace("\\u0026", "&")
+        val signature = urlParam(url, SIG_PARAM)
+        val signatureTs = urlParam(url, SIG_TS_PARAM)
+
+        val uri = odyseeUri(url)
+        val stream = uri?.let { odyseeStream(it, signature, signatureTs) }
+            ?: odyseeUriFromPage(url)?.takeIf { it != uri }?.let { odyseeStream(it, signature, signatureTs) }
+            ?: return null
+
+        val isHls = stream.url.substringBefore("?").endsWith(".m3u8", ignoreCase = true)
+        return makeLink(
+            display,
+            stream.url,
+            if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+            "$ODYSEE_ORIGIN/",
+            ODYSEE_PROFILES[stream.profile]
+        )
+    }
+
+    // ───────────────────────── OK.ru ─────────────────────────
 
     private suspend fun resolveOkRu(embedUrl: String, display: String): ExtractorLink? {
         val page = fetchEmbed(embedUrl) ?: return null
-
-        val hlsUrl = OK_HLS_URL.find(page)?.groupValues?.getOrNull(1)
-            ?.trim()?.takeIf { it.isNotBlank() }
+        val hlsUrl = OK_HLS_URL.find(page)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
             ?: return null
-
-        return newExtractorLink(
-            source = name,
-            name = "$name · $display",
-            url = hlsUrl,
-            type = ExtractorLinkType.M3U8
-        ) {
-            this.referer = embedUrl
-            this.quality = Qualities.Unknown.value
-        }
+        return makeLink(display, hlsUrl, ExtractorLinkType.M3U8, embedUrl)
     }
 
     // ───────────────────────── VOE ─────────────────────────
@@ -2425,38 +2157,25 @@ class DonghuaLifeProvider : MainAPI() {
     private suspend fun resolveVoe(embedUrl: String): String? {
         val headers = mapOf("User-Agent" to BROWSER_UA)
 
-        val firstResponse = app.get(embedUrl, headers = headers, timeout = SOURCE_TIMEOUT_S)
-        if (!firstResponse.isSuccessful) return null
+        val first = app.get(embedUrl, headers = headers, timeout = SOURCE_TIMEOUT_S)
+        if (!first.isSuccessful) return null
 
-        val redirectUrl = VOE_REDIRECT.find(firstResponse.text)?.groupValues?.getOrNull(1)
-        val realUrl = redirectUrl ?: embedUrl
+        val realUrl = VOE_REDIRECT.find(first.text)?.groupValues?.getOrNull(1) ?: embedUrl
+        val page = if (realUrl != embedUrl) app.get(realUrl, headers = headers, timeout = SOURCE_TIMEOUT_S) else first
 
-        val pageResponse = if (realUrl != embedUrl) {
-            app.get(realUrl, headers = headers, timeout = SOURCE_TIMEOUT_S)
-        } else {
-            firstResponse
+        var encoded = VOE_CONFIG.find(page.text)?.groupValues?.getOrNull(1)
+        if (encoded.isNullOrBlank()) {
+            val solved = solveVoeAltcha(realUrl, page.text, page.cookies) ?: return null
+            encoded = VOE_CONFIG_STRICT.find(solved)?.groupValues?.getOrNull(1)
         }
+        if (encoded.isNullOrBlank()) return null
 
-        var html = pageResponse.text
-        var encodedConfig = VOE_CONFIG.find(html)?.groupValues?.getOrNull(1)
-
-        if (encodedConfig.isNullOrBlank()) {
-            html = solveVoeAltcha(realUrl, html, pageResponse.cookies) ?: return null
-            encodedConfig = VOE_CONFIG_STRICT.find(html)?.groupValues?.getOrNull(1)
-        }
-
-        if (encodedConfig.isNullOrBlank()) return null
-
-        val decodedConfig = decodeVoeConfig(encodedConfig)
-        if (decodedConfig.isNullOrBlank()) return null
-
-        val source = VOE_SOURCE.find(decodedConfig)?.groupValues?.getOrNull(1)
-        if (source.isNullOrBlank()) return null
-
-        return source
-            .replace("\\\\/", "/")
-            .replace("\\/", "/")
-            .replace("\\u0026", "&")
+        val decoded = decodeVoeConfig(encoded)?.takeIf { it.isNotBlank() } ?: return null
+        return VOE_SOURCE.find(decoded)?.groupValues?.getOrNull(1)
+            ?.takeIf { it.isNotBlank() }
+            ?.replace("\\\\/", "/")
+            ?.replace("\\/", "/")
+            ?.replace("\\u0026", "&")
     }
 
     /** Resuelve el desafío ALTCHA de VOE y devuelve el HTML de la página resultante. */
@@ -2467,34 +2186,29 @@ class DonghuaLifeProvider : MainAPI() {
     ): String? {
         val csrf = VOE_TOKEN.find(html)?.groupValues?.getOrNull(1)
         val challengeUrl = VOE_CHALLENGE.find(html)?.groupValues?.getOrNull(1)
-
         if (csrf.isNullOrBlank() || challengeUrl.isNullOrBlank()) return null
 
         val challengeResponse = app.get(
             challengeUrl,
-            headers = mapOf(
-                "User-Agent" to BROWSER_UA,
-                "Referer" to realUrl
-            )
+            headers = mapOf("User-Agent" to BROWSER_UA, "Referer" to realUrl)
         )
         if (!challengeResponse.isSuccessful) return null
 
         val challengeJson = challengeResponse.text
+        val challenge = attempt { JSONObject(challengeJson) } ?: return null
 
-        val algorithm = jsonString(challengeJson, "algorithm")
-        val cost = jsonInt(challengeJson, "cost")
-        val keyLength = jsonInt(challengeJson, "keyLength")
-        val keyPrefix = jsonString(challengeJson, "keyPrefix")
-        val nonce = jsonString(challengeJson, "nonce")
-        val salt = jsonString(challengeJson, "salt")
-
+        val cost = challenge.optInt("cost", -1)
+        val keyLength = challenge.optInt("keyLength", -1)
+        val keyPrefix = challenge.optString("keyPrefix")
+        val nonce = challenge.optString("nonce")
+        val salt = challenge.optString("salt")
         if (
-            algorithm.isNullOrBlank() ||
-            cost == null ||
-            keyLength == null ||
-            keyPrefix.isNullOrBlank() ||
-            nonce.isNullOrBlank() ||
-            salt.isNullOrBlank()
+            challenge.optString("algorithm").isBlank() ||
+            cost < 0 ||
+            keyLength <= 0 ||
+            keyPrefix.isBlank() ||
+            nonce.isBlank() ||
+            salt.isBlank()
         ) {
             return null
         }
@@ -2502,6 +2216,10 @@ class DonghuaLifeProvider : MainAPI() {
         val saltBytes = hexToBytes(salt)
         val nonceBytes = hexToBytes(nonce)
         val mac = Mac.getInstance("HmacSHA256")
+
+        // Contraseña = nonce + contador de 4 bytes (big endian). El arreglo se reutiliza: solo cambia el contador.
+        val password = nonceBytes.copyOf(nonceBytes.size + 4)
+        val counterAt = nonceBytes.size
 
         var solvedCounter = -1
         var solvedKey = ""
@@ -2511,38 +2229,26 @@ class DonghuaLifeProvider : MainAPI() {
             // Corte de seguridad para no colgar la carga de links.
             if ((counter and 0xff) == 0 && System.nanoTime() - powStart > ALTCHA_TIMEOUT_NS) break
 
-            val counterBytes = byteArrayOf(
-                ((counter ushr 24) and 0xff).toByte(),
-                ((counter ushr 16) and 0xff).toByte(),
-                ((counter ushr 8) and 0xff).toByte(),
-                (counter and 0xff).toByte()
-            )
+            password[counterAt] = (counter ushr 24).toByte()
+            password[counterAt + 1] = (counter ushr 16).toByte()
+            password[counterAt + 2] = (counter ushr 8).toByte()
+            password[counterAt + 3] = counter.toByte()
 
-            val derived = pbkdf2Sha256(mac, nonceBytes + counterBytes, saltBytes, cost, keyLength)
-            val hex = bytesToHex(derived)
-
-            if (hex.startsWith(keyPrefix)) {
+            val derived = pbkdf2Sha256(mac, password, saltBytes, cost, keyLength)
+            if (startsWithHex(derived, keyPrefix)) {
                 solvedCounter = counter
-                solvedKey = hex
+                solvedKey = bytesToHex(derived)
                 break
             }
         }
-
         if (solvedCounter < 0) return null
 
         val powElapsedMs = (System.nanoTime() - powStart) / 1_000_000.0
-
         val altchaPayload =
             """{"challenge":$challengeJson,"solution":{"counter":$solvedCounter,"derivedKey":"$solvedKey","time":$powElapsedMs}}"""
+        val payloadB64 = Base64.encodeToString(altchaPayload.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
 
-        val payloadB64 = android.util.Base64.encodeToString(
-            altchaPayload.toByteArray(Charsets.UTF_8),
-            android.util.Base64.NO_WRAP
-        )
-
-        val voeCookies = pageCookies.entries
-            .joinToString("; ") { (cookieName, cookieValue) -> "$cookieName=$cookieValue" }
-
+        val voeCookies = pageCookies.entries.joinToString("; ") { (cookieName, cookieValue) -> "$cookieName=$cookieValue" }
         val origin = "https://" + realUrl.substringAfter("://").substringBefore("/")
 
         val postResponse = app.post(
@@ -2561,59 +2267,35 @@ class DonghuaLifeProvider : MainAPI() {
             )
         )
 
-        if (!postResponse.isSuccessful) return null
-        return postResponse.text
+        return if (postResponse.isSuccessful) postResponse.text else null
     }
 
-    private fun jsonString(json: String, key: String): String? =
-        Regex("\"" + key + "\"\\s*:\\s*\"([^\"]+)\"")
-            .find(json)?.groupValues?.getOrNull(1)
-
-    private fun jsonInt(json: String, key: String): Int? =
-        Regex("\"" + key + "\"\\s*:\\s*(\\d+)")
-            .find(json)?.groupValues?.getOrNull(1)?.toIntOrNull()
-
-    private fun decodeVoeConfig(encoded: String): String? {
-        return try {
-            var value = buildString {
-                for (char in encoded) {
-                    append(
-                        when (char) {
-                            in 'A'..'Z' ->
-                                ((char.code - 'A'.code + 13) % 26 + 'A'.code).toChar()
-
-                            in 'a'..'z' ->
-                                ((char.code - 'a'.code + 13) % 26 + 'a'.code).toChar()
-
-                            else -> char
-                        }
-                    )
+    private fun rot13(text: String): String = buildString(text.length) {
+        for (char in text) {
+            append(
+                when (char) {
+                    in 'A'..'Z' -> 'A' + (char - 'A' + 13) % 26
+                    in 'a'..'z' -> 'a' + (char - 'a' + 13) % 26
+                    else -> char
                 }
-            }
-
-            val separators = listOf("@$", "^^", "~@", "%?", "*~", "!!", "#&")
-
-            for (separator in separators) {
-                value = value.replace(separator, "_")
-            }
-
-            value = value.replace("_", "")
-
-            var bytes = android.util.Base64.decode(value, android.util.Base64.DEFAULT)
-
-            bytes = bytes.map { (it.toInt() - 3).toByte() }.toByteArray()
-            bytes.reverse()
-
-            val decoded = android.util.Base64.decode(String(bytes, Charsets.UTF_8), android.util.Base64.DEFAULT)
-
-            String(decoded, Charsets.UTF_8)
-        } catch (e: Exception) {
-            debug { "VOE decode ERROR -> ${e.message}" }
-            null
+            )
         }
     }
 
-    /** PBKDF2-HMAC-SHA256 con el Mac inicializado una sola vez por llamada. */
+    private fun decodeVoeConfig(encoded: String): String? =
+        attempt {
+            var value = rot13(encoded)
+            for (separator in VOE_SEPARATORS) value = value.replace(separator, "_")
+            value = value.replace("_", "")
+
+            val bytes = Base64.decode(value, Base64.DEFAULT)
+            for (i in bytes.indices) bytes[i] = (bytes[i] - 3).toByte()
+            bytes.reverse()
+
+            String(Base64.decode(String(bytes, Charsets.UTF_8), Base64.DEFAULT), Charsets.UTF_8)
+        }
+
+    /** PBKDF2-HMAC-SHA256 con el Mac reutilizado entre llamadas. */
     private fun pbkdf2Sha256(
         mac: Mac,
         password: ByteArray,
@@ -2631,10 +2313,10 @@ class DonghuaLifeProvider : MainAPI() {
             mac.update(salt)
             mac.update(
                 byteArrayOf(
-                    ((block ushr 24) and 0xff).toByte(),
-                    ((block ushr 16) and 0xff).toByte(),
-                    ((block ushr 8) and 0xff).toByte(),
-                    (block and 0xff).toByte()
+                    (block ushr 24).toByte(),
+                    (block ushr 16).toByte(),
+                    (block ushr 8).toByte(),
+                    block.toByte()
                 )
             )
 
@@ -2643,15 +2325,24 @@ class DonghuaLifeProvider : MainAPI() {
 
             for (i in 1 until iterations) {
                 u = mac.doFinal(u)
-                for (j in t.indices) {
-                    t[j] = (t[j].toInt() xor u[j].toInt()).toByte()
-                }
+                for (j in t.indices) t[j] = (t[j].toInt() xor u[j].toInt()).toByte()
             }
 
             System.arraycopy(t, 0, output, (block - 1) * hashLength, hashLength)
         }
 
         return output.copyOf(keyLength)
+    }
+
+    /** Compara el inicio del hash con un prefijo en hex sin armar el string completo en cada intento. */
+    private fun startsWithHex(bytes: ByteArray, prefix: String): Boolean {
+        if (prefix.length > bytes.size * 2) return false
+        for (i in prefix.indices) {
+            val value = bytes[i ushr 1].toInt() and 0xff
+            val nibble = if ((i and 1) == 0) value ushr 4 else (value and 0x0f)
+            if (HEX_CHARS[nibble] != prefix[i].lowercaseChar()) return false
+        }
+        return true
     }
 
     private fun bytesToHex(bytes: ByteArray): String {
@@ -2666,11 +2357,7 @@ class DonghuaLifeProvider : MainAPI() {
 
     private fun hexToBytes(value: String): ByteArray {
         val clean = value.trim()
-
-        if (clean.length % 2 != 0) {
-            throw IllegalArgumentException("Hex inválido: longitud impar")
-        }
-
+        require(clean.length % 2 == 0) { "Hex inválido: longitud impar" }
         return ByteArray(clean.length / 2) { index ->
             clean.substring(index * 2, index * 2 + 2).toInt(16).toByte()
         }
