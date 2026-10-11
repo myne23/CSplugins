@@ -2035,39 +2035,59 @@ class DonghuaLifeProvider : MainAPI() {
         return "lbry://" + segments.joinToString("/") { it.replace(':', '#') }
     }
 
-    /**
-     * URL directa del video. La API de Odysee entrega nombre, claim y sd_hash, con los que se arma
-     * el stream libre (player.odycdn.com). Es mucho más fiable que el contentUrl de la página,
-     * que suele ser un redirect /$/download/ que el reproductor no sigue bien.
-     */
-    private suspend fun odyseeStreamUrl(url: String): String? {
-        val uri = odyseeUri(url) ?: return null
+    /** Lee un parámetro de la URL aunque venga con &amp; (HTML) y lo decodifica. */
+    private fun odyseeParam(url: String, key: String): String? {
+        val clean = url.replace("&amp;", "&").replace("\\u0026", "&")
+        val raw = Regex("[?&]" + Regex.escape(key) + "=([^&#]+)").find(clean)
+            ?.groupValues?.getOrNull(1) ?: return null
+        return attempt0 { URLDecoder.decode(raw.replace("+", "%2B"), "UTF-8") } ?: raw
+    }
 
+    private fun odyseeApiHeaders(): Map<String, String> = mapOf(
+        "User-Agent" to BROWSER_UA,
+        "Content-Type" to "application/json",
+        "Origin" to ODYSEE_ORIGIN,
+        "Referer" to "$ODYSEE_ORIGIN/"
+    )
+
+    /** Llamada JSON-RPC al proxy de Odysee. Devuelve el objeto "result" o null si algo falla. */
+    private suspend fun odyseeRpc(method: String, params: JSONObject): JSONObject? {
         val payload = JSONObject()
             .put("jsonrpc", "2.0")
-            .put("method", "resolve")
-            .put("params", JSONObject().put("urls", JSONArray().put(uri)))
+            .put("method", method)
+            .put("params", params)
             .put("id", 1)
-
-        debug { "odysee uri=$uri" }
 
         val response = attempt {
             app.post(
-                "$ODYSEE_API?m=resolve",
-                headers = mapOf(
-                    "User-Agent" to BROWSER_UA,
-                    "Content-Type" to "application/json",
-                    "Origin" to ODYSEE_ORIGIN,
-                    "Referer" to "$ODYSEE_ORIGIN/"
-                ),
+                "$ODYSEE_API?m=$method",
+                headers = odyseeApiHeaders(),
                 json = JsonAsString(payload.toString()),
                 timeout = SOURCE_TIMEOUT_S
             )
         } ?: return null
-        debug { "odysee resolve -> HTTP ${response.code}: ${response.text.take(300)}" }
-        if (response.code !in 200..299) return null
 
-        val result = attempt0 { JSONObject(response.text).optJSONObject("result") } ?: return null
+        debug { "odysee $method -> HTTP ${response.code}: ${response.text.take(400)}" }
+        if (response.code !in 200..299) return null
+        return attempt0 { JSONObject(response.text).optJSONObject("result") }
+    }
+
+    /** `get` del proxy: devuelve la streaming_url (firmada si el embed trae signature + signature_ts). */
+    private suspend fun odyseeSignedStream(uri: String, signature: String?, signatureTs: String?): String? {
+        val params = JSONObject().put("uri", uri)
+        if (!signature.isNullOrBlank() && !signatureTs.isNullOrBlank()) {
+            params.put("signature", signature).put("signature_ts", signatureTs)
+        }
+        val result = odyseeRpc("get", params) ?: return null
+        return result.optString("streaming_url").takeIf { it.startsWith("https://") }
+    }
+
+    /**
+     * Stream libre armado con name/claim/sd_hash (player.odycdn.com). Solo sirve para videos
+     * sin restricción; queda de respaldo cuando `get` no devuelve nada.
+     */
+    private suspend fun odyseeFreeStream(uri: String): String? {
+        val result = odyseeRpc("resolve", JSONObject().put("urls", JSONArray().put(uri))) ?: return null
         val keys = result.keys()
         while (keys.hasNext()) {
             val claim = result.optJSONObject(keys.next()) ?: continue
@@ -2080,112 +2100,60 @@ class DonghuaLifeProvider : MainAPI() {
         return null
     }
 
+    private val odyseeContentPath = Regex(
+        """/(?:api/v\d+/streams/free|\$/download)/([^/?#]+)/([0-9a-fA-F]{6,40})""",
+        RegexOption.IGNORE_CASE
+    )
+
+    /** Último recurso: sacar name/claim del contentUrl de la página del embed (acepta /streams/free y /$/download). */
+    private suspend fun odyseeUriFromPage(embedUrl: String): String? {
+        val page = fetchEmbed(embedUrl) ?: return null
+        val contentUrl = ODYSEE_CONTENT_URL.find(page)?.groupValues?.getOrNull(1)?.trim() ?: return null
+        val parts = odyseeContentPath.find(contentUrl) ?: return null
+        val rawName = parts.groupValues[1]
+        val claimName = attempt0 { URLDecoder.decode(rawName.replace("+", "%2B"), "UTF-8") } ?: rawName
+        return "lbry://$claimName#${parts.groupValues[2]}"
+    }
+
     /**
-     * Mismo método base que SeriesDonghua: contentUrl de la página del embed con referer = embed.
-     * La diferencia: acá el embed viene firmado (signature + signature_ts), y el stream de contenido
-     * restringido necesita esos mismos parámetros, así que se ofrece la URL firmada y la lisa.
+     * name y claimId salen del propio embed (sin bajar la página: menos requests y menos puntos de falla).
+     * Orden: get con firma -> stream libre -> (si la URL no alcanzó) name/claim leídos de la página.
      */
     private suspend fun resolveOdyseeLinks(embedUrl: String, display: String): List<ExtractorLink> {
-        val signature = SIG_PARAM.find(embedUrl)?.groupValues?.getOrNull(1)
-        val signatureTs = SIG_TS_PARAM.find(embedUrl)?.groupValues?.getOrNull(1)
+        val url = embedUrl.replace("&amp;", "&").replace("\\u0026", "&")
+        val signature = odyseeParam(url, "signature")
+        val signatureTs = odyseeParam(url, "signature_ts")
+        debug { "Odysee embed=$url firma=${!signature.isNullOrBlank()} ts=${!signatureTs.isNullOrBlank()}" }
 
-        if (signature.isNullOrBlank() || signatureTs.isNullOrBlank()) {
-            debug { "Odysee: falta signature o signature_ts en el embed" }
+        var streamUrl: String? = null
+        val tried = HashSet<String>()
+
+        suspend fun tryUri(uri: String) {
+            if (streamUrl != null || !tried.add(uri)) return
+            debug { "Odysee: probando uri=$uri" }
+            streamUrl = odyseeSignedStream(uri, signature, signatureTs) ?: odyseeFreeStream(uri)
+        }
+
+        odyseeUri(url)?.let { tryUri(it) }
+        if (streamUrl == null) odyseeUriFromPage(url)?.let { tryUri(it) }
+
+        val finalUrl = streamUrl ?: run {
+            debug { "Odysee: no se pudo obtener ninguna URL de video" }
             return emptyList()
         }
+        debug { "Odysee: video final = ${finalUrl.take(150)}" }
 
-        val page = fetchEmbed(embedUrl) ?: run {
-            debug { "Odysee: no se pudo obtener el embed" }
-            return emptyList()
-        }
-
-        val normalized = page
-            .replace("&quot;", "\"")
-            .replace("&amp;", "&")
-            .replace("\\u0026", "&")
-            .replace("\\u003D", "=")
-            .replace("\\/", "/")
-            .replace("\\\\", "\\")
-
-        val contentUrl = ODYSEE_CONTENT_URL.find(normalized)
-            ?.groupValues?.getOrNull(1)?.trim()
-            ?.takeIf { it.startsWith("http", ignoreCase = true) }
-
-        if (contentUrl == null) {
-            debug { "Odysee: no se encontró contentUrl (${page.length} caracteres)" }
-            return emptyList()
-        }
-
-        val streamParts = Regex(
-            """/api/v[0-9]+/streams/free/([^/]+)/([0-9a-fA-F]{40})/""",
-            RegexOption.IGNORE_CASE
-        ).find(contentUrl)
-
-        val claimName = streamParts?.groupValues?.getOrNull(1)
-        val claimId = streamParts?.groupValues?.getOrNull(2)
-
-        if (claimName.isNullOrBlank() || claimId.isNullOrBlank()) {
-            debug { "Odysee: no se pudo extraer name/claim_id del contentUrl" }
-            return emptyList()
-        }
-
-        val payload = JSONObject()
-            .put("jsonrpc", "2.0")
-            .put("method", "get")
-            .put(
-                "params",
-                JSONObject()
-                    .put("uri", "lbry://$claimName#$claimId")
-                    .put("signature", signature)
-                    .put("signature_ts", signatureTs)
-            )
-            .put("id", 1)
-
-        val response = attempt {
-            app.post(
-                "$ODYSEE_API?m=get",
-                headers = mapOf(
-                    "User-Agent" to BROWSER_UA,
-                    "Content-Type" to "application/json",
-                    "Origin" to ODYSEE_ORIGIN,
-                    "Referer" to "$ODYSEE_ORIGIN/"
-                ),
-                json = JsonAsString(payload.toString()),
-                timeout = SOURCE_TIMEOUT_S
-            )
-        } ?: run {
-            debug { "Odysee: error de red al solicitar streaming_url" }
-            return emptyList()
-        }
-
-        debug { "Odysee get -> HTTP ${response.code}: ${response.text.take(400)}" }
-        if (response.code !in 200..299) return emptyList()
-
-        val streamingUrl = attempt0 {
-            JSONObject(response.text)
-                .optJSONObject("result")
-                ?.optString("streaming_url")
-                ?.takeIf { it.startsWith("https://secure.odycdn.com/") }
-        }
-
-        if (streamingUrl.isNullOrBlank()) {
-            debug { "Odysee: la API no devolvió una streaming_url válida" }
-            return emptyList()
-        }
-
-        debug { "Odysee: streaming_url firmada obtenida correctamente" }
-
-
+        val isHls = finalUrl.substringBefore("?").endsWith(".m3u8", ignoreCase = true)
 
         return listOf(
             newExtractorLink(
                 source = name,
                 name = "$name · $display",
-                url = streamingUrl,
-                type = ExtractorLinkType.VIDEO
+                url = finalUrl,
+                type = if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
             ) {
                 referer = "$ODYSEE_ORIGIN/"
-              this.headers = mapOf(
+                this.headers = mapOf(
                     "User-Agent" to BROWSER_UA,
                     "Origin" to ODYSEE_ORIGIN,
                     "Referer" to "$ODYSEE_ORIGIN/"
