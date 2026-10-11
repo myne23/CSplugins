@@ -120,6 +120,8 @@ class DonghuaLifeProvider : MainAPI() {
             "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) " +
                 "Chrome/130.0.0.0 Mobile Safari/537.36"
         const val ODYSEE_MIN_GAP_MS = 450L
+        const val CDN_PROBE_TRIES = 12
+        const val CDN_PROBE_PAUSE_MS = 2_000L
         const val ODYSEE_MAX_TRIES = 4
         const val ODYSEE_CACHE_MS = 5L * 60_000L
         val EPISODE_ID_JSON = Regex(
@@ -2173,21 +2175,10 @@ class DonghuaLifeProvider : MainAPI() {
         return null
     }
 
-    /** `get` del proxy: devuelve la streaming_url (firmada si el embed trae signature + signature_ts). */
-    private suspend fun odyseeSignedStream(uri: String, signature: String?, signatureTs: String?): String? {
-        val params = JSONObject().put("uri", uri)
-        if (!signature.isNullOrBlank() && !signatureTs.isNullOrBlank()) {
-            params.put("signature", signature).put("signature_ts", signatureTs)
-        }
-        val result = odyseeRpc("get", params) ?: return null
-        return result.optString("streaming_url").takeIf { it.startsWith("https://") }
-    }
+    private class OdyseeClaim(val name: String, val claimId: String, val sdHash: String?)
 
-    /**
-     * Stream libre armado con name/claim/sd_hash (player.odycdn.com). Solo sirve para videos
-     * sin restricción; queda de respaldo cuando `get` no devuelve nada.
-     */
-    private suspend fun odyseeFreeStream(uri: String): String? {
+    /** `resolve` del proxy: nombre, claim id completo y sd_hash del video (el navegador hace lo mismo antes del `get`). */
+    private suspend fun odyseeResolveClaim(uri: String): OdyseeClaim? {
         val result = odyseeRpc("resolve", JSONObject().put("urls", JSONArray().put(uri))) ?: return null
         val keys = result.keys()
         while (keys.hasNext()) {
@@ -2195,10 +2186,40 @@ class DonghuaLifeProvider : MainAPI() {
             val claimId = claim.optString("claim_id").takeIf { it.isNotBlank() } ?: continue
             val claimName = claim.optString("name").takeIf { it.isNotBlank() } ?: continue
             val sdHash = claim.optJSONObject("value")?.optJSONObject("source")
-                ?.optString("sd_hash")?.takeIf { it.length >= 6 } ?: continue
-            return "https://player.odycdn.com/api/v3/streams/free/$claimName/$claimId/${sdHash.take(6)}.mp4"
+                ?.optString("sd_hash")?.takeIf { it.length >= 6 }
+            return OdyseeClaim(claimName, claimId, sdHash)
         }
         return null
+    }
+
+    /**
+     * `get` del proxy, idéntico al que hace el reproductor de Odysee: uri = lbry://nombre#claimIdCompleto,
+     * environment null y el par key/value con la firma. Con la uri del canal y sin key/value la
+     * respuesta traía una URL que el CDN rechazaba con 429; con esta forma da 206.
+     */
+    private suspend fun odyseeSignedStream(
+        uri: String,
+        claim: OdyseeClaim?,
+        signature: String?,
+        signatureTs: String?
+    ): String? {
+        val params = JSONObject()
+        params.put("uri", if (claim != null) "lbry://${claim.name}#${claim.claimId}" else uri)
+        params.put("environment", JSONObject.NULL)
+        if (!signature.isNullOrBlank() && !signatureTs.isNullOrBlank()) {
+            params.put("key", "signature")
+            params.put("value", signature)
+            params.put("signature", signature)
+            params.put("signature_ts", signatureTs)
+        }
+        val result = odyseeRpc("get", params) ?: return null
+        return result.optString("streaming_url").takeIf { it.startsWith("https://") }
+    }
+
+    /** Stream libre armado con name/claim/sd_hash (player.odycdn.com), sin llamadas extra. */
+    private fun odyseeFreeStream(claim: OdyseeClaim?): String? {
+        if (claim == null || claim.sdHash == null) return null
+        return "https://player.odycdn.com/api/v3/streams/free/${claim.name}/${claim.claimId}/${claim.sdHash.take(6)}.mp4"
     }
 
     private val odyseeContentPath = Regex(
@@ -2229,10 +2250,9 @@ class DonghuaLifeProvider : MainAPI() {
      * acepta y se recuerda el que sirvió (odyseeProfileIndex).
      */
     private fun odyseeHeaderProfiles(): List<Map<String, String>> = listOf(
-        mapOf("User-Agent" to MOBILE_UA, "Referer" to "$ODYSEE_ORIGIN/"),
-        mapOf("User-Agent" to BROWSER_UA, "Referer" to "$ODYSEE_ORIGIN/"),
-        mapOf("User-Agent" to MOBILE_UA),
-        odyseeMediaHeaders()
+        odyseeMediaHeaders(),
+        // Sin Referer el CDN responde 403: es obligatorio en todos los perfiles.
+        mapOf("User-Agent" to MOBILE_UA, "Referer" to "$ODYSEE_ORIGIN/")
     )
 
     @Volatile
@@ -2306,29 +2326,43 @@ class DonghuaLifeProvider : MainAPI() {
 
             debug { "Odysee: probando uri=$uri" }
             val candidates = LinkedHashSet<String>()
-            odyseeSignedStream(uri, signature, signatureTs)?.let { candidates.add(it) }
-            odyseeFreeStream(uri)?.let { candidates.add(it) }
+            val claim = odyseeResolveClaim(uri)
+            odyseeSignedStream(uri, claim, signature, signatureTs)?.let { candidates.add(it) }
+            odyseeFreeStream(claim)?.let { candidates.add(it) }
             if (candidates.isEmpty()) return
 
             val scanOrder = listOf(odyseeProfileIndex) + profiles.indices.filter { it != odyseeProfileIndex }
             var chosen = -1
             val working = ArrayList<String>()
 
-            for ((position, candidate) in candidates.withIndex()) {
-                // Solo la primera URL recorre todos los juegos de headers; las demás usan el que ya sirvió.
-                val order = when {
-                    chosen >= 0 -> listOf(chosen)
-                    position == 0 -> scanOrder
-                    else -> listOf(odyseeProfileIndex)
+            // El CDN contesta 429 "Try again later": se espera y se reintenta la misma URL en vez de
+            // insistir al instante. Cambiar de headers solo tiene sentido ante otros errores (403...).
+            suspend fun serve(candidate: String, index: Int, maxTries: Int): Int {
+                var code = -1
+                for (tryNumber in 1..maxTries) {
+                    val (result, info) = probeMediaUrl(candidate, profiles[index])
+                    code = result
+                    debug { "Odysee: prueba perfil=$index intento=$tryNumber HTTP $code $info -> ${candidate.take(110)}" }
+                    if (code in 200..299) return code
+                    val retryable = code == 429 || code == -1 || code >= 500
+                    if (!retryable || tryNumber == maxTries) return code
+                    pause(CDN_PROBE_PAUSE_MS)
                 }
+                return code
+            }
+
+            for ((position, candidate) in candidates.withIndex()) {
+                val order = if (chosen >= 0) listOf(chosen) else scanOrder
+                val tries = if (position == 0) CDN_PROBE_TRIES else 2
                 for (index in order) {
-                    val (code, info) = probeMediaUrl(candidate, profiles[index])
-                    debug { "Odysee: prueba perfil=$index HTTP $code $info -> ${candidate.take(110)}" }
+                    val code = serve(candidate, index, tries)
                     if (code in 200..299) {
                         chosen = index
                         working.add(candidate)
                         break
                     }
+                    // 429 persistente: los headers no cambian nada, no se prueba otro perfil.
+                    if (code == 429) break
                 }
             }
 
