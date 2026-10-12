@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.JsUnpacker
+import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.nicehttp.JsonAsString
@@ -12,6 +13,7 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.TextNode
 import java.net.URLEncoder
+import java.util.Collections
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -48,6 +50,14 @@ class SeriesDonghuaProvider : MainAPI() {
         const val MD_FAST_TIMEOUT_S = 4L
         const val MD_PAGE_TIMEOUT_S = 6L
 
+        // Etiquetas que se agregan al nombre de cada fuente para saber de qué web viene.
+        const val SD_TAG = "SeriesDonghua"
+        const val MD_TAG = "MundoDonghua"
+
+        // Los capítulos "Limitados" de la home de MundoDonghua se guardan unos minutos
+        // para no volver a pedir la home cada vez que se abre una serie.
+        const val MD_LIMITED_TTL_MS = 3 * 60 * 1000L
+
         const val BROWSER_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
         const val ALTCHA_TIMEOUT_NS = 25_000_000_000L
@@ -72,6 +82,8 @@ class SeriesDonghuaProvider : MainAPI() {
         // "Limitados" de Patreon traen un token como tercer tramo y no coinciden a propósito.
         val MD_EPISODE_PATH = Regex("""/ver/([^/?#]+)/([^/?#]+)/?$""")
         val MD_SERIES_PATH = Regex("""/donghua/([^/?#]+)/?$""")
+        // Capítulo "Limitado": /ver/serie/N/TOKEN (se puede reproducir igual que los normales).
+        val MD_LIMITED_PATH = Regex("""/ver/([^/?#]+)/(\d+(?:\.\d+)?)/([^?#]+)$""")
         val MD_EPISODE_SUFFIX = Regex("""\s+Episodio\s+\d.*$""", RegexOption.IGNORE_CASE)
 
         // Cada servidor de MundoDonghua es un script empaquetado (eval(function(p,a,c,k,e,d)...)
@@ -86,8 +98,16 @@ class SeriesDonghuaProvider : MainAPI() {
             """"contentUrl"\s*:\s*"([^"]+)"""",
             RegexOption.IGNORE_CASE
         )
+        // OK.ru: el reproductor trae el JSON escapado (&quot;, \", \/, \u0026...) y a veces
+        // anidado; se limpia todo antes de buscar. Los videos normales (VOD) traen una lista de
+        // mp4 por calidad y, según el caso, un manifest HLS (hlsManifestUrl / ondemandHls).
+        val OK_BACKSLASH_QUOTE = Regex("""\\+\"""")
+        val OK_BACKSLASH_AMP = Regex("""\\+u0026""", RegexOption.IGNORE_CASE)
+        val OK_BACKSLASH_EQ = Regex("""\\+u003d""", RegexOption.IGNORE_CASE)
+        val OK_BACKSLASH_SLASH = Regex("""\\+(?:/|u002f)""", RegexOption.IGNORE_CASE)
+        val OK_VIDEO_ENTRY = Regex(""""name":"([a-z]+)","url":"(https?://[^"]+)"""", RegexOption.IGNORE_CASE)
         val OK_HLS_URL = Regex(
-            """"hlsManifestUrl":"([^"]+)"""",
+            """"(?:hlsManifestUrl|ondemandHls|hlsMasterPlaylistUrl)":"(https?://[^"]+)"""",
             RegexOption.IGNORE_CASE
         )
 
@@ -212,6 +232,24 @@ class SeriesDonghuaProvider : MainAPI() {
         return differences == 1
     }
 
+    /** "VOE" + "MundoDonghua" -> "VOE · MundoDonghua" (sin repetir la etiqueta si ya la trae). */
+    private fun tagged(base: String, tag: String): String =
+        if (base.contains(tag, ignoreCase = true)) base else "$base · $tag"
+
+    /**
+     * Un extractor puede devolver el mismo video varias veces (una por calidad). Para que la
+     * fuente salga una sola vez se elige: el master m3u8, si no el m3u8 sin calidad fija
+     * (también es un master) y, si no hay, el de mayor calidad.
+     */
+    private fun pickBestLink(links: List<ExtractorLink>): ExtractorLink? {
+        if (links.isEmpty()) return null
+        links.firstOrNull { it.type == ExtractorLinkType.M3U8 && it.url.contains("master", true) }
+            ?.let { return it }
+        links.firstOrNull { it.type == ExtractorLinkType.M3U8 && it.quality <= 0 }
+            ?.let { return it }
+        return links.maxByOrNull { it.quality }
+    }
+
     /** Texto del elemento respetando los <br> como saltos de línea. */
     private fun Element.textWithBreaks(): String = buildString {
         for (node in childNodes()) {
@@ -228,8 +266,15 @@ class SeriesDonghuaProvider : MainAPI() {
         private val seenUrls = ConcurrentHashMap.newKeySet<String>()
         private val claimed = ConcurrentHashMap.newKeySet<String>()
         private val counter = AtomicInteger(0)
+        private val nameCounts = ConcurrentHashMap<String, AtomicInteger>()
 
         val total: Int get() = counter.get()
+
+        /** Si dos fuentes se llaman igual (p. ej. dos Filemoon) la segunda sale como "... 2". */
+        fun uniqueName(base: String): String {
+            val n = nameCounts.computeIfAbsent(base) { AtomicInteger(0) }.incrementAndGet()
+            return if (n == 1) base else "$base $n"
+        }
 
         /** true solo la primera vez que se pide esa clave. */
         fun claim(key: String): Boolean = claimed.add(key)
@@ -268,7 +313,7 @@ class SeriesDonghuaProvider : MainAPI() {
         val home: List<SearchResponse> = attempt {
             if (isMundoDonghua) {
                 val document = app.get(url, timeout = MD_FAST_TIMEOUT_S).document
-                if (isMdLatest) parseMundoDonghuaLatest(document) else parseMundoDonghuaCards(document)
+                if (isMdLatest) parseMundoDonghuaLatest(document, page) else parseMundoDonghuaCards(document)
             } else {
                 val document = app.get(url).document
                 if (request.data.contains("/episodios/")) {
@@ -443,33 +488,101 @@ class SeriesDonghuaProvider : MainAPI() {
     private fun mdSeriesSlug(href: String): String? =
         MD_SERIES_PATH.find(href)?.groupValues?.getOrNull(1)
             ?: MD_EPISODE_PATH.find(href)?.groupValues?.getOrNull(1)
+            ?: MD_LIMITED_PATH.find(href)?.groupValues?.getOrNull(1)
+
+    /** Capítulo "Limitado" de la home de MundoDonghua (se puede ver con su link con token). */
+    private class MdLimited(
+        val slug: String,
+        val number: String,
+        val url: String,
+        val title: String,
+        val poster: String?
+    )
+
+    @Volatile
+    private var mdLimitedCache: List<MdLimited> = emptyList()
+
+    @Volatile
+    private var mdLimitedAt = 0L
+
+    /** Busca los capítulos limitados en cualquier parte de la home, sin depender del contenedor. */
+    private fun parseMdLimited(document: Document): List<MdLimited> =
+        document.select("a[href*='/ver/']").mapNotNull { anchor ->
+            val url = mdUrl(anchor.attr("href")) ?: return@mapNotNull null
+            val match = MD_LIMITED_PATH.find(url) ?: return@mapNotNull null
+            val slug = match.groupValues[1]
+            val number = match.groupValues[2]
+
+            val card = anchor.parents().firstOrNull { it.hasClass("md-card") }
+            val image = anchor.selectFirst("img") ?: card?.selectFirst("img")
+
+            val title = image?.attr("alt")?.trim().takeUnless { it.isNullOrBlank() }
+                ?: card?.selectFirst(".md-card-title")?.text()?.replace(MD_EPISODE_SUFFIX, "")?.trim()
+                    .takeUnless { it.isNullOrBlank() }
+                ?: slug.replace('-', ' ')
+
+            MdLimited(slug, number, url, title, mdUrl(image.imageUrl()))
+        }.distinctBy { it.url }
+
+    /** Limitados de la home; usa la copia guardada si es reciente. */
+    private suspend fun mdLimitedList(): List<MdLimited> {
+        val now = System.currentTimeMillis()
+        if (mdLimitedAt != 0L && now - mdLimitedAt < MD_LIMITED_TTL_MS) return mdLimitedCache
+
+        val document = attempt { app.get(MD_NEW_URL, timeout = MD_FAST_TIMEOUT_S).document }
+            ?: return mdLimitedCache
+
+        val list = parseMdLimited(document)
+        mdLimitedCache = list
+        mdLimitedAt = System.currentTimeMillis()
+        return list
+    }
+
+    private fun mdLatestCard(card: Element): SearchResponse? {
+        val href = card.selectFirst("a[href*='/ver/']")?.attr("href")?.trim()
+            ?: return null
+
+        // Acepta capítulos normales (/ver/serie/N) y limitados (/ver/serie/N/TOKEN).
+        if (!MD_EPISODE_PATH.containsMatchIn(href) && !MD_LIMITED_PATH.containsMatchIn(href)) return null
+
+        val slug = mdSeriesSlug(href) ?: return null
+        val image = card.selectFirst("img")
+
+        val title = image?.attr("alt")?.trim().takeUnless { it.isNullOrBlank() }
+            ?: card.selectFirst(".md-card-title")?.text()?.replace(MD_EPISODE_SUFFIX, "")?.trim()
+            ?: return null
+
+        return newAnimeSearchResponse(title, "$MD_URL/donghua/$slug", TvType.Anime) {
+            this.posterUrl = mdUrl(image.imageUrl())
+        }
+    }
 
     /**
      * "Nuevos Episodios" de MundoDonghua: cada ítem es un capítulo. Se muestra con el nombre
      * de la serie y apunta a la ficha de la serie (una sola tarjeta por serie).
+     * Los capítulos "Limitados" también se incluyen (van primero, como en la web).
      */
-    private fun parseMundoDonghuaLatest(document: Document): List<SearchResponse> {
+    private fun parseMundoDonghuaLatest(document: Document, page: Int): List<SearchResponse> {
         // En el home los episodios están en #nuevos-episodios-grid; en /lista-episodios, en toda la página.
         val scope = document.selectFirst("#nuevos-episodios-grid") ?: document
 
-        return scope.select("div.md-card:not(.limited)").mapNotNull { card ->
-            val href = card.selectFirst("a[href*='/ver/']")?.attr("href")?.trim()
-                ?: return@mapNotNull null
+        val limited: List<SearchResponse> = if (page == 1) {
+            val items = parseMdLimited(document)
+            mdLimitedCache = items
+            mdLimitedAt = System.currentTimeMillis()
 
-            // Los capítulos "Limitados" (Patreon) no se pueden reproducir: se descartan.
-            if (!MD_EPISODE_PATH.containsMatchIn(href)) return@mapNotNull null
-
-            val slug = mdSeriesSlug(href) ?: return@mapNotNull null
-            val image = card.selectFirst("img")
-
-            val title = image?.attr("alt")?.trim().takeUnless { it.isNullOrBlank() }
-                ?: card.selectFirst(".md-card-title")?.text()?.replace(MD_EPISODE_SUFFIX, "")?.trim()
-                ?: return@mapNotNull null
-
-            newAnimeSearchResponse(title, "$MD_URL/donghua/$slug", TvType.Anime) {
-                this.posterUrl = mdUrl(image.imageUrl())
+            items.map { item ->
+                newAnimeSearchResponse(item.title, "$MD_URL/donghua/${item.slug}", TvType.Anime) {
+                    this.posterUrl = item.poster
+                }
             }
-        }.distinctBy { it.url }
+        } else {
+            emptyList()
+        }
+
+        val regular = scope.select("div.md-card").mapNotNull { mdLatestCard(it) }
+
+        return (limited + regular).distinctBy { it.url }
     }
 
     /** Tarjetas de series (catálogo y búsqueda de MundoDonghua). */
@@ -497,9 +610,20 @@ class SeriesDonghuaProvider : MainAPI() {
         val slug = mdSeriesSlug(url) ?: return null
         val seriesUrl = "$MD_URL/donghua/$slug"
 
-        val document = attempt {
-            app.get(seriesUrl, timeout = MD_PAGE_TIMEOUT_S).document
-        } ?: return null
+        // Los limitados no están en la ficha de la serie: se piden en paralelo desde la home.
+        var fetchedDocument: Document? = null
+        var limitedItems: List<MdLimited> = emptyList()
+
+        listOf<suspend () -> Unit>(
+            {
+                fetchedDocument = attempt {
+                    app.get(seriesUrl, timeout = MD_PAGE_TIMEOUT_S).document
+                }
+            },
+            { limitedItems = attempt { mdLimitedList() } ?: emptyList() }
+        ).amap { it() }
+
+        val document = fetchedDocument ?: return null
 
         val title = document.selectFirst("h1.md-detail-title")?.text()?.trim()
             ?.takeIf { it.isNotBlank() }
@@ -514,7 +638,7 @@ class SeriesDonghuaProvider : MainAPI() {
             .map { it.text().trim() }
             .filter { it.isNotBlank() }
 
-        val episodes = document
+        val numberedEpisodes = document
             .select("li.md-episode-item")
             .mapNotNull { item ->
                 val link = mdUrl(item.selectFirst("a[href]")?.attr("href"))
@@ -535,6 +659,23 @@ class SeriesDonghuaProvider : MainAPI() {
                     this.posterUrl = mdUrl(episodePoster)
                 }
             }
+
+        // Capítulos "Limitados" de esta serie que todavía no están en la lista normal.
+        val knownNumbers = numberedEpisodes.map { it.first }.toSet()
+        val limitedEpisodes = limitedItems
+            .filter { it.slug == slug }
+            .mapNotNull { item ->
+                val sortKey = item.number.toFloatOrNull() ?: return@mapNotNull null
+                if (sortKey in knownNumbers) return@mapNotNull null
+
+                sortKey to newEpisode(item.url) {
+                    this.name = "$title - ${item.number} (Limitado)"
+                    this.episode = item.number.toIntOrNull()
+                    this.posterUrl = item.poster
+                }
+            }
+
+        val episodes = (numberedEpisodes + limitedEpisodes)
             .sortedBy { it.first }
             .map { it.second }
 
@@ -612,10 +753,11 @@ class SeriesDonghuaProvider : MainAPI() {
 
         if (embedUrl.lowercase().contains("voe.")) {
             val voeUrl = extractVoeLink(embedUrl) ?: return
+            val label = sink.uniqueName(tagged("VOE", MD_TAG))
             sink.emit(
                 newExtractorLink(
-                    source = "VOE",
-                    name = "VOE · MundoDonghua",
+                    source = label,
+                    name = label,
                     url = voeUrl,
                     type = ExtractorLinkType.M3U8
                 ) {
@@ -628,22 +770,29 @@ class SeriesDonghuaProvider : MainAPI() {
 
         // Filemoon, VidHide y StreamWish los resuelven los extractores de CloudStream.
         // Los subtítulos se descartan a propósito (MundoDonghua ya trae los subs en el video).
+        // Cada extractor puede devolver el mismo video una vez por calidad: se juntan todos
+        // y se emite uno solo por servidor, para que no aparezca repetido.
+        val collected = Collections.synchronizedList(mutableListOf<ExtractorLink>())
+
         loadExtractor(
             url = embedUrl,
             referer = episodeUrl,
             subtitleCallback = { },
-            callback = { link ->
-                sink.emit(
-                    ExtractorLink(
-                        source = link.source,
-                        name = "${link.name} · MundoDonghua",
-                        url = link.url,
-                        referer = link.referer,
-                        quality = link.quality,
-                        type = link.type
-                    )
-                )
-            }
+            callback = { link -> collected.add(link) }
+        )
+
+        val best = pickBestLink(synchronized(collected) { collected.toList() }) ?: return
+        val label = sink.uniqueName(tagged(best.source.ifBlank { best.name }, MD_TAG))
+
+        sink.emit(
+            ExtractorLink(
+                source = label,
+                name = label,
+                url = best.url,
+                referer = best.referer,
+                quality = best.quality,
+                type = best.type
+            )
         )
     }
 
@@ -773,23 +922,28 @@ class SeriesDonghuaProvider : MainAPI() {
          * con el host real del embed. Por eso se resuelve según embed_url.
          */
         when {
-            embedLower.contains("odysee.com") || embedLower.contains("ok.ru") -> {
-                loadOkRuLinks(embedUrl)?.let { sink.emit(it) }
+            embedLower.contains("odysee.com") -> {
+                loadOdyseeLink(embedUrl)?.let { sink.emit(it) }
+            }
+
+            embedLower.contains("ok.ru") || embedLower.contains("odnoklassniki") -> {
+                loadOkRuLinks(embedUrl, pageUrl).forEach { sink.emit(it) }
             }
 
             embedLower.contains("dailymotion.com") -> {
                 val id = dailymotionVideoId(embedUrl)
                 if (id != null && sink.claim("dm:$id")) {
-                    resolveDailymotion(id, "Dailymotion", "Dailymotion")?.let { sink.emit(it) }
+                    resolveDailymotion(id, tagged("Dailymotion", SD_TAG))?.let { sink.emit(it) }
                 }
             }
 
             embedLower.contains("voe") -> {
                 val voeUrl = extractVoeLink(embedUrl)
                 if (voeUrl != null) {
+                    val voeLabel = tagged("VOE", SD_TAG)
                     val voeLink = newExtractorLink(
-                        source = "VOE",
-                        name = "VOE",
+                        source = voeLabel,
+                        name = voeLabel,
                         url = voeUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
@@ -819,10 +973,11 @@ class SeriesDonghuaProvider : MainAPI() {
                         }
 
                         if (keep) {
+                            val label = tagged(link.name.ifBlank { serverName }, SD_TAG)
                             sink.emit(
                                 ExtractorLink(
-                                    source = link.source,
-                                    name = "${link.name} · $serverName",
+                                    source = label,
+                                    name = label,
                                     url = link.url,
                                     referer = link.referer,
                                     quality = link.quality,
@@ -847,8 +1002,7 @@ class SeriesDonghuaProvider : MainAPI() {
 
     private suspend fun resolveDailymotion(
         videoId: String,
-        source: String,
-        displayName: String
+        label: String
     ): ExtractorLink? {
         val response = attempt {
             app.get(
@@ -866,8 +1020,8 @@ class SeriesDonghuaProvider : MainAPI() {
         }?.takeIf { it.isNotBlank() } ?: return null
 
         return newExtractorLink(
-            name = displayName,
-            source = source,
+            name = label,
+            source = label,
             url = streamUrl,
             type = ExtractorLinkType.M3U8
         ) {
@@ -878,7 +1032,106 @@ class SeriesDonghuaProvider : MainAPI() {
 
     // ───────────────────────── OK.ru / Odysee ─────────────────────────
 
-    private suspend fun loadOkRuLinks(embedUrl: String): ExtractorLink? {
+    /** Quita los escapes del reproductor de OK.ru (entidades HTML, barras invertidas, \\u0026...) para poder buscar con regex. */
+    private fun unescapePlayerText(raw: String): String =
+        raw.replace("&quot;", "\"")
+            .replace("&amp;", "&")
+            .replace(OK_BACKSLASH_QUOTE, "\"")
+            .replace(OK_BACKSLASH_AMP, "&")
+            .replace(OK_BACKSLASH_EQ, "=")
+            .replace(OK_BACKSLASH_SLASH, "/")
+
+    private fun okQuality(name: String): Int? = when (name.lowercase()) {
+        "mobile" -> 144
+        "lowest" -> 240
+        "low" -> 360
+        "sd" -> 480
+        "hd" -> 720
+        "full" -> 1080
+        "quad" -> 1440
+        "ultra" -> 2160
+        else -> null
+    }
+
+    /**
+     * OK.ru igual que en ExampleProvider: se pide /videoembed/ (no /video/) y se leen los mp4
+     * por calidad ("name"/"url") además del manifest HLS si existe. Antes solo se buscaba
+     * hlsManifestUrl, que los videos normales de OK.ru no suelen traer.
+     */
+    private suspend fun loadOkRuLinks(embedUrl: String, pageUrl: String): List<ExtractorLink> {
+        val label = tagged("OK.ru", SD_TAG)
+
+        val okEmbedUrl = embedUrl.trim()
+            .let { if (it.startsWith("//")) "https:$it" else it }
+            .replace("://m.ok.ru", "://ok.ru")
+            .replace("/video/", "/videoembed/")
+
+        // Algunos videos solo se dejan incrustar desde la web de origen: se prueba con ese
+        // Referer y, si no trae datos, con el del propio OK.ru.
+        val referers = listOf("$mainUrl/", pageUrl, "https://ok.ru/").distinct()
+
+        var text: String? = null
+        for (ref in referers) {
+            val response = attempt {
+                app.get(
+                    okEmbedUrl,
+                    headers = mapOf(
+                        "User-Agent" to BROWSER_UA,
+                        "Referer" to ref
+                    )
+                )
+            } ?: continue
+
+            if (response.code !in 200..299) continue
+
+            val normalized = unescapePlayerText(response.text)
+            if (OK_VIDEO_ENTRY.containsMatchIn(normalized) || OK_HLS_URL.containsMatchIn(normalized)) {
+                text = normalized
+                break
+            }
+        }
+
+        val normalized = text ?: return emptyList()
+        val links = mutableListOf<ExtractorLink>()
+
+        for (match in OK_VIDEO_ENTRY.findAll(normalized)) {
+            val quality = okQuality(match.groupValues[1]) ?: continue
+            val videoUrl = match.groupValues[2].trim()
+
+            links.add(
+                newExtractorLink(
+                    source = label,
+                    name = label,
+                    url = videoUrl,
+                    type = ExtractorLinkType.VIDEO
+                ) {
+                    referer = okEmbedUrl
+                    this.quality = quality
+                }
+            )
+        }
+
+        OK_HLS_URL.find(normalized)?.groupValues?.getOrNull(1)?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { hlsUrl ->
+                links.add(
+                    newExtractorLink(
+                        source = label,
+                        name = label,
+                        url = hlsUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        referer = okEmbedUrl
+                        quality = Qualities.Unknown.value
+                    }
+                )
+            }
+
+        debug { "OK.ru links=${links.size} embed=$okEmbedUrl" }
+        return links
+    }
+
+    private suspend fun loadOdyseeLink(embedUrl: String): ExtractorLink? {
         val response = attempt {
             app.get(
                 embedUrl,
@@ -899,37 +1152,7 @@ class SeriesDonghuaProvider : MainAPI() {
             .replace("\\/", "/")
             .replace("\\\\", "\\")
 
-        if (embedUrl.contains("odysee.com", ignoreCase = true)) {
-            val contentUrl = ODYSEE_CONTENT_URL
-                .find(normalized)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.replace("\\u0026", "&")
-                ?.replace("\\u003D", "=")
-                ?.replace("\\/", "/")
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
-                ?: return null
-
-            // Odysee a veces entrega vídeo sin extensión; contentUrl ya es un recurso de vídeo.
-            val linkType = if (contentUrl.contains(".m3u8", ignoreCase = true)) {
-                ExtractorLinkType.M3U8
-            } else {
-                ExtractorLinkType.VIDEO
-            }
-
-            return newExtractorLink(
-                source = "Odysee",
-                name = "Odysee",
-                url = contentUrl,
-                type = linkType
-            ) {
-                referer = embedUrl
-                quality = 0
-            }
-        }
-
-        val hlsUrl = OK_HLS_URL
+        val contentUrl = ODYSEE_CONTENT_URL
             .find(normalized)
             ?.groupValues
             ?.getOrNull(1)
@@ -940,11 +1163,20 @@ class SeriesDonghuaProvider : MainAPI() {
             ?.takeIf { it.isNotBlank() }
             ?: return null
 
+        // Odysee a veces entrega vídeo sin extensión; contentUrl ya es un recurso de vídeo.
+        val linkType = if (contentUrl.contains(".m3u8", ignoreCase = true)) {
+            ExtractorLinkType.M3U8
+        } else {
+            ExtractorLinkType.VIDEO
+        }
+
+        val label = tagged("Odysee", SD_TAG)
+
         return newExtractorLink(
-            source = "OK.ru",
-            name = "OK.ru",
-            url = hlsUrl,
-            type = ExtractorLinkType.M3U8
+            source = label,
+            name = label,
+            url = contentUrl,
+            type = linkType
         ) {
             referer = embedUrl
             quality = 0
