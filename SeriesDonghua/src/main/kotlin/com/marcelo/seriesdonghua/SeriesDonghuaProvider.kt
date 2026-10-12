@@ -62,6 +62,13 @@ class SeriesDonghuaProvider : MainAPI() {
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
         const val ALTCHA_TIMEOUT_NS = 25_000_000_000L
 
+        // Byse (bysekoze y demás dominios): se resuelve como en AnimoraTV.
+        const val BYSE_FALLBACK_HOST = "https://byse.sx"
+        val BYSE_EMBED = Regex(
+            """^https?://(?:www\.)?byse[a-z0-9-]*\.[a-z]+/(.*)$""",
+            RegexOption.IGNORE_CASE
+        )
+
         val SERVERS = listOf(
             "Dailymotion" to 0,
             "OK.ru" to 1,
@@ -768,6 +775,11 @@ class SeriesDonghuaProvider : MainAPI() {
             return
         }
 
+        if (BYSE_EMBED.containsMatchIn(embedUrl)) {
+            resolveByse(embedUrl, episodeUrl, sink)
+            return
+        }
+
         // Filemoon, VidHide y StreamWish los resuelven los extractores de CloudStream.
         // Los subtítulos se descartan a propósito (MundoDonghua ya trae los subs en el video).
         // Cada extractor puede devolver el mismo video una vez por calidad: se juntan todos
@@ -794,6 +806,57 @@ class SeriesDonghuaProvider : MainAPI() {
                 type = best.type
             )
         )
+    }
+
+    /**
+     * Byse: igual que AnimoraTV (loadExtractor con el Referer de la web).
+     * Se conservan headers y extractorData del link: Byse los necesita para reproducir el
+     * HLS y el re-armado genérico de arriba los perdía. Si ningún extractor reconoce el
+     * dominio del embed, se reintenta con el mismo id en byse.sx.
+     */
+    private suspend fun resolveByse(embedUrl: String, episodeUrl: String, sink: LinkSink) {
+        val path = BYSE_EMBED.find(embedUrl)?.groupValues?.getOrNull(1).orEmpty()
+        val candidates = listOfNotNull(
+            embedUrl,
+            "$BYSE_FALLBACK_HOST/$path".takeIf {
+                path.isNotBlank() && !embedUrl.startsWith(BYSE_FALLBACK_HOST, ignoreCase = true)
+            }
+        )
+        val referers = listOf("$MD_URL/", episodeUrl).distinct()
+
+        for (candidate in candidates) {
+            val collected = Collections.synchronizedList(mutableListOf<ExtractorLink>())
+
+            for (ref in referers) {
+                attempt {
+                    loadExtractor(
+                        url = candidate,
+                        referer = ref,
+                        subtitleCallback = { },
+                        callback = { link -> collected.add(link) }
+                    )
+                }
+                if (collected.isNotEmpty()) break
+            }
+
+            val best = pickBestLink(synchronized(collected) { collected.toList() }) ?: continue
+            val label = sink.uniqueName(tagged(best.source.ifBlank { best.name }, MD_TAG))
+
+            sink.emit(
+                newExtractorLink(
+                    source = label,
+                    name = label,
+                    url = best.url,
+                    type = best.type
+                ) {
+                    referer = best.referer
+                    quality = best.quality
+                    headers = best.headers
+                    extractorData = best.extractorData
+                }
+            )
+            return
+        }
     }
 
     // ───────────────────────── Links ─────────────────────────
