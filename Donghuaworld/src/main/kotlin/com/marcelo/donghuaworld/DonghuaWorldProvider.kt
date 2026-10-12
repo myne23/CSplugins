@@ -35,6 +35,10 @@ class DonghuaWorldProvider : MainAPI() {
         const val FAST_TIMEOUT_S = 4L
         const val PAGE_TIMEOUT_S = 6L
 
+        // La búsqueda de WordPress es lenta: con 4 s a veces vencía y, como el error se
+        // descartaba en silencio, la búsqueda parecía "vacía".
+        const val SEARCH_TIMEOUT_S = 10L
+
         const val BROWSER_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
 
@@ -298,44 +302,76 @@ class DonghuaWorldProvider : MainAPI() {
         val normalizedQuery = normalize(query)
         if (normalizedQuery.isBlank()) return emptyList()
 
-        val encodedQuery = URLEncoder.encode(query.trim(), "UTF-8")
+        val searchUrl = "$mainUrl/?s=${URLEncoder.encode(query.trim(), "UTF-8")}"
 
-        val document = attempt {
-            app.get("$mainUrl/?s=$encodedQuery", timeout = FAST_TIMEOUT_S).document
-        } ?: return emptyList()
+        // Un solo reintento: si la web tarda o falla una vez, no se devuelve vacío de entrada.
+        val document = attempt { app.get(searchUrl, timeout = SEARCH_TIMEOUT_S).document }
+            ?: attempt { app.get(searchUrl, timeout = SEARCH_TIMEOUT_S).document }
+            ?: return emptyList()
 
-        return document
-            .select("a[href*='/anime/'][itemprop='url'][title]")
-            .mapNotNull { element ->
-                val href = element.attr("href").trim()
-                val title = element.attr("title").trim()
+        // Cada resultado es un <article>; si el tema cambia el markup, se cae a los links /anime/.
+        val units = document.select("article.bs")
+            .ifEmpty { document.select("article") }
+            .ifEmpty { document.select("a[href*='/anime/']") }
 
-                if (href.isBlank() || title.isBlank() || href.contains("/anime/?")) {
-                    return@mapNotNull null
-                }
+        class Hit(val score: Int, val isEpisode: Boolean, val key: String, val response: SearchResponse)
 
-                val normalizedTitle = normalize(title)
-                val isMovie = isMovieTitle(normalizedTitle) ||
-                    href.substringAfter("/anime/").lowercase().contains("movie")
+        val hits = units.mapNotNull { unit ->
+            val link = unit.selectFirst("a[href*='/anime/']")
+                ?: unit.selectFirst("a[href*='-episode-']")
+                ?: return@mapNotNull null
 
-                val score = titleScore(normalizedTitle, normalizedQuery, 80)
-                if (score <= 0) return@mapNotNull null
+            val href = link.attr("href").trim()
+            if (href.isBlank() || href.contains("/anime/?")) return@mapNotNull null
 
-                val card = element.parents().firstOrNull { it.tagName() == "article" }
-                val image = card?.selectFirst("img[itemprop='image']")
-                    ?: card?.selectFirst("img")
-                val poster = image.imageUrl()
+            val isSeries = href.contains("/anime/")
+            val isEpisode = !isSeries && href.contains("-episode-")
+            if (!isSeries && !isEpisode) return@mapNotNull null
 
-                val type = if (isMovie) TvType.AnimeMovie else TvType.Anime
-                val response = newAnimeSearchResponse(title, fixUrl(href), type) {
-                    this.posterUrl = fixUrlNull(poster)
-                }
+            // El título no siempre viene en el atributo title: se prueban otras fuentes.
+            val rawTitle = link.attr("title").trim()
+                .ifBlank { unit.selectFirst(".tt")?.ownText()?.trim().orEmpty() }
+                .ifBlank { unit.selectFirst("h2")?.text()?.trim().orEmpty() }
+                .ifBlank { unit.selectFirst("img")?.attr("alt")?.trim().orEmpty() }
+                .ifBlank { link.text().trim() }
 
-                score to response
+            // Si el resultado es un capítulo, se muestra con el nombre de su serie
+            // (load() resuelve la serie a partir del capítulo).
+            val title = if (isEpisode) {
+                EPISODE_IN_TITLE.find(rawTitle)
+                    ?.let { rawTitle.substring(0, it.range.first).trim() }
+                    ?: rawTitle
+            } else {
+                rawTitle
             }
-            .distinctBy { it.second.url }
-            .sortedByDescending { it.first }
-            .map { it.second }
+            if (title.isBlank()) return@mapNotNull null
+
+            val normalizedTitle = normalize(title)
+            val score = titleScore(normalizedTitle, normalizedQuery, 80)
+            if (score <= 0) return@mapNotNull null
+
+            val isMovie = isMovieTitle(normalizedTitle) ||
+                href.substringAfter("/anime/", "").lowercase().contains("movie")
+
+            val poster = (unit.selectFirst("img[itemprop='image']") ?: unit.selectFirst("img"))
+                .imageUrl()
+
+            val type = if (isMovie) TvType.AnimeMovie else TvType.Anime
+            val response = newAnimeSearchResponse(title, fixUrl(href), type) {
+                this.posterUrl = fixUrlNull(poster)
+            }
+
+            Hit(score, isEpisode, normalizedTitle, response)
+        }
+
+        debug { "búsqueda '$query': unidades=${units.size} resultados=${hits.size}" }
+
+        return hits
+            // Primero los links de serie; un capítulo solo entra si esa serie no apareció.
+            .sortedBy { it.isEpisode }
+            .distinctBy { it.key }
+            .sortedByDescending { it.score }
+            .map { it.response }
     }
 
     private suspend fun findSeries(query: String): List<Pair<Int, String>> {
