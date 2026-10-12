@@ -103,18 +103,36 @@ class DonghuaWorldProvider : MainAPI() {
         return null
     }
 
-    private fun titleScore(title: String, query: String, titleInQueryScore: Int): Int = when {
-        // Un título vacío (p. ej. solo caracteres no latinos) coincidía con todo.
-        title.isBlank() || query.isBlank() -> 0
-        title == query -> 100
-        title.startsWith("$query ") -> 95
-        title.contains(query) -> 90
-        query.contains(title) -> titleInQueryScore
-        isOneTypoAway(title, query) -> 70
-        // Búsqueda flexible: todas las palabras de la búsqueda aparecen en el título,
-        // sin importar el orden (ej. "immortal renegade" -> "Renegade Immortal").
-        matchesAllTokens(title, query) -> 75
-        else -> 0
+    private fun titleScore(title: String, query: String, titleInQueryScore: Int): Int {
+        if (title.isBlank() || query.isBlank()) return 0
+        if (title == query) return 120
+        if (title.startsWith("$query ")) return 110
+        if (title.contains(query)) return 100
+        if (query.contains(title)) return titleInQueryScore
+
+        val queryTokens = query.split(" ").filter { it.isNotBlank() }
+        val titleTokens = title.split(" ").filter { it.isNotBlank() }
+        if (queryTokens.isEmpty() || titleTokens.isEmpty()) return 0
+
+        val matched = queryTokens.count { q ->
+            titleTokens.any { t ->
+                t == q || t.startsWith(q) ||
+                    (q.length >= 5 && t.length >= 5 && isOneTypoAway(t, q))
+            }
+        }
+        val ratio = matched.toDouble() / queryTokens.size
+        if (matched == queryTokens.size) {
+            return if (matchesAllTokens(title, query)) 90 else 85
+        }
+        if (ratio >= 0.5 && queryTokens.size >= 2) return 65
+
+        // Permite errores pequeños en búsquedas de una sola palabra,
+        // sin aceptar coincidencias demasiado cortas o genéricas.
+        if (queryTokens.size == 1 && query.length >= 5 &&
+            titleTokens.any { it.length >= 5 && isOneTypoAway(it, query) }
+        ) return 70
+
+        return 0
     }
 
     private fun matchesAllTokens(title: String, query: String): Boolean {
@@ -302,74 +320,96 @@ class DonghuaWorldProvider : MainAPI() {
         val normalizedQuery = normalize(query)
         if (normalizedQuery.isBlank()) return emptyList()
 
-        val searchUrl = "$mainUrl/?s=${URLEncoder.encode(query.trim(), "UTF-8")}"
+        val queries = linkedSetOf(query.trim())
+        val tokens = normalizedQuery.split(" ").filter { it.length >= 4 }
+        // Solo agrega búsquedas por palabra cuando la consulta tiene varias palabras.
+        if (tokens.size >= 2) queries.addAll(tokens)
 
-        // Un solo reintento: si la web tarda o falla una vez, no se devuelve vacío de entrada.
-        val document = attempt { app.get(searchUrl, timeout = SEARCH_TIMEOUT_S).document }
-            ?: attempt { app.get(searchUrl, timeout = SEARCH_TIMEOUT_S).document }
-            ?: return emptyList()
+        class Hit(
+            val score: Int,
+            val isEpisode: Boolean,
+            val key: String,
+            val response: SearchResponse
+        )
 
-        // Cada resultado es un <article>; si el tema cambia el markup, se cae a los links /anime/.
-        val units = document.select("article.bs")
-            .ifEmpty { document.select("article") }
-            .ifEmpty { document.select("a[href*='/anime/']") }
+        val hits = mutableListOf<Hit>()
 
-        class Hit(val score: Int, val isEpisode: Boolean, val key: String, val response: SearchResponse)
+        for (searchTerm in queries) {
+            val searchUrl = "$mainUrl/?s=${URLEncoder.encode(searchTerm, "UTF-8")}"
+            val document = attempt {
+                app.get(searchUrl, timeout = SEARCH_TIMEOUT_S).document
+            } ?: continue
 
-        val hits = units.mapNotNull { unit ->
-            val link = unit.selectFirst("a[href*='/anime/']")
-                ?: unit.selectFirst("a[href*='-episode-']")
-                ?: return@mapNotNull null
+            val units = document.select("article.bs")
+                .ifEmpty { document.select("article") }
+                .ifEmpty { document.select("a[href*='/anime/']") }
 
-            val href = link.attr("href").trim()
-            if (href.isBlank() || href.contains("/anime/?")) return@mapNotNull null
+            for (unit in units) {
+                val link = unit.selectFirst("a[href*='/anime/']")
+                    ?: unit.selectFirst("a[href*='-episode-']")
+                    ?: continue
 
-            val isSeries = href.contains("/anime/")
-            val isEpisode = !isSeries && href.contains("-episode-")
-            if (!isSeries && !isEpisode) return@mapNotNull null
+                val href = link.attr("href").trim()
+                if (href.isBlank() || href.contains("/anime/?")) continue
 
-            // El título no siempre viene en el atributo title: se prueban otras fuentes.
-            val rawTitle = link.attr("title").trim()
-                .ifBlank { unit.selectFirst(".tt")?.ownText()?.trim().orEmpty() }
-                .ifBlank { unit.selectFirst("h2")?.text()?.trim().orEmpty() }
-                .ifBlank { unit.selectFirst("img")?.attr("alt")?.trim().orEmpty() }
-                .ifBlank { link.text().trim() }
+                val isSeries = href.contains("/anime/")
+                val isEpisode = !isSeries && href.contains("-episode-")
+                if (!isSeries && !isEpisode) continue
 
-            // Si el resultado es un capítulo, se muestra con el nombre de su serie
-            // (load() resuelve la serie a partir del capítulo).
-            val title = if (isEpisode) {
-                EPISODE_IN_TITLE.find(rawTitle)
-                    ?.let { rawTitle.substring(0, it.range.first).trim() }
-                    ?: rawTitle
-            } else {
-                rawTitle
+                val rawTitle = link.attr("title").trim()
+                    .ifBlank { unit.selectFirst(".tt")?.ownText()?.trim().orEmpty() }
+                    .ifBlank { unit.selectFirst("h2")?.text()?.trim().orEmpty() }
+                    .ifBlank { unit.selectFirst("img")?.attr("alt")?.trim().orEmpty() }
+                    .ifBlank { link.text().trim() }
+
+                val title = if (isEpisode) {
+                    EPISODE_IN_TITLE.find(rawTitle)
+                        ?.let { rawTitle.substring(0, it.range.first).trim() }
+                        ?: rawTitle
+                } else rawTitle
+
+                if (title.isBlank()) continue
+
+                val normalizedTitle = normalize(title)
+                val score = titleScore(normalizedTitle, normalizedQuery, 80)
+                // Una búsqueda por token puede descubrir candidatos adicionales,
+                // pero solo se aceptan los que también coinciden con la consulta original.
+                if (score <= 0) continue
+
+                val slug = href.substringAfter("/anime/", "").lowercase()
+                val isMovie = isMovieTitle(normalizedTitle) || slug.contains("movie")
+                val poster = (unit.selectFirst("img[itemprop='image']")
+                    ?: unit.selectFirst("img")).imageUrl()
+
+                val response = newAnimeSearchResponse(
+                    title,
+                    fixUrl(href),
+                    if (isMovie) TvType.AnimeMovie else TvType.Anime
+                ) {
+                    this.posterUrl = fixUrlNull(poster)
+                }
+
+                val identity = fixUrl(href).trimEnd('/')
+                hits.add(
+                    Hit(
+                        score,
+                        isEpisode,
+                        "$identity|${if (isMovie) "movie" else "series"}",
+                        response
+                    )
+                )
             }
-            if (title.isBlank()) return@mapNotNull null
-
-            val normalizedTitle = normalize(title)
-            val score = titleScore(normalizedTitle, normalizedQuery, 80)
-            if (score <= 0) return@mapNotNull null
-
-            val isMovie = isMovieTitle(normalizedTitle) ||
-                href.substringAfter("/anime/", "").lowercase().contains("movie")
-
-            val poster = (unit.selectFirst("img[itemprop='image']") ?: unit.selectFirst("img"))
-                .imageUrl()
-
-            val type = if (isMovie) TvType.AnimeMovie else TvType.Anime
-            val response = newAnimeSearchResponse(title, fixUrl(href), type) {
-                this.posterUrl = fixUrlNull(poster)
-            }
-
-            Hit(score, isEpisode, if (isMovie) "$normalizedTitle|movie" else normalizedTitle, response)
         }
 
-        debug { "búsqueda '$query': unidades=${units.size} resultados=${hits.size}" }
+        debug {
+            "búsqueda '$query': consultas=${queries.size}, candidatos=${hits.size}"
+        }
 
         return hits
-            // Primero los links de serie; un capítulo solo entra si esa serie no apareció.
             .sortedBy { it.isEpisode }
-            .distinctBy { it.key }
+            .groupBy { it.key }
+            .values
+            .mapNotNull { group -> group.maxByOrNull { it.score } }
             .sortedByDescending { it.score }
             .map { it.response }
     }
