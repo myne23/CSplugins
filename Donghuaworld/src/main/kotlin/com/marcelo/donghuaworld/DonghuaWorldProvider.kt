@@ -107,7 +107,17 @@ class DonghuaWorldProvider : MainAPI() {
         title.contains(query) -> 90
         query.contains(title) -> titleInQueryScore
         isOneTypoAway(title, query) -> 70
+        // Búsqueda flexible: todas las palabras de la búsqueda aparecen en el título,
+        // sin importar el orden (ej. "immortal renegade" -> "Renegade Immortal").
+        matchesAllTokens(title, query) -> 75
         else -> 0
+    }
+
+    private fun matchesAllTokens(title: String, query: String): Boolean {
+        val queryTokens = query.split(" ").filter { it.isNotBlank() }
+        if (queryTokens.isEmpty()) return false
+        val titleTokens = title.split(" ").filter { it.isNotBlank() }
+        return queryTokens.all { q -> titleTokens.any { it.startsWith(q) } }
     }
 
     private fun isOneTypoAway(first: String, second: String): Boolean {
@@ -305,7 +315,8 @@ class DonghuaWorldProvider : MainAPI() {
                 }
 
                 val normalizedTitle = normalize(title)
-                if (isMovieTitle(normalizedTitle)) return@mapNotNull null
+                val isMovie = isMovieTitle(normalizedTitle) ||
+                    href.substringAfter("/anime/").lowercase().contains("movie")
 
                 val score = titleScore(normalizedTitle, normalizedQuery, 80)
                 if (score <= 0) return@mapNotNull null
@@ -315,7 +326,8 @@ class DonghuaWorldProvider : MainAPI() {
                     ?: card?.selectFirst("img")
                 val poster = image.imageUrl()
 
-                val response = newAnimeSearchResponse(title, fixUrl(href), TvType.Anime) {
+                val type = if (isMovie) TvType.AnimeMovie else TvType.Anime
+                val response = newAnimeSearchResponse(title, fixUrl(href), type) {
                     this.posterUrl = fixUrlNull(poster)
                 }
 
@@ -463,7 +475,11 @@ class DonghuaWorldProvider : MainAPI() {
                 }
             }
 
-        return newAnimeLoadResponse(title, url, TvType.Anime) {
+        val isMovie = isMovieTitle(normalize(title)) ||
+            url.substringAfter("/anime/").lowercase().contains("movie")
+        val type = if (isMovie) TvType.AnimeMovie else TvType.Anime
+
+        return newAnimeLoadResponse(title, url, type) {
             this.posterUrl = fixUrlNull(poster)
             this.addEpisodes(DubStatus.Subbed, episodes)
         }
