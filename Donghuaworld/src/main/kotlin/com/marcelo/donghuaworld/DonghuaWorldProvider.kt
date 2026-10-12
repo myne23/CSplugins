@@ -361,7 +361,7 @@ class DonghuaWorldProvider : MainAPI() {
                 this.posterUrl = fixUrlNull(poster)
             }
 
-            Hit(score, isEpisode, normalizedTitle, response)
+            Hit(score, isEpisode, if (isMovie) "$normalizedTitle|movie" else normalizedTitle, response)
         }
 
         debug { "búsqueda '$query': unidades=${units.size} resultados=${hits.size}" }
