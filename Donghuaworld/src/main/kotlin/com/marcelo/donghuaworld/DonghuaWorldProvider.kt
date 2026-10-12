@@ -39,6 +39,20 @@ class DonghuaWorldProvider : MainAPI() {
         // descartaba en silencio, la búsqueda parecía "vacía".
         const val SEARCH_TIMEOUT_S = 10L
 
+        // Caché en memoria (home y búsquedas): la home pesa ~1 MB y la búsqueda de WordPress
+        // no se cachea en el servidor, así que repetir lo mismo no tiene por qué volver a la web.
+        const val CACHE_TTL_MS = 5 * 60 * 1000L
+        const val CACHE_MAX_ENTRIES = 40
+
+        // Puntajes de la búsqueda.
+        // Resultado que la web devolvió pero cuyo título no coincide: la web también busca en
+        // la sinopsis y en otros nombres, así que se muestra igual, al final.
+        const val SITE_ONLY_SCORE = 20
+        // Desde acá ya hay una coincidencia real de título y no hace falta rescatar tipeos.
+        const val GOOD_SCORE = 80
+        // Máximo de búsquedas extra (en paralelo) para rescatar errores de tipeo.
+        const val MAX_PROBES = 4
+
         const val BROWSER_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
 
@@ -114,80 +128,63 @@ class DonghuaWorldProvider : MainAPI() {
         val titleTokens = title.split(" ").filter { it.isNotBlank() }
         if (queryTokens.isEmpty() || titleTokens.isEmpty()) return 0
 
-        val matched = queryTokens.count { q ->
-            titleTokens.any { t ->
-                t == q || t.startsWith(q) ||
-                    (q.length >= 5 && t.length >= 5 && isOneTypoAway(t, q))
+        var exact = 0 // palabras que están tal cual o como comienzo de una palabra del título
+        var fuzzy = 0 // palabras que coinciden con algún error de tipeo
+        for (q in queryTokens) {
+            when {
+                titleTokens.any { it == q || it.startsWith(q) } -> exact++
+                titleTokens.any { fuzzyWord(q, it) } -> fuzzy++
             }
         }
-        val ratio = matched.toDouble() / queryTokens.size
-        if (matched == queryTokens.size) {
-            return if (matchesAllTokens(title, query)) 90 else 85
-        }
-        if (ratio >= 0.5 && queryTokens.size >= 2) return 65
 
-        // Permite errores pequeños en búsquedas de una sola palabra,
-        // sin aceptar coincidencias demasiado cortas o genéricas.
-        if (queryTokens.size == 1 && query.length >= 5 &&
-            titleTokens.any { it.length >= 5 && isOneTypoAway(it, query) }
-        ) return 70
-
+        val matched = exact + fuzzy
+        if (matched == queryTokens.size) return if (fuzzy == 0) 90 else 85
+        if (queryTokens.size >= 2 && matched.toDouble() / queryTokens.size >= 0.5) return 65
         return 0
     }
 
-    private fun matchesAllTokens(title: String, query: String): Boolean {
-        val queryTokens = query.split(" ").filter { it.isNotBlank() }
-        if (queryTokens.isEmpty()) return false
-        val titleTokens = title.split(" ").filter { it.isNotBlank() }
-        return queryTokens.all { q -> titleTokens.any { it.startsWith(q) } }
+    /**
+     * ¿La palabra escrita `q` es la palabra del título `t` con un error de tipeo?
+     * Solo para palabras de 5+ letras (las cortas deben coincidir exacto o por comienzo).
+     * Admite letras de más, de menos, cambiadas o intercambiadas ("renegde", "imortal", "swalowed").
+     */
+    private fun fuzzyWord(q: String, t: String): Boolean {
+        if (q.length < 5) return false
+        val maxEdits = if (q.length >= 9) 2 else 1
+        if (kotlin.math.abs(q.length - t.length) <= maxEdits && editDistance(q, t) <= maxEdits) {
+            return true
+        }
+        // Escribió solo el comienzo de la palabra y con un error: se compara con el mismo largo.
+        return t.length > q.length && editDistance(q, t.substring(0, q.length)) <= maxEdits
     }
 
-    private fun isOneTypoAway(first: String, second: String): Boolean {
-        val firstTokens = first.split(" ").filter { it.isNotBlank() }
-        val secondTokens = second.split(" ").filter { it.isNotBlank() }
+    /** Distancia de edición (insertar, borrar, cambiar o intercambiar dos letras seguidas). */
+    private fun editDistance(a: String, b: String): Int {
+        val n = a.length
+        val m = b.length
+        if (n == 0) return m
+        if (m == 0) return n
 
-        if (firstTokens.size != secondTokens.size) return false
+        var beforePrev = IntArray(m + 1)
+        var prev = IntArray(m + 1) { it }
+        var cur = IntArray(m + 1)
 
-        var differences = 0
-
-        for (index in firstTokens.indices) {
-            val a = firstTokens[index]
-            val b = secondTokens[index]
-
-            if (a == b) continue
-            if (kotlin.math.abs(a.length - b.length) > 1) return false
-
-            var i = 0
-            var j = 0
-            var edits = 0
-
-            while (i < a.length && j < b.length) {
-                if (a[i] == b[j]) {
-                    i++
-                    j++
-                } else {
-                    edits++
-                    if (edits > 1) return false
-
-                    when {
-                        a.length > b.length -> i++
-                        b.length > a.length -> j++
-                        else -> {
-                            i++
-                            j++
-                        }
-                    }
+        for (i in 1..n) {
+            cur[0] = i
+            for (j in 1..m) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                var value = minOf(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+                if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]) {
+                    value = minOf(value, beforePrev[j - 2] + 1)
                 }
+                cur[j] = value
             }
-
-            edits += (a.length - i) + (b.length - j)
-            if (edits != 1) return false
-
-            differences++
-            if (differences > 1) return false
+            val reuse = beforePrev
+            beforePrev = prev
+            prev = cur
+            cur = reuse
         }
-
-        return differences == 1
+        return prev[m]
     }
 
     /** Recolecta links sin repetir URLs ni trabajo ya hecho; seguro para uso paralelo. */
@@ -209,6 +206,27 @@ class DonghuaWorldProvider : MainAPI() {
         }
     }
 
+    // ───────────────────────── Caché ─────────────────────────
+
+    private class CacheEntry(val at: Long, val value: List<SearchResponse>)
+
+    private val homeCache = ConcurrentHashMap<String, CacheEntry>()
+    private val searchCache = ConcurrentHashMap<String, CacheEntry>()
+
+    private fun cacheGet(cache: ConcurrentHashMap<String, CacheEntry>, key: String): List<SearchResponse>? {
+        val entry = cache[key] ?: return null
+        if (System.currentTimeMillis() - entry.at < CACHE_TTL_MS) return entry.value
+        cache.remove(key)
+        return null
+    }
+
+    /** Solo se guardan resultados con contenido: un fallo o una lista vacía no se queda pegado. */
+    private fun cachePut(cache: ConcurrentHashMap<String, CacheEntry>, key: String, value: List<SearchResponse>) {
+        if (value.isEmpty()) return
+        if (cache.size >= CACHE_MAX_ENTRIES) cache.clear()
+        cache[key] = CacheEntry(System.currentTimeMillis(), value)
+    }
+
     // ───────────────────────── Página principal ─────────────────────────
 
     override suspend fun getMainPage(
@@ -228,10 +246,13 @@ class DonghuaWorldProvider : MainAPI() {
         }
 
         // Si la página se cae, la sección queda vacía en vez de romper todo el catálogo.
-        val home: List<SearchResponse> = attempt {
-            val document = app.get(url, timeout = FAST_TIMEOUT_S).document
-            if (isLatest) parseLatest(document) else parseCatalog(document)
-        } ?: run {
+        // Las páginas vistas hace poco salen de la caché (la home pesa ~1 MB).
+        val home: List<SearchResponse> = cacheGet(homeCache, url)
+            ?: attempt {
+                val document = app.get(url, timeout = FAST_TIMEOUT_S).document
+                if (isLatest) parseLatest(document) else parseCatalog(document)
+            }?.also { cachePut(homeCache, url, it) }
+            ?: run {
             debug { "sección '${request.name}' no disponible, se omite" }
             return newHomePageResponse(emptyList(), hasNext = false)
         }
@@ -316,102 +337,149 @@ class DonghuaWorldProvider : MainAPI() {
 
     // ───────────────────────── Búsqueda ─────────────────────────
 
+    private class Hit(
+        val score: Int,
+        val isEpisode: Boolean,
+        val key: String,
+        val response: SearchResponse
+    )
+
     override suspend fun search(query: String): List<SearchResponse> {
         val normalizedQuery = normalize(query)
         if (normalizedQuery.isBlank()) return emptyList()
 
-        val queries = linkedSetOf(query.trim())
-        val tokens = normalizedQuery.split(" ").filter { it.length >= 4 }
-        // Solo agrega búsquedas por palabra cuando la consulta tiene varias palabras.
-        if (tokens.size >= 2) queries.addAll(tokens)
+        cacheGet(searchCache, normalizedQuery)?.let { return it }
 
-        class Hit(
-            val score: Int,
-            val isEpisode: Boolean,
-            val key: String,
-            val response: SearchResponse
-        )
+        val primary = query.trim()
+        val words = normalizedQuery.split(" ").filter { it.length >= 4 }
 
-        val hits = mutableListOf<Hit>()
+        // Fase 1 (todo en paralelo): la consulta tal cual la escribió la persona y, si tiene
+        // varias palabras, cada palabra suelta (la web exige que aparezcan todas juntas).
+        val firstTerms = linkedSetOf(primary)
+        if (words.size >= 2) firstTerms.addAll(words)
 
-        for (searchTerm in queries) {
-            val searchUrl = "$mainUrl/?s=${URLEncoder.encode(searchTerm, "UTF-8")}"
-            val document = attempt {
-                app.get(searchUrl, timeout = SEARCH_TIMEOUT_S).document
-            } ?: continue
+        var hits = searchTerms(firstTerms.toList(), primary, normalizedQuery)
 
-            val units = document.select("article.bs")
-                .ifEmpty { document.select("article") }
-                .ifEmpty { document.select("a[href*='/anime/']") }
-
-            for (unit in units) {
-                val link = unit.selectFirst("a[href*='/anime/']")
-                    ?: unit.selectFirst("a[href*='-episode-']")
-                    ?: continue
-
-                val href = link.attr("href").trim()
-                if (href.isBlank() || href.contains("/anime/?")) continue
-
-                val isSeries = href.contains("/anime/")
-                val isEpisode = !isSeries && href.contains("-episode-")
-                if (!isSeries && !isEpisode) continue
-
-                val rawTitle = link.attr("title").trim()
-                    .ifBlank { unit.selectFirst(".tt")?.ownText()?.trim().orEmpty() }
-                    .ifBlank { unit.selectFirst("h2")?.text()?.trim().orEmpty() }
-                    .ifBlank { unit.selectFirst("img")?.attr("alt")?.trim().orEmpty() }
-                    .ifBlank { link.text().trim() }
-
-                val title = if (isEpisode) {
-                    EPISODE_IN_TITLE.find(rawTitle)
-                        ?.let { rawTitle.substring(0, it.range.first).trim() }
-                        ?: rawTitle
-                } else rawTitle
-
-                if (title.isBlank()) continue
-
-                val normalizedTitle = normalize(title)
-                val score = titleScore(normalizedTitle, normalizedQuery, 80)
-                // Una búsqueda por token puede descubrir candidatos adicionales,
-                // pero solo se aceptan los que también coinciden con la consulta original.
-                if (score <= 0) continue
-
-                val slug = href.substringAfter("/anime/", "").lowercase()
-                val isMovie = isMovieTitle(normalizedTitle) || slug.contains("movie")
-                val poster = (unit.selectFirst("img[itemprop='image']")
-                    ?: unit.selectFirst("img")).imageUrl()
-
-                val response = newAnimeSearchResponse(
-                    title,
-                    fixUrl(href),
-                    if (isMovie) TvType.AnimeMovie else TvType.Anime
-                ) {
-                    this.posterUrl = fixUrlNull(poster)
-                }
-
-                val identity = fixUrl(href).trimEnd('/')
-                hits.add(
-                    Hit(
-                        score,
-                        isEpisode,
-                        "$identity|${if (isMovie) "movie" else "series"}",
-                        response
-                    )
-                )
-            }
+        // Fase 2: solo si no apareció ninguna coincidencia real de título (p. ej. un error de
+        // tipeo). La web busca texto exacto, así que se piden pedazos de cada palabra y
+        // después se filtra por parecido.
+        if (hits.none { it.score >= GOOD_SCORE }) {
+            val probes = typoProbes(normalizedQuery).filter { it !in firstTerms }
+            if (probes.isNotEmpty()) hits = hits + searchTerms(probes, primary, normalizedQuery)
         }
 
-        debug {
-            "búsqueda '$query': consultas=${queries.size}, candidatos=${hits.size}"
-        }
+        debug { "búsqueda '$query': candidatos=${hits.size}" }
 
-        return hits
+        val results = hits
             .sortedBy { it.isEpisode }
             .groupBy { it.key }
             .values
             .mapNotNull { group -> group.maxByOrNull { it.score } }
             .sortedByDescending { it.score }
             .map { it.response }
+
+        cachePut(searchCache, normalizedQuery, results)
+        return results
+    }
+
+    /** Lanza todas las búsquedas a la vez (antes iban una detrás de otra, hasta 10 s cada una). */
+    private suspend fun searchTerms(
+        terms: List<String>,
+        primary: String,
+        normalizedQuery: String
+    ): List<Hit> =
+        terms.amap { term -> searchOnce(term, normalizedQuery, trustSite = term == primary) }
+            .flatten()
+
+    /**
+     * Pedazos de las palabras más largas (comienzo y final) para encontrar series cuando
+     * la palabra está mal escrita: un error de tipeo no puede estar en los dos pedazos a la vez.
+     */
+    private fun typoProbes(normalizedQuery: String): List<String> =
+        normalizedQuery.split(" ")
+            .filter { it.length >= 5 }
+            .sortedByDescending { it.length }
+            .take(2)
+            .flatMap { word ->
+                val half = maxOf(3, (word.length + 1) / 2)
+                listOf(word.take(half), word.takeLast(half))
+            }
+            .distinct()
+            .take(MAX_PROBES)
+
+    /**
+     * Una búsqueda en la web (una página de resultados) convertida en candidatos.
+     *
+     * `trustSite`: la consulta tal cual la escribió la persona. Todo lo que la web devuelve se
+     * muestra aunque el título no coincida (como en donghuaworld.com, que también busca en la
+     * sinopsis). Las búsquedas auxiliares (palabras sueltas, pedazos) solo aportan candidatos
+     * que además parezcan el título buscado.
+     */
+    private suspend fun searchOnce(
+        term: String,
+        normalizedQuery: String,
+        trustSite: Boolean
+    ): List<Hit> {
+        val searchUrl = "$mainUrl/?s=${URLEncoder.encode(term, "UTF-8")}"
+        val document = attempt {
+            app.get(searchUrl, timeout = SEARCH_TIMEOUT_S).document
+        } ?: return emptyList()
+
+        // Solo las tarjetas de resultados. Antes, si no había ninguna, se tomaban todos los
+        // links /anime/ de la página y entraba el sidebar ("Popular Series").
+        val units = document.select("div.postbody article.bs")
+            .ifEmpty { document.select("article.bs") }
+
+        return units.mapNotNull { unit ->
+            val link = unit.selectFirst("a[href*='/anime/']")
+                ?: unit.selectFirst("a[href*='-episode-']")
+                ?: return@mapNotNull null
+
+            val href = link.attr("href").trim()
+            if (href.isBlank() || href.contains("/anime/?")) return@mapNotNull null
+
+            val isSeries = href.contains("/anime/")
+            val isEpisode = !isSeries && href.contains("-episode-")
+            if (!isSeries && !isEpisode) return@mapNotNull null
+
+            val rawTitle = link.attr("title").trim()
+                .ifBlank { unit.selectFirst(".tt")?.ownText()?.trim().orEmpty() }
+                .ifBlank { unit.selectFirst("h2")?.text()?.trim().orEmpty() }
+                .ifBlank { unit.selectFirst("img")?.attr("alt")?.trim().orEmpty() }
+                .ifBlank { link.text().trim() }
+
+            val title = if (isEpisode) {
+                EPISODE_IN_TITLE.find(rawTitle)
+                    ?.let { rawTitle.substring(0, it.range.first).trim() }
+                    ?: rawTitle
+            } else rawTitle
+
+            if (title.isBlank()) return@mapNotNull null
+
+            val normalizedTitle = normalize(title)
+            val titleMatch = titleScore(normalizedTitle, normalizedQuery, 80)
+            val score = when {
+                titleMatch > 0 -> titleMatch
+                trustSite -> SITE_ONLY_SCORE
+                else -> return@mapNotNull null
+            }
+
+            val slug = href.substringAfter("/anime/", "").lowercase()
+            val isMovie = isMovieTitle(normalizedTitle) || slug.contains("movie")
+            val poster = (unit.selectFirst("img[itemprop='image']")
+                ?: unit.selectFirst("img")).imageUrl()
+
+            val response = newAnimeSearchResponse(
+                title,
+                fixUrl(href),
+                if (isMovie) TvType.AnimeMovie else TvType.Anime
+            ) {
+                this.posterUrl = fixUrlNull(poster)
+            }
+
+            val identity = fixUrl(href).trimEnd('/')
+            Hit(score, isEpisode, "$identity|${if (isMovie) "movie" else "series"}", response)
+        }
     }
 
     private suspend fun findSeries(query: String): List<Pair<Int, String>> {
