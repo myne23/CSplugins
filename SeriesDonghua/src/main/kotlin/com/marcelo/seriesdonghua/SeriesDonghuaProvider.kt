@@ -62,6 +62,9 @@ class SeriesDonghuaProvider : MainAPI() {
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
         const val ALTCHA_TIMEOUT_NS = 25_000_000_000L
 
+        // Si una fuente no trae master, se muestran como máximo estas calidades (las mejores).
+        const val MAX_QUALITIES = 2
+
         // Byse (bysekoze y demás dominios): se resuelve como en AnimoraTV.
         const val BYSE_FALLBACK_HOST = "https://byse.sx"
         val BYSE_EMBED = Regex(
@@ -245,17 +248,25 @@ class SeriesDonghuaProvider : MainAPI() {
 
     /**
      * Un extractor puede devolver el mismo video varias veces (una por calidad). Para que la
-     * fuente salga una sola vez se elige: el master m3u8, si no el m3u8 sin calidad fija
-     * (también es un master) y, si no hay, el de mayor calidad.
+     * fuente no salga repetida se elige: el master m3u8 (ya trae todas las calidades adentro),
+     * si no el m3u8 sin calidad fija (también es un master) y, si no hay ninguno, las
+     * `maxQualities` mejores calidades distintas (1080 y 720 cuando existen).
      */
-    private fun pickBestLink(links: List<ExtractorLink>): ExtractorLink? {
-        if (links.isEmpty()) return null
+    private fun pickLinks(links: List<ExtractorLink>, maxQualities: Int): List<ExtractorLink> {
+        if (links.isEmpty()) return emptyList()
         links.firstOrNull { it.type == ExtractorLinkType.M3U8 && it.url.contains("master", true) }
-            ?.let { return it }
+            ?.let { return listOf(it) }
         links.firstOrNull { it.type == ExtractorLinkType.M3U8 && it.quality <= 0 }
-            ?.let { return it }
-        return links.maxByOrNull { it.quality }
+            ?.let { return listOf(it) }
+        return links
+            .sortedByDescending { it.quality }
+            .distinctBy { it.quality }
+            .take(maxQualities)
     }
+
+    /** Un solo link por fuente (lo usa MundoDonghua). */
+    private fun pickBestLink(links: List<ExtractorLink>): ExtractorLink? =
+        pickLinks(links, 1).firstOrNull()
 
     /** Texto del elemento respetando los <br> como saltos de línea. */
     private fun Element.textWithBreaks(): String = buildString {
@@ -877,62 +888,60 @@ class SeriesDonghuaProvider : MainAPI() {
             return sink.total > 0
         }
 
-        // Todas las fuentes (los 5 servidores + MundoDonghua) corren en paralelo.
-        val tasks = mutableListOf<suspend () -> Unit>()
-
-        val pageResponse = attempt { app.get(data) }
-
-        if (pageResponse != null) {
-            val document = pageResponse.document
-
-            val videoId = document
-                .selectFirst("[data-video-id]")
-                ?.attr("data-video-id")
-                ?.trim()
-                ?.toIntOrNull()
-
-            val csrf = document
-                .selectFirst("meta[name=csrf-token]")
-                ?.attr("content")
-                ?.trim()
-
-            if (videoId != null && !csrf.isNullOrBlank()) {
-                val cookies = pageResponse.cookies.entries
-                    .joinToString("; ") { (cookieName, cookieValue) -> "$cookieName=$cookieValue" }
-
-                for ((serverName, serverIndex) in SERVERS) {
-                    tasks.add {
-                        guarded(serverName) {
-                            loadSeriesDonghuaServer(
-                                serverName = serverName,
-                                serverIndex = serverIndex,
-                                videoId = videoId,
-                                csrf = csrf,
-                                cookies = cookies,
-                                pageUrl = data,
-                                subtitleCallback = subtitleCallback,
-                                sink = sink
-                            )
-                        }
-                    }
-                }
-            } else {
-                debug { "no se encontró data-video-id o CSRF" }
-            }
-        }
-
-        // Fuente adicional: MundoDonghua. Corre aparte y con timeouts cortos en cada request:
-        // si esa web está caída o lenta, no rompe los links de SeriesDonghua.
-        tasks.add {
-            guarded("MundoDonghua") {
-                loadMundoDonghuaLinks(data, sink)
-            }
-        }
-
-        tasks.amap { it() }
+        // MundoDonghua no depende de la página de SeriesDonghua: arranca a la vez que ella
+        // (antes esperaba a que terminara de cargar). Corre aparte y con timeouts cortos en
+        // cada request: si esa web está caída o lenta, no rompe los links de SeriesDonghua.
+        listOf<suspend () -> Unit>(
+            { guarded("MundoDonghua") { loadMundoDonghuaLinks(data, sink) } },
+            { guarded("SeriesDonghua") { loadSeriesDonghuaServers(data, subtitleCallback, sink) } }
+        ).amap { it() }
 
         debug { "loadLinks final linkCount=${sink.total}" }
         return sink.total > 0
+    }
+
+    /** Pide la página del capítulo y resuelve sus 5 servidores en paralelo. */
+    private suspend fun loadSeriesDonghuaServers(
+        data: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        sink: LinkSink
+    ) {
+        val pageResponse = attempt { app.get(data) } ?: return
+        val document = pageResponse.document
+
+        val videoId = document
+            .selectFirst("[data-video-id]")
+            ?.attr("data-video-id")
+            ?.trim()
+            ?.toIntOrNull()
+
+        val csrf = document
+            .selectFirst("meta[name=csrf-token]")
+            ?.attr("content")
+            ?.trim()
+
+        if (videoId == null || csrf.isNullOrBlank()) {
+            debug { "no se encontró data-video-id o CSRF" }
+            return
+        }
+
+        val cookies = pageResponse.cookies.entries
+            .joinToString("; ") { (cookieName, cookieValue) -> "$cookieName=$cookieValue" }
+
+        SERVERS.amap { (serverName, serverIndex) ->
+            guarded(serverName) {
+                loadSeriesDonghuaServer(
+                    serverName = serverName,
+                    serverIndex = serverIndex,
+                    videoId = videoId,
+                    csrf = csrf,
+                    cookies = cookies,
+                    pageUrl = data,
+                    subtitleCallback = subtitleCallback,
+                    sink = sink
+                )
+            }
+        }
     }
 
     private suspend fun loadSeriesDonghuaServer(
@@ -1019,6 +1028,10 @@ class SeriesDonghuaProvider : MainAPI() {
 
             else -> {
                 // Los subtítulos de estos servidores se descartan a propósito.
+                // Se juntan los links del extractor y se emite solo el master (o las 2 mejores
+                // calidades): así la misma fuente no sale repetida una vez por calidad.
+                val collected = Collections.synchronizedList(mutableListOf<ExtractorLink>())
+
                 loadExtractor(
                     url = embedUrl,
                     referer = pageUrl,
@@ -1035,21 +1048,24 @@ class SeriesDonghuaProvider : MainAPI() {
                             else -> true
                         }
 
-                        if (keep) {
-                            val label = tagged(link.name.ifBlank { serverName }, SD_TAG)
-                            sink.emit(
-                                ExtractorLink(
-                                    source = label,
-                                    name = label,
-                                    url = link.url,
-                                    referer = link.referer,
-                                    quality = link.quality,
-                                    type = link.type
-                                )
-                            )
-                        }
+                        if (keep) collected.add(link)
                     }
                 )
+
+                val snapshot = synchronized(collected) { collected.toList() }
+                for (link in pickLinks(snapshot, MAX_QUALITIES)) {
+                    val label = tagged(link.name.ifBlank { serverName }, SD_TAG)
+                    sink.emit(
+                        ExtractorLink(
+                            source = label,
+                            name = label,
+                            url = link.url,
+                            referer = link.referer,
+                            quality = link.quality,
+                            type = link.type
+                        )
+                    )
+                }
             }
         }
     }
@@ -1190,8 +1206,10 @@ class SeriesDonghuaProvider : MainAPI() {
                 )
             }
 
-        debug { "OK.ru links=${links.size} embed=$okEmbedUrl" }
-        return links
+        // Master HLS si existe (trae todas las calidades); si no, solo las 2 mejores mp4.
+        val picked = pickLinks(links, MAX_QUALITIES)
+        debug { "OK.ru links=${links.size} -> ${picked.size} embed=$okEmbedUrl" }
+        return picked
     }
 
     private suspend fun loadOdyseeLink(embedUrl: String): ExtractorLink? {
