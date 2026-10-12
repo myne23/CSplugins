@@ -3,12 +3,14 @@ package com.marcelo.seriesdonghua
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.JsUnpacker
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.nicehttp.JsonAsString
 import org.json.JSONObject
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.TextNode
 import java.net.URLEncoder
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
@@ -28,23 +30,23 @@ class SeriesDonghuaProvider : MainAPI() {
     // Orden de las secciones del catálogo.
     override val mainPage = mainPageOf(
         "$mainUrl/episodios/" to "Nuevos Episodios Seriesdonghua",
-        DW_NEW_URL to "Nuevos Episodios Donghuaworld",
+        MD_NEW_URL to "Nuevos Episodios Mundodonghua",
         "$mainUrl/todos-los-donghuas/" to "Catalogo Completo Seriesdonghua",
-        "$DW_URL/anime/" to "Catalogo Completo Donghuaworld"
+        "$MD_URL/lista-donghuas" to "Catalogo Completo Mundodonghua"
     )
 
     private companion object {
         // Poné DEBUG = true solo cuando quieras ver logs en logcat.
         const val DEBUG = false
 
-        const val DW_URL = "https://donghuaworld.com"
+        const val MD_URL = "https://www.mundodonghua.com"
 
-        // Home de DonghuaWorld: de ahí sale la sección "Latest Release" (últimos capítulos).
-        const val DW_NEW_URL = "$DW_URL/"
+        // Home de MundoDonghua: de ahí sale la sección "Nuevos Episodios" (primera página).
+        const val MD_NEW_URL = "$MD_URL/"
 
-        // Tiempos máximos (segundos) para DonghuaWorld: si la web no responde, se la deja de lado.
-        const val DW_FAST_TIMEOUT_S = 4L
-        const val DW_PAGE_TIMEOUT_S = 6L
+        // Tiempos máximos (segundos) para MundoDonghua: si la web no responde, se la deja de lado.
+        const val MD_FAST_TIMEOUT_S = 4L
+        const val MD_PAGE_TIMEOUT_S = 6L
 
         const val BROWSER_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
@@ -62,12 +64,23 @@ class SeriesDonghuaProvider : MainAPI() {
         val POSTER_ATTRS = listOf("src", "data-src", "data-lazy-src", "data-original", "data-url")
 
         val NON_ALNUM = Regex("[^a-z0-9]+")
-        val EPISODE_IN_TITLE = Regex("""\s+Episode\s+\d""", RegexOption.IGNORE_CASE)
-        val DW_SERIES_URL = Regex("""^https?://[^/?#]+/anime/[^/?#]+/?$""")
+        val APOSTROPHES = Regex("""[’'`´]""")
         val EPISODE_SLUG = Regex("/([^/]+)-episodio-(\\d+)/?$")
-        val IFRAME_SRC = Regex("""src=["']([^"']+)["']""")
-        val TRACK = Regex("""\{"file":"([^"]+)","label":"([^"]+)"\}""")
         val DM_PATH_ID = Regex("/video/([A-Za-z0-9]+)")
+
+        // MundoDonghua: /ver/serie/N (capítulo) y /donghua/serie (ficha). Los capítulos
+        // "Limitados" de Patreon traen un token como tercer tramo y no coinciden a propósito.
+        val MD_EPISODE_PATH = Regex("""/ver/([^/?#]+)/([^/?#]+)/?$""")
+        val MD_SERIES_PATH = Regex("""/donghua/([^/?#]+)/?$""")
+        val MD_EPISODE_SUFFIX = Regex("""\s+Episodio\s+\d.*$""", RegexOption.IGNORE_CASE)
+
+        // Cada servidor de MundoDonghua es un script empaquetado (eval(function(p,a,c,k,e,d)...)
+        // que al hacer click agrega un <iframe src='...'>.
+        val PACKED_SCRIPT = Regex(
+            """eval\(function\(p,a,c,k,e,.*?\.split\('\|'\),0,\{\}\)\)""",
+            RegexOption.DOT_MATCHES_ALL
+        )
+        val EMBED_SRC = Regex("""src=\\?['"](https?://[^'"\\\s]+)""")
 
         val ODYSEE_CONTENT_URL = Regex(
             """"contentUrl"\s*:\s*"([^"]+)"""",
@@ -120,13 +133,10 @@ class SeriesDonghuaProvider : MainAPI() {
         }
     }
 
+    // Los apóstrofes se quitan (no se cambian por espacio) para que "Mortal’s" y "mortals"
+    // normalicen igual: MundoDonghua usa el apóstrofe curvo en varios títulos.
     private fun normalize(text: String): String =
-        text.lowercase().replace(NON_ALNUM, " ").trim()
-
-    // Antes " movie " nunca coincidía con títulos terminados en "Movie" porque
-    // el texto normalizado queda sin espacio final.
-    private fun isMovieTitle(normalized: String): Boolean =
-        " $normalized ".contains(" movie ")
+        text.lowercase().replace(APOSTROPHES, "").replace(NON_ALNUM, " ").trim()
 
     private fun Element?.imageUrl(): String? {
         if (this == null) return null
@@ -202,6 +212,17 @@ class SeriesDonghuaProvider : MainAPI() {
         return differences == 1
     }
 
+    /** Texto del elemento respetando los <br> como saltos de línea. */
+    private fun Element.textWithBreaks(): String = buildString {
+        for (node in childNodes()) {
+            when {
+                node is TextNode -> append(node.text())
+                node is Element && node.tagName() == "br" -> append('\n')
+                node is Element -> append(node.text())
+            }
+        }
+    }.lines().joinToString("\n") { it.trim() }.trim()
+
     /** Recolecta links sin repetir URLs ni trabajo ya hecho; seguro para uso paralelo. */
     private class LinkSink(private val callback: (ExtractorLink) -> Unit) {
         private val seenUrls = ConcurrentHashMap.newKeySet<String>()
@@ -227,26 +248,27 @@ class SeriesDonghuaProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val isDwLatest = request.data == DW_NEW_URL
+        val isMundoDonghua = request.data.startsWith(MD_URL)
+        val isMdLatest = request.data == MD_NEW_URL
 
         val url = when {
             page == 1 -> request.data
-            // La home de DonghuaWorld pagina como /page/2/, no con ?page=2.
-            isDwLatest -> "$DW_URL/page/$page/"
+            // El home de MundoDonghua no pagina: los episodios siguientes están en /lista-episodios/N.
+            isMdLatest -> "$MD_URL/lista-episodios/$page"
+            // El catálogo de MundoDonghua pagina como /lista-donghuas/2, no con ?page=2.
+            isMundoDonghua -> "${request.data.trimEnd('/')}/$page"
             else -> {
                 val separator = if (request.data.contains("?")) "&" else "?"
                 "${request.data}${separator}page=$page"
             }
         }
 
-        val isDonghuaWorld = request.data.startsWith(DW_URL)
-
         // Cada sección falla por separado: si una página se cae, la sección queda vacía
         // y el resto del catálogo sigue funcionando.
         val home: List<SearchResponse> = attempt {
-            if (isDonghuaWorld) {
-                val document = app.get(url, timeout = DW_FAST_TIMEOUT_S).document
-                if (isDwLatest) parseDonghuaWorldLatest(document) else parseDonghuaWorldHome(document)
+            if (isMundoDonghua) {
+                val document = app.get(url, timeout = MD_FAST_TIMEOUT_S).document
+                if (isMdLatest) parseMundoDonghuaLatest(document) else parseMundoDonghuaCards(document)
             } else {
                 val document = app.get(url).document
                 if (request.data.contains("/episodios/")) {
@@ -264,78 +286,6 @@ class SeriesDonghuaProvider : MainAPI() {
             listOf(HomePageList(request.name, home)),
             hasNext = home.isNotEmpty()
         )
-    }
-
-    private fun parseDonghuaWorldHome(document: Document): List<SearchResponse> =
-        document.select("article.bs").mapNotNull { article ->
-            val link = article.selectFirst("a[href*='/anime/'][itemprop='url'][title]")
-                ?: return@mapNotNull null
-
-            val href = link.attr("href").trim()
-            val title = link.attr("title").trim()
-
-            if (href.isBlank() || title.isBlank() || href.contains("/anime/?")) {
-                return@mapNotNull null
-            }
-
-            if (isMovieTitle(normalize(title))) return@mapNotNull null
-
-            val poster = article.selectFirst("img[itemprop='image']").imageUrl()
-
-            newAnimeSearchResponse(title, fixUrl(href), TvType.Anime) {
-                this.posterUrl = fixUrlNull(poster)
-            }
-        }.distinctBy { it.url }
-
-    /**
-     * Solo "Latest Release" de la home de DonghuaWorld (no el carrusel "Series Update"):
-     * cada ítem es un capítulo. Se muestra con el
-     * nombre de la serie y, al abrirlo, load() resuelve la serie para que elijas el capítulo.
-     */
-    private fun parseDonghuaWorldLatest(document: Document): List<SearchResponse> {
-        // Solo la sección "Latest Release". Arriba está el carrusel "Series Update", que trae
-        // otras series y se repite en todas las páginas: no se debe mezclar.
-        val heading = document
-            .select("h1, h2, h3, h4")
-            .firstOrNull { it.text().trim().startsWith("Latest Release", ignoreCase = true) }
-            ?: run {
-                debug { "no se encontró el título 'Latest Release'" }
-                return emptyList()
-            }
-
-        // El primer ancestro del título que contiene ítems es la sección completa.
-        val section = heading.parents().firstOrNull { it.selectFirst("article, .bs") != null }
-            ?: return emptyList()
-
-        val articles = section.select("article, .bs")
-
-        return articles.mapNotNull { article ->
-            val link = article.selectFirst("a[href][title]")
-                ?: article.selectFirst("a[href]")
-                ?: return@mapNotNull null
-
-            val href = link.attr("href").trim()
-            if (href.isBlank() || href.contains("/anime/") || !href.contains("-episode-")) {
-                return@mapNotNull null
-            }
-
-            val rawTitle = link.attr("title").trim()
-                .ifBlank { article.selectFirst(".tt")?.ownText()?.trim().orEmpty() }
-
-            // "Battle Through the Heavens Season 5 Episode 214 (4K) ..." -> nombre de la serie.
-            val title = EPISODE_IN_TITLE.find(rawTitle)
-                ?.let { rawTitle.substring(0, it.range.first) }
-                ?.trim()
-                ?: rawTitle
-
-            if (title.isBlank() || isMovieTitle(normalize(title))) return@mapNotNull null
-
-            val poster = article.selectFirst("img").imageUrl()
-
-            newAnimeSearchResponse(title, fixUrl(href), TvType.Anime) {
-                this.posterUrl = fixUrlNull(poster)
-            }
-        }.distinctBy { it.url }
     }
 
     private fun parseNewEpisodes(document: Document): List<SearchResponse> =
@@ -392,52 +342,37 @@ class SeriesDonghuaProvider : MainAPI() {
                         .mapNotNull { it.toSearchResult() }
                 } ?: emptyList()
             },
-            { searchDonghuaWorld(encodedQuery, normalizedQuery) }
+            { searchMundoDonghua(encodedQuery, normalizedQuery) }
         )
 
         return sources.amap { it() }.flatten()
     }
 
-    private suspend fun searchDonghuaWorld(
+    private suspend fun searchMundoDonghua(
         encodedQuery: String,
         normalizedQuery: String
     ): List<SearchResponse> {
         val document = attempt {
-            app.get("$DW_URL/?s=$encodedQuery", timeout = DW_FAST_TIMEOUT_S).document
+            app.get("$MD_URL/busquedas/?donghua=$encodedQuery", timeout = MD_FAST_TIMEOUT_S).document
         } ?: return emptyList()
 
-        return document
-            .select("a[href*='/anime/'][itemprop='url'][title]")
-            .mapNotNull { element ->
-                val href = element.attr("href").trim()
-                val title = element.attr("title").trim()
-
-                if (href.isBlank() || title.isBlank() || href.contains("/anime/?")) {
-                    return@mapNotNull null
-                }
-
-                val normalizedTitle = normalize(title)
-                if (isMovieTitle(normalizedTitle)) return@mapNotNull null
-
-                val score = titleScore(normalizedTitle, normalizedQuery, 80)
+        // Se vuelve a filtrar por título aunque la web ya filtre: así el resultado es el mismo
+        // si la web devolviera la lista completa.
+        return parseMundoDonghuaCards(document)
+            .mapNotNull { result ->
+                val score = titleScore(normalize(result.name), normalizedQuery, 80)
                 if (score <= 0) return@mapNotNull null
 
-                val card = element.parents().firstOrNull { it.tagName() == "article" }
-                val image = card?.selectFirst("img[itemprop='image']")
-                    ?: card?.selectFirst("img")
-                val poster = image.imageUrl()
-
                 val response = newAnimeSearchResponse(
-                    "$title · DonghuaWorld",
-                    fixUrl(href),
+                    "${result.name} · MundoDonghua",
+                    result.url,
                     TvType.Anime
                 ) {
-                    this.posterUrl = fixUrlNull(poster)
+                    this.posterUrl = result.posterUrl
                 }
 
                 score to response
             }
-            .distinctBy { it.second.url }
             .sortedByDescending { it.first }
             .map { it.second }
     }
@@ -445,14 +380,8 @@ class SeriesDonghuaProvider : MainAPI() {
     // ───────────────────────── Detalle de serie ─────────────────────────
 
     override suspend fun load(url: String): LoadResponse? {
-        if (url.contains("donghuaworld.com/anime/")) {
-            return loadDonghuaWorldSeries(url)
-        }
-
-        // Capítulo suelto de "Nuevos Episodios Donghuaworld": se abre la serie completa.
-        if (url.contains("donghuaworld.com/")) {
-            val seriesUrl = resolveDonghuaWorldSeriesUrl(url) ?: return null
-            return loadDonghuaWorldSeries(seriesUrl)
+        if (url.contains("mundodonghua.com/")) {
+            return loadMundoDonghuaSeries(url)
         }
 
         val document = attempt { app.get(url).document } ?: return null
@@ -496,109 +425,226 @@ class SeriesDonghuaProvider : MainAPI() {
         }
     }
 
-    /**
-     * Dado el link de un capítulo de DonghuaWorld, devuelve el link de su serie (/anime/...).
-     * La página del capítulo enlaza a la serie desde varios lugares (ruta de navegación,
-     * "All Episodes", ficha de la serie), pero el sidebar también trae otras series populares.
-     * Por eso se elige el link /anime/ cuyo slug comparte más palabras con el del capítulo.
-     */
-    private suspend fun resolveDonghuaWorldSeriesUrl(episodeUrl: String): String? {
-        val episodeSlug = episodeUrl.substringBefore("?").trimEnd('/').substringAfterLast('/')
-        val episodeTokens = episodeSlug.split('-').filter { it.isNotBlank() }.toSet()
+    // ───────────────────────── MundoDonghua ─────────────────────────
 
-        val fromPage = attempt {
-            val document = app.get(episodeUrl, timeout = DW_PAGE_TIMEOUT_S).document
-            val seen = HashSet<String>()
-            var best: String? = null
-            var bestScore = 0
-
-            for (anchor in document.select("a[href*='/anime/']")) {
-                val href = fixUrl(anchor.attr("href").trim().substringBefore("#"))
-                if (!DW_SERIES_URL.matches(href)) continue
-
-                val key = href.trimEnd('/') + "/"
-                if (!seen.add(key)) continue
-
-                val slugTokens = key.trimEnd('/').substringAfterLast('/')
-                    .split('-')
-                    .filter { it.isNotBlank() }
-                if (slugTokens.isEmpty()) continue
-
-                val score = slugTokens.count { it in episodeTokens }
-
-                // Con empate gana el primero que aparece (la ruta de navegación).
-                if (score > bestScore && score * 2 >= slugTokens.size) {
-                    best = key
-                    bestScore = score
-                }
-            }
-
-            best
+    /** Une rutas relativas de MundoDonghua (/thumbs/..., /ver/...) con su dominio. */
+    private fun mdUrl(path: String?): String? {
+        val value = path?.trim().orEmpty()
+        return when {
+            value.isBlank() -> null
+            value.startsWith("http", ignoreCase = true) -> value
+            value.startsWith("//") -> "https:$value"
+            value.startsWith("/") -> "$MD_URL$value"
+            else -> "$MD_URL/$value"
         }
-        if (fromPage != null) return fromPage
-
-        // Si la página del capítulo no respondió o no tenía el link, se busca la serie por nombre.
-        val seriesName = episodeSlug
-            .substringBefore("-episode-")
-            .replace("-", " ")
-            .trim()
-        if (seriesName.isBlank()) return null
-
-        return attempt { findDonghuaWorldSeries(seriesName).firstOrNull()?.second }
     }
 
-    private suspend fun loadDonghuaWorldSeries(url: String): LoadResponse? {
+    /** Slug de la serie a partir de /donghua/slug o de /ver/slug/N. */
+    private fun mdSeriesSlug(href: String): String? =
+        MD_SERIES_PATH.find(href)?.groupValues?.getOrNull(1)
+            ?: MD_EPISODE_PATH.find(href)?.groupValues?.getOrNull(1)
+
+    /**
+     * "Nuevos Episodios" de MundoDonghua: cada ítem es un capítulo. Se muestra con el nombre
+     * de la serie y apunta a la ficha de la serie (una sola tarjeta por serie).
+     */
+    private fun parseMundoDonghuaLatest(document: Document): List<SearchResponse> {
+        // En el home los episodios están en #nuevos-episodios-grid; en /lista-episodios, en toda la página.
+        val scope = document.selectFirst("#nuevos-episodios-grid") ?: document
+
+        return scope.select("div.md-card:not(.limited)").mapNotNull { card ->
+            val href = card.selectFirst("a[href*='/ver/']")?.attr("href")?.trim()
+                ?: return@mapNotNull null
+
+            // Los capítulos "Limitados" (Patreon) no se pueden reproducir: se descartan.
+            if (!MD_EPISODE_PATH.containsMatchIn(href)) return@mapNotNull null
+
+            val slug = mdSeriesSlug(href) ?: return@mapNotNull null
+            val image = card.selectFirst("img")
+
+            val title = image?.attr("alt")?.trim().takeUnless { it.isNullOrBlank() }
+                ?: card.selectFirst(".md-card-title")?.text()?.replace(MD_EPISODE_SUFFIX, "")?.trim()
+                ?: return@mapNotNull null
+
+            newAnimeSearchResponse(title, "$MD_URL/donghua/$slug", TvType.Anime) {
+                this.posterUrl = mdUrl(image.imageUrl())
+            }
+        }.distinctBy { it.url }
+    }
+
+    /** Tarjetas de series (catálogo y búsqueda de MundoDonghua). */
+    private fun parseMundoDonghuaCards(document: Document): List<SearchResponse> =
+        document.select("div.md-card").mapNotNull { card ->
+            val href = card.selectFirst("a[href*='/donghua/']")?.attr("href")?.trim()
+                ?: return@mapNotNull null
+
+            val slug = MD_SERIES_PATH.find(href)?.groupValues?.getOrNull(1)
+                ?: return@mapNotNull null
+            val image = card.selectFirst("img")
+
+            val title = card.selectFirst(".md-card-title")?.text()?.trim()
+                .takeUnless { it.isNullOrBlank() }
+                ?: image?.attr("alt")?.trim().takeUnless { it.isNullOrBlank() }
+                ?: return@mapNotNull null
+
+            newAnimeSearchResponse(title, "$MD_URL/donghua/$slug", TvType.Anime) {
+                this.posterUrl = mdUrl(image.imageUrl())
+            }
+        }.distinctBy { it.url }
+
+    private suspend fun loadMundoDonghuaSeries(url: String): LoadResponse? {
+        // Si llega un capítulo (/ver/serie/N) se abre la serie: el slug ya dice cuál es.
+        val slug = mdSeriesSlug(url) ?: return null
+        val seriesUrl = "$MD_URL/donghua/$slug"
+
         val document = attempt {
-            app.get(url, timeout = DW_PAGE_TIMEOUT_S).document
+            app.get(seriesUrl, timeout = MD_PAGE_TIMEOUT_S).document
         } ?: return null
 
-        val title = document
-            .selectFirst("h1.entry-title[itemprop='name']")
-            ?.text()
-            ?.trim()
+        val title = document.selectFirst("h1.md-detail-title")?.text()?.trim()
+            ?.takeIf { it.isNotBlank() }
             ?: return null
 
-        val poster = document
-            .selectFirst("img.ts-post-image[itemprop='image']")
-            ?.attr("src")
-            ?.trim()
+        val poster = document.selectFirst(".md-detail-poster img")?.attr("src")
+
+        val plot = document.selectFirst("p.md-detail-synopsis")?.textWithBreaks()
+
+        val tags = document
+            .select(".md-genres-block a.md-genre-tag")
+            .map { it.text().trim() }
+            .filter { it.isNotBlank() }
 
         val episodes = document
-            .select("a[href*='episode-']")
-            .mapNotNull { episodeElement ->
-                val episodeUrl = episodeElement.attr("href").trim()
-                if (episodeUrl.isBlank()) return@mapNotNull null
-
-                val container = episodeElement.parent() ?: return@mapNotNull null
-
-                val episodeNumber = container
-                    .selectFirst(".epl-num")
-                    ?.text()
-                    ?.trim()
-                    ?.substringBefore("[")
-                    ?.substringBefore("(")
-                    ?.trim()
-                    ?.toIntOrNull()
+            .select("li.md-episode-item")
+            .mapNotNull { item ->
+                val link = mdUrl(item.selectFirst("a[href]")?.attr("href"))
                     ?: return@mapNotNull null
 
-                val episodeTitle = container.selectFirst(".epl-title")?.text()?.trim()
+                // Hay episodios con decimales (p. ej. 17.5): se usan para ordenar, pero
+                // CloudStream solo admite números enteros en `episode`.
+                val rawNumber = item.attr("data-ep").trim()
+                    .ifBlank { MD_EPISODE_PATH.find(link)?.groupValues?.getOrNull(2).orEmpty() }
+                val sortKey = rawNumber.toFloatOrNull() ?: return@mapNotNull null
 
-                Triple(episodeNumber, fixUrl(episodeUrl), episodeTitle)
-            }
-            .distinctBy { it.second }
-            .sortedByDescending { it.first }
-            .map { (episodeNumber, episodeUrl, episodeTitle) ->
-                newEpisode(episodeUrl) {
-                    this.name = episodeTitle
-                    this.episode = episodeNumber
-                    this.posterUrl = fixUrlNull(poster)
+                val episodeName = item.selectFirst("h5")?.text()?.trim()
+                val episodePoster = item.selectFirst("img")?.attr("src")
+
+                sortKey to newEpisode(link) {
+                    this.name = episodeName
+                    this.episode = rawNumber.toIntOrNull()
+                    this.posterUrl = mdUrl(episodePoster)
                 }
             }
+            .sortedBy { it.first }
+            .map { it.second }
 
-        return newAnimeLoadResponse("$title · DonghuaWorld", url, TvType.Anime) {
-            this.posterUrl = fixUrlNull(poster)
+        return newAnimeLoadResponse("$title · MundoDonghua", seriesUrl, TvType.Anime) {
+            this.posterUrl = mdUrl(poster)
+            this.plot = plot
+            this.tags = tags
             this.addEpisodes(DubStatus.Subbed, episodes)
         }
+    }
+
+    private suspend fun fetchMundoDonghuaPage(url: String): Document? {
+        val response = attempt { app.get(url, timeout = MD_PAGE_TIMEOUT_S) } ?: return null
+        return if (response.isSuccessful) response.document else null
+    }
+
+    /** Capítulo que viene directo de MundoDonghua (/ver/serie/N). */
+    private suspend fun loadMundoDonghuaEpisodeLinks(data: String, sink: LinkSink) {
+        val document = fetchMundoDonghuaPage(data) ?: return
+        resolveMundoDonghuaEpisode(document, data, sink)
+    }
+
+    /**
+     * Fuente adicional para un capítulo de SeriesDonghua: se arma el link directo
+     * /ver/{slug}/{N} de MundoDonghua (los slugs coinciden en casi todas las series).
+     * Si esa serie o ese capítulo no existen allá, simplemente no se suman links.
+     */
+    private suspend fun loadMundoDonghuaLinks(data: String, sink: LinkSink) {
+        val match = EPISODE_SLUG.find(data) ?: return
+
+        val seriesSlug = match.groupValues[1]
+        val episodeNumber = match.groupValues[2]
+        val episodeUrl = "$MD_URL/ver/$seriesSlug/$episodeNumber"
+
+        debug { "MundoDonghua episodio -> $episodeUrl" }
+
+        val document = fetchMundoDonghuaPage(episodeUrl) ?: return
+        resolveMundoDonghuaEpisode(document, episodeUrl, sink)
+    }
+
+    /** Desempaqueta los scripts de los servidores (Filemoon, VOE, VidHide, StreamWish) y los resuelve en paralelo. */
+    private suspend fun resolveMundoDonghuaEpisode(
+        document: Document,
+        episodeUrl: String,
+        sink: LinkSink
+    ) {
+        val embeds = LinkedHashSet<String>()
+
+        for (script in document.select("script")) {
+            val code = script.data()
+            if (!code.contains("eval(function(p,a,c,k,e,")) continue
+
+            // Un mismo <script> puede traer varios eval: se desempaqueta cada uno por separado.
+            for (packed in PACKED_SCRIPT.findAll(code)) {
+                val unpacked = attempt { JsUnpacker(packed.value).unpack() } ?: continue
+                EMBED_SRC.find(unpacked)?.groupValues?.getOrNull(1)?.let { embeds.add(it) }
+            }
+        }
+
+        debug { "MundoDonghua embeds=$embeds" }
+
+        embeds.toList().amap { embedUrl ->
+            guarded("MundoDonghua $embedUrl") {
+                resolveMundoDonghuaEmbed(embedUrl, episodeUrl, sink)
+            }
+        }
+    }
+
+    private suspend fun resolveMundoDonghuaEmbed(
+        embedUrl: String,
+        episodeUrl: String,
+        sink: LinkSink
+    ) {
+        if (!sink.claim("embed:$embedUrl")) return
+
+        if (embedUrl.lowercase().contains("voe.")) {
+            val voeUrl = extractVoeLink(embedUrl) ?: return
+            sink.emit(
+                newExtractorLink(
+                    source = "VOE",
+                    name = "VOE · MundoDonghua",
+                    url = voeUrl,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    referer = embedUrl
+                    quality = 0
+                }
+            )
+            return
+        }
+
+        // Filemoon, VidHide y StreamWish los resuelven los extractores de CloudStream.
+        // Los subtítulos se descartan a propósito (MundoDonghua ya trae los subs en el video).
+        loadExtractor(
+            url = embedUrl,
+            referer = episodeUrl,
+            subtitleCallback = { },
+            callback = { link ->
+                sink.emit(
+                    ExtractorLink(
+                        source = link.source,
+                        name = "${link.name} · MundoDonghua",
+                        url = link.url,
+                        referer = link.referer,
+                        quality = link.quality,
+                        type = link.type
+                    )
+                )
+            }
+        )
     }
 
     // ───────────────────────── Links ─────────────────────────
@@ -611,15 +657,15 @@ class SeriesDonghuaProvider : MainAPI() {
     ): Boolean {
         val sink = LinkSink(callback)
 
-        // Episodio que viene directo de DonghuaWorld.
-        if (data.contains("donghuaworld.com/") && data.contains("-episode-")) {
-            guarded("DonghuaWorld episodio") {
-                loadDonghuaWorldEpisodeLinks(data, subtitleCallback, sink)
+        // Episodio que viene directo de MundoDonghua.
+        if (data.contains("mundodonghua.com/ver/")) {
+            guarded("MundoDonghua episodio") {
+                loadMundoDonghuaEpisodeLinks(data, sink)
             }
             return sink.total > 0
         }
 
-        // Todas las fuentes (los 5 servidores + DonghuaWorld) corren en paralelo.
+        // Todas las fuentes (los 5 servidores + MundoDonghua) corren en paralelo.
         val tasks = mutableListOf<suspend () -> Unit>()
 
         val pageResponse = attempt { app.get(data) }
@@ -663,11 +709,11 @@ class SeriesDonghuaProvider : MainAPI() {
             }
         }
 
-        // Fuente adicional: DonghuaWorld. Corre aparte y con timeouts cortos en cada request:
+        // Fuente adicional: MundoDonghua. Corre aparte y con timeouts cortos en cada request:
         // si esa web está caída o lenta, no rompe los links de SeriesDonghua.
         tasks.add {
-            guarded("DonghuaWorld") {
-                loadDonghuaWorldLinks(data, subtitleCallback, sink)
+            guarded("MundoDonghua") {
+                loadMundoDonghuaLinks(data, sink)
             }
         }
 
@@ -755,8 +801,7 @@ class SeriesDonghuaProvider : MainAPI() {
             }
 
             else -> {
-                // Los subtítulos de estos servidores se descartan a propósito: los únicos que
-                // se ofrecen son los del Dark Server de DonghuaWorld (ver loadDarkServerLink).
+                // Los subtítulos de estos servidores se descartan a propósito.
                 loadExtractor(
                     url = embedUrl,
                     referer = pageUrl,
@@ -788,206 +833,6 @@ class SeriesDonghuaProvider : MainAPI() {
                     }
                 )
             }
-        }
-    }
-
-    // ───────────────────────── DonghuaWorld ─────────────────────────
-
-    private suspend fun loadDonghuaWorldEpisodeLinks(
-        data: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        sink: LinkSink
-    ) {
-        val document = attempt {
-            app.get(data, timeout = DW_PAGE_TIMEOUT_S).document
-        } ?: return
-        resolveDonghuaWorldEpisode(document, data, subtitleCallback, sink)
-    }
-
-    private suspend fun loadDonghuaWorldLinks(
-        data: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        sink: LinkSink
-    ) {
-        val match = EPISODE_SLUG.find(data) ?: return
-
-        val seriesSlug = match.groupValues[1]
-        val episodeNumber = match.groupValues[2]
-        val searchQuery = seriesSlug.replace("-", " ").trim()
-
-        var candidates = findDonghuaWorldSeries(searchQuery)
-
-        if (candidates.isEmpty()) {
-            val fallbackQuery = searchQuery.replace(Regex("(?i)shrouding"), "shrounding")
-            if (fallbackQuery != searchQuery) {
-                candidates = findDonghuaWorldSeries(fallbackQuery)
-            }
-        }
-
-        val seriesUrl = candidates.firstOrNull()?.second ?: return
-        debug { "DonghuaWorld serie -> $seriesUrl" }
-
-        val seriesDocument = app.get(seriesUrl, timeout = DW_PAGE_TIMEOUT_S).document
-        val episodeRegex = Regex("episode-$episodeNumber(?:-|/|\$)")
-
-        val episodeUrl = seriesDocument
-            .select("a[href*='episode-$episodeNumber']")
-            .asSequence()
-            .map { it.attr("href").trim() }
-            .firstOrNull { href ->
-                href.isNotBlank() &&
-                    episodeRegex.containsMatchIn(href.substringBefore("?").substringBefore("#"))
-            }
-            ?.let { fixUrl(it) }
-            ?: return
-
-        debug { "DonghuaWorld episodio -> $episodeUrl" }
-
-        val episodeDocument = app.get(episodeUrl, timeout = DW_PAGE_TIMEOUT_S).document
-        resolveDonghuaWorldEpisode(episodeDocument, episodeUrl, subtitleCallback, sink)
-    }
-
-    private suspend fun findDonghuaWorldSeries(query: String): List<Pair<Int, String>> {
-        val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val document = app.get("$DW_URL/?s=$encodedQuery", timeout = DW_PAGE_TIMEOUT_S).document
-        val normalizedSearch = normalize(query)
-
-        return document
-            .select("a[href*='/anime/'][itemprop='url']")
-            .mapNotNull { element ->
-                val href = element.attr("href").trim()
-                if (href.isBlank() || href.contains("/anime/?")) return@mapNotNull null
-
-                val title = element.attr("title").trim().ifBlank { element.text().trim() }
-                val normalizedTitle = normalize(title)
-                val slug = href.substringAfter("/anime/").trim('/').lowercase()
-
-                if (slug.contains("movie") || isMovieTitle(normalizedTitle)) {
-                    return@mapNotNull null
-                }
-
-                val score = titleScore(normalizedTitle, normalizedSearch, 60)
-                if (score > 0) (score to fixUrl(href)) else null
-            }
-            .distinctBy { it.second }
-            .sortedByDescending { it.first }
-    }
-
-    /** Dailymotion y Dark Server de un episodio de DonghuaWorld, en paralelo. */
-    private suspend fun resolveDonghuaWorldEpisode(
-        document: Document,
-        episodeUrl: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        sink: LinkSink
-    ) {
-        val tasks = listOf<suspend () -> Unit>(
-            {
-                guarded("DonghuaWorld Dailymotion") {
-                    val embed = document
-                        .selectFirst("iframe[src*='geo.dailymotion.com'][src*='video=']")
-                        ?.attr("src")
-                        ?.trim()
-                        ?.takeIf { it.isNotBlank() }
-
-                    val id = embed?.let { dailymotionVideoId(it) }
-
-                    if (id != null && sink.claim("dm:$id")) {
-                        resolveDailymotion(id, "DonghuaWorld", "DonghuaWorld · Dailymotion")
-                            ?.let { sink.emit(it) }
-                    }
-                }
-            },
-            {
-                guarded("DonghuaWorld Dark Server") {
-                    loadDarkServerLink(document, episodeUrl, subtitleCallback)
-                        ?.let { sink.emit(it) }
-                }
-            }
-        )
-
-        tasks.amap { it() }
-    }
-
-    private suspend fun loadDarkServerLink(
-        document: Document,
-        pageUrl: String,
-        subtitleCallback: (SubtitleFile) -> Unit
-    ): ExtractorLink? {
-        val darkServer = document
-            .select(".server-item a")
-            .firstOrNull { it.text().trim().equals("Dark Server", ignoreCase = true) }
-            ?: return null
-
-        val encodedHash = darkServer.attr("data-hash").trim()
-        if (encodedHash.isBlank()) return null
-
-        val decodedEmbed = attempt {
-            String(Base64.getDecoder().decode(encodedHash), Charsets.UTF_8)
-        } ?: return null
-
-        val playerUrl = IFRAME_SRC.find(decodedEmbed)?.groupValues?.getOrNull(1)?.trim()
-        if (playerUrl.isNullOrBlank()) return null
-
-        val html = attempt {
-            app.get(
-                playerUrl,
-                headers = mapOf(
-                    "Referer" to pageUrl,
-                    "User-Agent" to BROWSER_UA
-                ),
-                timeout = DW_PAGE_TIMEOUT_S
-            ).text
-        } ?: return null
-
-        // Subtítulos
-        val tracksStart = html.indexOf("const tracks = [")
-        if (tracksStart >= 0) {
-            val tracksEnd = html.indexOf("]", tracksStart)
-            if (tracksEnd > tracksStart) {
-                val tracks = TRACK.findAll(html.substring(tracksStart, tracksEnd + 1))
-                    .map { match -> match.groupValues[2] to match.groupValues[1].replace("\\", "") }
-                    .distinctBy { (_, trackUrl) -> trackUrl }
-                    .toList()
-
-                // Si un mismo idioma trae varias pistas y una es "Genérico", se deja solo esa.
-                val selected = tracks
-                    .groupBy { (label, _) -> label.substringBefore("(").trim().lowercase() }
-                    .values
-                    .flatMap { group ->
-                        val generic = group.filter { (label, _) ->
-                            label.lowercase().replace("é", "e").contains("generic")
-                        }
-                        if (group.size > 1 && generic.isNotEmpty()) generic else group
-                    }
-
-                for ((label, trackUrl) in selected) {
-                    // El sufijo permite ver en el reproductor cuáles subs manda el plugin.
-                    subtitleCallback(SubtitleFile(lang = "$label · Dark Server", url = trackUrl))
-                }
-            }
-        }
-
-        // Playlist de Rumble
-        val rumbleStart = html.indexOf("rumble.com")
-        if (rumbleStart < 0) return null
-
-        val urlStart = html.lastIndexOf("https", rumbleStart)
-        val endMarker = "playlist.m3u8"
-        val endPos = html.indexOf(endMarker, rumbleStart)
-        if (urlStart < 0 || endPos < 0) return null
-
-        val playlist = html
-            .substring(urlStart, endPos + endMarker.length)
-            .replace("\\", "")
-
-        return newExtractorLink(
-            name = "DonghuaWorld · Dark Server",
-            source = "DonghuaWorld",
-            url = playlist,
-            type = ExtractorLinkType.M3U8
-        ) {
-            referer = playerUrl
-            quality = 0
         }
     }
 

@@ -1,7 +1,7 @@
-version = 1
+version = 2
 
 cloudstream {
-    description = "SeriesDonghua provider"
+    description = "SeriesDonghua + MundoDonghua provider"
     authors = listOf("mmilew")
     status = 1
     tvTypes = listOf("Anime")
