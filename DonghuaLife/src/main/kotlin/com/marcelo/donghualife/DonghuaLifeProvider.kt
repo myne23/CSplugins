@@ -1865,23 +1865,32 @@ class DonghuaLifeProvider : MainAPI() {
 
     /** Último recurso: pedirle la streaming_url a la API "get" (la que más rate-limit come). */
     private suspend fun odyseeGetStreamingUrl(uri: String): String? {
-        val result = odyseeRpc("get", JSONObject().put("uri", uri).put("environment", "live"))
-            ?.optJSONObject("result") ?: return null
-        return result.optString("streaming_url").takeIf { it.isNotBlank() && it != "null" }
+        val response = odyseeRpc("get", JSONObject().put("uri", uri).put("environment", "live")) ?: run {
+            debug { "odysee get $uri -> sin respuesta" }
+            return null
+        }
+        val streaming = response.optJSONObject("result")?.optString("streaming_url")
+            ?.takeIf { it.isNotBlank() && it != "null" }
+        if (streaming == null) debug { "odysee get $uri -> sin streaming_url: ${response.toString().take(300)}" }
+        return streaming
     }
 
     /** https://odysee.com/$/embed/@canal:c/video:a  (o /@canal:c/video:a, o lbry://...)  ->  lbry://@canal#c/video#a */
     private fun odyseeUriOf(url: String): String? {
         if (url.startsWith("lbry://")) return url.substringBefore('?').takeIf { it.length > "lbry://".length }
 
-        val path = url.substringAfter("://", "").substringAfter('/', "").substringBefore('?').substringBefore('#')
+        val rawPath = url.substringAfter("://", "").substringAfter('/', "").substringBefore('?').substringBefore('#')
+
+        // Odysee manda el path percent-encoded (%24/embed/%40canal%3A3%2Fvideo%3A2): se decodifica
+        // entero primero, porque %2F también cambia la cantidad de segmentos.
+        val path = attempt { URLDecoder.decode(rawPath, "UTF-8") } ?: rawPath
+
         val segments = path.split('/').filter { it.isNotBlank() }
             .let { if (it.firstOrNull() == "\$") it.drop(2) else it } // $/embed/... , $/download/...
         if (segments.isEmpty()) return null
 
-        return "lbry://" + segments.joinToString("/") { segment ->
-            (attempt { URLDecoder.decode(segment, "UTF-8") } ?: segment).replaceFirst(":", "#")
-        }
+        // En las URLs web ":" hace de "#" (claim id): @canal:3/video:2 -> @canal#3/video#2
+        return "lbry://" + segments.joinToString("/") { it.replaceFirst(":", "#") }
     }
 
     /**
@@ -1894,9 +1903,13 @@ class DonghuaLifeProvider : MainAPI() {
         if (uri == null) return false
         if (!sink.claim("odysee:$uri")) return true
 
-        var links = odyseeResolve(uri)?.let { odyseeCdnUrls(it) }.orEmpty()
+        val claim = odyseeResolve(uri)
+        var links = claim?.let { odyseeCdnUrls(it) }.orEmpty()
         if (links.isEmpty()) {
-            debug { "odysee $uri -> sin sd_hash/claim_id, probando API get" }
+            debug {
+                if (claim == null) "odysee $uri -> no resolvió, probando API get"
+                else "odysee $uri -> resolvió pero sin value.source.sd_hash; claim=${claim.toString().take(400)}"
+            }
             val streaming = odyseeGetStreamingUrl(uri)
             if (streaming == null) {
                 debug { "odysee $uri -> get tampoco devolvió streaming_url" }
