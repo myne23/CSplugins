@@ -60,7 +60,7 @@ class DonghuaLifeProvider : MainAPI() {
         const val TAG = "DonghuaLife"
 
         // true = logs en logcat con el tag "DonghuaLife".
-        const val DEBUG = false
+        const val DEBUG = true
 
         const val BROWSER_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -1683,6 +1683,7 @@ class DonghuaLifeProvider : MainAPI() {
         val provider = source.provider.lowercase()
         val display = displayName(source.label)
         val isOwnVideo = source.isR2 || host.endsWith("donghualife.com")
+        debug { "emitUrl: provider='${source.provider}' label='${source.label}' url=$url" }
 
         when {
             lower.contains("dailymotion.com") || lower.contains("dai.ly") || provider == "dailymotion" -> {
@@ -1693,8 +1694,11 @@ class DonghuaLifeProvider : MainAPI() {
             }
 
             host.contains("odysee.com") || host.contains("lbry.tv") || provider == "odysee" -> {
-                // Método nuevo (resolve directo + CDN); si no saca nada, queda el extractor de siempre.
-                if (!emitOdysee(url, display, sink)) extractWithExtractors(url, pageUrl, sink)
+                // Se ofrecen las dos vías: el método nuevo (resolve directo + CDN) y el extractor
+                // de CloudStream. Cada una va aislada: si una falla o no saca nada, la otra sigue.
+                val direct = attempt { emitOdysee(url, display, sink) } ?: false
+                debug { "odysee: método directo ${if (direct) "OK" else "sin links"}, probando extractor" }
+                attempt { extractWithExtractors(url, pageUrl, sink) }
             }
 
             host.contains("ok.ru") || host.contains("odnoklassniki") || provider == "okru" || provider == "ok.ru" -> {
@@ -1814,10 +1818,19 @@ class DonghuaLifeProvider : MainAPI() {
 
     /** Resuelve una uri lbry:// a su claim. Cacheado: el mismo capítulo no vuelve a pegarle a la API. */
     private suspend fun odyseeResolve(uri: String): JSONObject? {
-        odyseeClaims[uri]?.let { return it }
+        odyseeClaims[uri]?.let {
+            debug { "odysee resolve $uri -> cache" }
+            return it
+        }
 
-        val result = odyseeRpc("resolve", JSONObject().put("urls", JSONArray().put(uri)))
-            ?.optJSONObject("result") ?: return null
+        val response = odyseeRpc("resolve", JSONObject().put("urls", JSONArray().put(uri))) ?: run {
+            debug { "odysee resolve $uri -> sin respuesta (error de red o reintentos agotados)" }
+            return null
+        }
+        val result = response.optJSONObject("result") ?: run {
+            debug { "odysee resolve $uri -> sin 'result': ${response.toString().take(300)}" }
+            return null
+        }
 
         // La clave suele ser la misma uri que se pidió; si Odysee la normaliza se toma la primera.
         val entry = result.optJSONObject(uri)
@@ -1828,6 +1841,7 @@ class DonghuaLifeProvider : MainAPI() {
             debug { "odysee resolve $uri -> ${entry.opt("error")}" }
             return null
         }
+        debug { "odysee resolve $uri -> ok claim_id=${entry.optString("claim_id")}" }
         odyseeClaims[uri] = entry
         return entry
     }
@@ -1875,16 +1889,23 @@ class DonghuaLifeProvider : MainAPI() {
      * false = no pudo resolverla -> el llamador cae al extractor genérico.
      */
     private suspend fun emitOdysee(url: String, display: String, sink: LinkSink): Boolean {
-        val uri = odyseeUriOf(url) ?: return false
+        val uri = odyseeUriOf(url)
+        debug { "odysee: url=$url -> uri=$uri" }
+        if (uri == null) return false
         if (!sink.claim("odysee:$uri")) return true
 
         var links = odyseeResolve(uri)?.let { odyseeCdnUrls(it) }.orEmpty()
         if (links.isEmpty()) {
-            val streaming = odyseeGetStreamingUrl(uri) ?: return false
+            debug { "odysee $uri -> sin sd_hash/claim_id, probando API get" }
+            val streaming = odyseeGetStreamingUrl(uri)
+            if (streaming == null) {
+                debug { "odysee $uri -> get tampoco devolvió streaming_url" }
+                return false
+            }
             val type = if (streaming.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
             links = listOf(streaming to type)
         }
-        debug { "odysee $uri -> ${links.size} links" }
+        debug { "odysee $uri -> ${links.size} links: ${links.map { it.first }}" }
 
         val linkHeaders = mapOf("Origin" to "https://odysee.com", "User-Agent" to BROWSER_UA)
         for ((streamUrl, type) in links) {
