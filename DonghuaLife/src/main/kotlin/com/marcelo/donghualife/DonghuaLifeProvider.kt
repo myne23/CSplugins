@@ -1863,9 +1863,17 @@ class DonghuaLifeProvider : MainAPI() {
         )
     }
 
-    /** Último recurso: pedirle la streaming_url a la API "get" (la que más rate-limit come). */
-    private suspend fun odyseeGetStreamingUrl(uri: String): String? {
-        val response = odyseeRpc("get", JSONObject().put("uri", uri).put("environment", "live")) ?: run {
+    /**
+     * Pide la streaming_url a la API "get". Es la única vía válida para videos no listados: exige la
+     * firma (signature + signature_ts) que viene en la URL del embed, y devuelve una URL de
+     * secure.odycdn.com con las credenciales del CDN ya incluidas.
+     */
+    private suspend fun odyseeGetStreamingUrl(uri: String, signature: String? = null, signatureTs: String? = null): String? {
+        val params = JSONObject().put("uri", uri).put("environment", "live")
+        if (signature != null) params.put("signature", signature)
+        if (signatureTs != null) params.put("signature_ts", signatureTs)
+
+        val response = odyseeRpc("get", params) ?: run {
             debug { "odysee get $uri -> sin respuesta" }
             return null
         }
@@ -1893,39 +1901,53 @@ class DonghuaLifeProvider : MainAPI() {
         return "lbry://" + segments.joinToString("/") { it.replaceFirst(":", "#") }
     }
 
+    /** Valor de un parámetro de la query (?a=1&b=2), decodificado; null si no está o viene vacío. */
+    private fun odyseeQueryParam(url: String, key: String): String? =
+        url.substringAfter('?', "").substringBefore('#').split('&')
+            .firstOrNull { it.startsWith("$key=") }
+            ?.substringAfter('=')
+            ?.let { attempt { URLDecoder.decode(it, "UTF-8") } ?: it }
+            ?.takeIf { it.isNotBlank() }
+
     /**
-     * true  = lo manejó (hay links, o esta uri ya se estaba procesando) -> no hace falta el extractor.
-     * false = no pudo resolverla -> el llamador cae al extractor genérico.
+     * true  = lo manejó (hay links, o esta uri ya se estaba procesando).
+     * false = no pudo sacar links -> igual el llamador prueba después el extractor de CloudStream.
      */
     private suspend fun emitOdysee(url: String, display: String, sink: LinkSink): Boolean {
         val uri = odyseeUriOf(url)
-        debug { "odysee: url=$url -> uri=$uri" }
+        val signature = odyseeQueryParam(url, "signature")
+        val signatureTs = odyseeQueryParam(url, "signature_ts")
+        debug { "odysee: uri=$uri firmado=${signature != null} signature_ts=$signatureTs" }
         if (uri == null) return false
         if (!sink.claim("odysee:$uri")) return true
 
-        val claim = odyseeResolve(uri)
-        var links = claim?.let { odyseeCdnUrls(it) }.orEmpty()
-        if (links.isEmpty()) {
-            debug {
-                if (claim == null) "odysee $uri -> no resolvió, probando API get"
-                else "odysee $uri -> resolvió pero sin value.source.sd_hash; claim=${claim.toString().take(400)}"
-            }
-            val streaming = odyseeGetStreamingUrl(uri)
-            if (streaming == null) {
-                debug { "odysee $uri -> get tampoco devolvió streaming_url" }
-                return false
-            }
-            val type = if (streaming.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-            links = listOf(streaming to type)
-        }
-        debug { "odysee $uri -> ${links.size} links: ${links.map { it.first }}" }
-
         val linkHeaders = mapOf("Origin" to "https://odysee.com", "User-Agent" to BROWSER_UA)
+
+        // 1) API "get", con la firma del embed si viene: devuelve la URL del CDN con credenciales.
+        //    No se cachea: el token de la URL vence.
+        val streaming = odyseeGetStreamingUrl(uri, signature, signatureTs)
+        if (streaming != null) {
+            val type = if (streaming.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+            debug { "odysee $uri -> get OK ($type): $streaming" }
+            val label = if (type == ExtractorLinkType.M3U8) "$display HLS" else "$display MP4"
+            sink.emit(makeLink(label, streaming, type, "https://odysee.com/", linkHeaders))
+            return true
+        }
+
+        // 2) Hay firma pero get falló: es un video no listado y las URLs armadas a mano dan 401.
+        if (signature != null) {
+            debug { "odysee $uri -> get con firma falló; no se arman URLs a mano (darían 401)" }
+            return false
+        }
+
+        // 3) Sin firma = video público: último recurso, URLs del CDN armadas con claim_id + sd_hash.
+        val links = odyseeResolve(uri)?.let { odyseeCdnUrls(it) }.orEmpty()
+        debug { "odysee $uri -> ${links.size} links armados a mano: ${links.map { it.first }}" }
         for ((streamUrl, type) in links) {
             val label = if (type == ExtractorLinkType.M3U8) "$display HLS" else "$display MP4"
             sink.emit(makeLink(label, streamUrl, type, "https://odysee.com/", linkHeaders))
         }
-        return true
+        return links.isNotEmpty()
     }
 
     // ───────────────────────── Subtítulos dentro del HLS de R2 ─────────────────────────
