@@ -1693,7 +1693,8 @@ class DonghuaLifeProvider : MainAPI() {
             }
 
             host.contains("odysee.com") || host.contains("lbry.tv") || provider == "odysee" -> {
-                extractWithExtractors(url, pageUrl, sink)
+                // Método nuevo (resolve directo + CDN); si no saca nada, queda el extractor de siempre.
+                if (!emitOdysee(url, display, sink)) extractWithExtractors(url, pageUrl, sink)
             }
 
             host.contains("ok.ru") || host.contains("odnoklassniki") || provider == "okru" || provider == "ok.ru" -> {
@@ -1754,6 +1755,143 @@ class DonghuaLifeProvider : MainAPI() {
 
         debug { "extractor $url -> ${selected.size} links (referer $pageUrl)" }
         selected.forEach { sink.emit(it) }
+    }
+
+    // ───────────────────────── Odysee: resolve directo, sin pasar por el extractor ─────────────────────────
+
+    private val odyseeProxy = "https://api.na-backend.odysee.com/api/v1/proxy"
+    private val odyseePlayer = "https://player.odycdn.com"
+    private val odyseeHeaders = mapOf(
+        "User-Agent" to BROWSER_UA,
+        "Origin" to "https://odysee.com",
+        "Referer" to "https://odysee.com/",
+        "Accept" to "application/json",
+        "Content-Type" to "application/json"
+    )
+
+    // uri lbry:// -> claim ya resuelto. Concurrente porque las fuentes se resuelven en paralelo (amap).
+    private val odyseeClaims = ConcurrentHashMap<String, JSONObject>()
+
+    /**
+     * POST JSON-RPC al proxy de Odysee, sin auth. Reintenta con backoff exponencial si hay
+     * 429/502/503 (o error de red), respetando Retry-After. Devuelve null si se agotan los intentos.
+     */
+    private suspend fun odyseeRpc(method: String, params: JSONObject, tries: Int = 4): JSONObject? {
+        val payload = JSONObject()
+            .put("jsonrpc", "2.0")
+            .put("method", method)
+            .put("params", params)
+            .toString()
+
+        var waitMs = 500L
+        for (round in 1..tries) {
+            val response = attempt {
+                app.post(
+                    "$odyseeProxy?m=$method",
+                    headers = odyseeHeaders,
+                    json = JsonAsString(payload),
+                    timeout = SOURCE_TIMEOUT_S
+                )
+            }
+
+            if (response != null) {
+                val code = response.code
+                if (code in 200..299) return attempt { JSONObject(response.text) }
+                if (code != 429 && code != 502 && code != 503) {
+                    debug { "odysee $method -> HTTP $code (sin reintento)" }
+                    return null
+                }
+                debug { "odysee $method -> HTTP $code (intento $round/$tries)" }
+            }
+
+            if (round == tries) break
+            val retryAfterMs = response?.headers?.get("Retry-After")?.toLongOrNull()?.times(1000)
+            pause((retryAfterMs ?: waitMs).coerceAtMost(8_000L))
+            waitMs = (waitMs * 2).coerceAtMost(8_000L)
+        }
+        return null
+    }
+
+    /** Resuelve una uri lbry:// a su claim. Cacheado: el mismo capítulo no vuelve a pegarle a la API. */
+    private suspend fun odyseeResolve(uri: String): JSONObject? {
+        odyseeClaims[uri]?.let { return it }
+
+        val result = odyseeRpc("resolve", JSONObject().put("urls", JSONArray().put(uri)))
+            ?.optJSONObject("result") ?: return null
+
+        // La clave suele ser la misma uri que se pidió; si Odysee la normaliza se toma la primera.
+        val entry = result.optJSONObject(uri)
+            ?: result.keys().asSequence().firstOrNull()?.let { result.optJSONObject(it) }
+            ?: return null
+
+        if (entry.has("error")) {
+            debug { "odysee resolve $uri -> ${entry.opt("error")}" }
+            return null
+        }
+        odyseeClaims[uri] = entry
+        return entry
+    }
+
+    /**
+     * URLs directas del CDN armadas con claim_id + sd_hash (evita la llamada extra a "get").
+     * El .mp4 de /v6/streams/{claim}/{sd_hash} figura en la config pública de odysee-api; el
+     * master.m3u8 no se pudo confirmar, por eso se ofrecen las dos y se ve cuál anda.
+     */
+    private fun odyseeCdnUrls(claim: JSONObject): List<Pair<String, ExtractorLinkType>> {
+        val claimId = claim.optString("claim_id").takeIf { it.isNotBlank() && it != "null" }
+            ?: return emptyList()
+        val sdHash = claim.optJSONObject("value")?.optJSONObject("source")?.optString("sd_hash")
+            ?.takeIf { it.isNotBlank() && it != "null" }
+            ?: return emptyList()
+        return listOf(
+            "$odyseePlayer/v6/streams/$claimId/$sdHash.mp4" to ExtractorLinkType.VIDEO,
+            "$odyseePlayer/v6/streams/$claimId/$sdHash/master.m3u8" to ExtractorLinkType.M3U8
+        )
+    }
+
+    /** Último recurso: pedirle la streaming_url a la API "get" (la que más rate-limit come). */
+    private suspend fun odyseeGetStreamingUrl(uri: String): String? {
+        val result = odyseeRpc("get", JSONObject().put("uri", uri).put("environment", "live"))
+            ?.optJSONObject("result") ?: return null
+        return result.optString("streaming_url").takeIf { it.isNotBlank() && it != "null" }
+    }
+
+    /** https://odysee.com/$/embed/@canal:c/video:a  (o /@canal:c/video:a, o lbry://...)  ->  lbry://@canal#c/video#a */
+    private fun odyseeUriOf(url: String): String? {
+        if (url.startsWith("lbry://")) return url.substringBefore('?').takeIf { it.length > "lbry://".length }
+
+        val path = url.substringAfter("://", "").substringAfter('/', "").substringBefore('?').substringBefore('#')
+        val segments = path.split('/').filter { it.isNotBlank() }
+            .let { if (it.firstOrNull() == "\$") it.drop(2) else it } // $/embed/... , $/download/...
+        if (segments.isEmpty()) return null
+
+        return "lbry://" + segments.joinToString("/") { segment ->
+            (attempt { URLDecoder.decode(segment, "UTF-8") } ?: segment).replaceFirst(":", "#")
+        }
+    }
+
+    /**
+     * true  = lo manejó (hay links, o esta uri ya se estaba procesando) -> no hace falta el extractor.
+     * false = no pudo resolverla -> el llamador cae al extractor genérico.
+     */
+    private suspend fun emitOdysee(url: String, display: String, sink: LinkSink): Boolean {
+        val uri = odyseeUriOf(url) ?: return false
+        if (!sink.claim("odysee:$uri")) return true
+
+        var links = odyseeResolve(uri)?.let { odyseeCdnUrls(it) }.orEmpty()
+        if (links.isEmpty()) {
+            val streaming = odyseeGetStreamingUrl(uri) ?: return false
+            val type = if (streaming.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+            links = listOf(streaming to type)
+        }
+        debug { "odysee $uri -> ${links.size} links" }
+
+        val linkHeaders = mapOf("Origin" to "https://odysee.com", "User-Agent" to BROWSER_UA)
+        for ((streamUrl, type) in links) {
+            val label = if (type == ExtractorLinkType.M3U8) "$display HLS" else "$display MP4"
+            sink.emit(makeLink(label, streamUrl, type, "https://odysee.com/", linkHeaders))
+        }
+        return true
     }
 
     // ───────────────────────── Subtítulos dentro del HLS de R2 ─────────────────────────
