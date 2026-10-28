@@ -312,24 +312,24 @@ class AnimESProvider : MainAPI() {
         }
 
         // Los atributos de meta pueden aparecer en distinto orden según la plantilla.
-        val metaTags = Regex("""<meta\\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html)
+        val metaTags = Regex("""<meta\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html)
         for (tagMatch in metaTags) {
             val tag = tagMatch.value
-            val key = Regex("""\\b(?:property|name)\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            val key = Regex("""\b(?:property|name)\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                 .find(tag)?.groupValues?.get(1)?.lowercase().orEmpty()
             if (key !in setOf("og:image", "og:image:url", "twitter:image", "twitter:image:src")) continue
-            val raw = Regex("""\\bcontent\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            val raw = Regex("""\bcontent\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                 .find(tag)?.groupValues?.get(1)
             resolveImage(raw)?.let { return it }
         }
 
-        val imageTags = Regex("""<img\\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html)
+        val imageTags = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html)
         for (imageMatch in imageTags) {
             val tag = imageMatch.value
             val attrs = listOf("data-lazy-src", "data-src", "data-original", "data-image", "data-url",
                 "data-srcset", "srcset", "data-bg", "src")
             for (attr in attrs) {
-                val raw = Regex("""\\b$attr\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                val raw = Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                     .find(tag)?.groupValues?.get(1)
                 val url = resolveImage(raw) ?: continue
                 if (url.contains("placeholder", true) || url.contains("blank.", true)) continue
@@ -337,7 +337,7 @@ class AnimESProvider : MainAPI() {
             }
         }
 
-        val cssImages = Regex("""(?:background-image\\s*:\\s*url\\(|data-bg=["']|data-background=["'])([^)"']+)""", RegexOption.IGNORE_CASE)
+        val cssImages = Regex("""(?:background-image\s*:\s*url\(|data-bg=["']|data-background=["'])([^)"']+)""", RegexOption.IGNORE_CASE)
         for (match in cssImages.findAll(html)) resolveImage(match.groupValues[1])?.let { return it }
         return null
     }
@@ -346,7 +346,7 @@ class AnimESProvider : MainAPI() {
         val attrs = listOf("data-lazy-src", "data-src", "data-original", "data-image", "data-url",
             "data-srcset", "srcset", "src")
         for (attr in attrs) {
-            val raw = Regex("""\\b$attr\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            val raw = Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                 .find(img)?.groupValues?.get(1)?.substringBefore(",")?.trim()?.substringBefore(" ")
                 ?.replace("&amp;", "&") ?: continue
             if (raw.isBlank() || raw.startsWith("data:", true) || raw.contains("placeholder", true) ||
@@ -373,7 +373,7 @@ class AnimESProvider : MainAPI() {
         }
         val afterEnd = (position + 1200).coerceAtMost(html.length)
         val after = html.substring(position, afterEnd)
-        val img = Regex("""<img\\b[^>]*>""", RegexOption.IGNORE_CASE).find(after)?.value
+        val img = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(after)?.value
         return img?.let { posterFromImgTag(it, baseUrl) }
     }
 
@@ -433,18 +433,18 @@ class AnimESProvider : MainAPI() {
     private fun extractAnimeAvCards(html: String): List<SearchResponse> {
         data class Card(var title: String, var poster: String?)
         val found = linkedMapOf<String, Card>()
-        val anchors = Regex("""<a\\b([^>]*)>([\\s\\S]*?)</a>""", RegexOption.IGNORE_CASE)
+        val anchors = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
         for (m in anchors.findAll(html)) {
-            val href = Regex("""\\bhref\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            val href = Regex("""\bhref\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                 .find(m.groupValues[1])?.groupValues?.get(1) ?: continue
             val p = try { URI(AV_BASE).resolve(href).path?.trimEnd('/') ?: href } catch (_: Exception) { href }
             val match = Regex("""^/media/([^/]+)$""", RegexOption.IGNORE_CASE).matchEntire(p) ?: continue
             val slug = match.groupValues[1]
             val inner = m.groupValues[2]
-            val img = Regex("""<img\\b[^>]*>""", RegexOption.IGNORE_CASE).find(inner)?.value
+            val img = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(inner)?.value
             val alt = img?.let {
-                Regex("""\\balt\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1)
-            }?.let(::cleanHtml)?.replace(Regex("""^(?:portada|p[oó]ster|poster)\\s+(?:de\\s+)?""", RegexOption.IGNORE_CASE), "")?.trim().orEmpty()
+                Regex("""\balt\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1)
+            }?.let(::cleanHtml)?.replace(Regex("""^(?:portada|p[oó]ster|poster)\s+(?:de\s+)?""", RegexOption.IGNORE_CASE), "")?.trim().orEmpty()
             val anchorText = cleanHtml(inner).takeIf { it.isNotBlank() && !it.equals(alt, true) }.orEmpty()
             val title = when {
                 anchorText.isNotBlank() && !anchorText.startsWith("Ver ", true) -> anchorText
@@ -563,14 +563,14 @@ class AnimESProvider : MainAPI() {
                         val response = withTimeoutOrNull(6000) { app.get(url, headers = headers) } ?: return@async null
                         if (!response.isSuccessful) return@async null
                         val html = response.text
-                        val pageTitle = Regex("""<meta\\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html)
+                        val pageTitle = Regex("""<meta\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html)
                             .map { it.value }
                             .firstNotNullOfOrNull { tag ->
-                                val key = Regex("""\\b(?:property|name)\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                                val key = Regex("""\b(?:property|name)\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                                     .find(tag)?.groupValues?.get(1)?.lowercase()
-                                if (key != "og:title") null else Regex("""\\bcontent\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                                if (key != "og:title") null else Regex("""\bcontent\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                                     .find(tag)?.groupValues?.get(1)?.let(::cleanHtml)
-                            }?.replace(Regex("""\\s*[-|]\\s*AnimeAV1.*$""", RegexOption.IGNORE_CASE), "")
+                            }?.replace(Regex("""\s*[-|]\s*AnimeAV1.*$""", RegexOption.IGNORE_CASE), "")
                                 ?: titleFromSlug(slug)
                         newAnimeSearchResponse("$pageTitle •AnimeAV", url, TvType.Anime) {
                             posterUrl = extractPosterFromHtml(html, url)
