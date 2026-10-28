@@ -286,11 +286,8 @@ class AnimESProvider : MainAPI() {
             val title = titles[path].orEmpty().ifBlank {
                 Regex("""<img\b[^>]*\balt\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(inner)?.groupValues?.get(1)?.let(::cleanHtml).orEmpty()
             }.ifBlank { titleFromSlug(slug) }
-            val poster = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(inner)?.value?.let { img ->
-                listOf("data-src", "data-lazy-src", "data-original", "src").firstNotNullOfOrNull { attr ->
-                    Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(img)?.groupValues?.get(1)
-                }
-            }?.let(::absoluteAnimeUrl)
+            val poster = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(inner)?.value
+                ?.let { posterFromImgTag(it, mainUrl) }
             found[key] = newAnimeSearchResponse(title, "$mainUrl/$kind/$slug/", if (kind == "pelicula") TvType.AnimeMovie else TvType.Anime) {
                 posterUrl = poster
             }
@@ -378,26 +375,44 @@ class AnimESProvider : MainAPI() {
     }
 
     private suspend fun fillMissingPosters(items: List<SearchResponse>, sourceBase: String): List<SearchResponse> {
-        // Si el enlace de episodio no trae la imagen (el HTML actual separa los posters
-        // del enlace del capítulo), buscarla en la ficha de la serie.
-        return coroutineScope {
-            items.map { item -> async {
-                val currentPoster = item.posterUrl.orEmpty()
-                val badPoster = currentPoster.isBlank() || currentPoster.startsWith("data:", true) ||
-                    currentPoster.contains("placeholder", true) || currentPoster.contains("blank.", true) ||
-                    currentPoster.contains("lazyload", true) || currentPoster.contains("no-image", true) ||
-                    currentPoster.contains("default-avatar", true) || currentPoster.contains("transparent", true)
-                // AnimeAV suele devolver miniaturas vacías o de reemplazo en los listados:
-                // para ese origen validamos la portada real desde la ficha de la serie.
-                if (!badPoster && sourceBase != AV_BASE) return@async item
-                val headers = if (sourceBase == AV_BASE) {
-                    mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")
-                } else apiHeaders
-                val html = try { withTimeoutOrNull(4500) { app.get(item.url, headers = headers).text } ?: "" }
-                    catch (_: Exception) { "" }
-                val poster = extractPosterFromHtml(html, item.url)
-                if (poster.isNullOrBlank()) item else item.apply { posterUrl = poster }
-            } }.awaitAll()
+        fun needsPoster(item: SearchResponse): Boolean {
+            val poster = item.posterUrl.orEmpty()
+            return poster.isBlank() || poster.startsWith("data:", true) ||
+                poster.contains("placeholder", true) || poster.contains("blank.", true) ||
+                poster.contains("lazyload", true) || poster.contains("no-image", true) ||
+                poster.contains("default-avatar", true) || poster.contains("transparent", true) ||
+                poster.contains("missing", true) || poster.contains("no-thumbnail", true)
+        }
+
+        val targets = items.filter { needsPoster(it) || sourceBase == AV_BASE }
+            .distinctBy { it.url }
+        val recovered = ConcurrentHashMap<String, String>()
+        val headers = if (sourceBase == AV_BASE) {
+            mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")
+        } else apiHeaders
+
+        // No pedir la misma ficha una vez por episodio. Limitar concurrencia evita que
+        // el sitio bloquee las peticiones cuando se publican varios capítulos juntos.
+        for (batch in targets.chunked(5)) {
+            coroutineScope {
+                batch.map { item -> async {
+                    try {
+                        val html = withTimeoutOrNull(4500) { app.get(item.url, headers = headers).text } ?: ""
+                        val poster = extractPosterFromHtml(html, item.url)
+                        if (!poster.isNullOrBlank()) recovered[item.url] = poster
+                    } catch (_: CancellationException) {
+                        throw
+                    } catch (_: Exception) {
+                        // La miniatura original se conserva si no se pudo recuperar otra.
+                    }
+                } }.awaitAll()
+            }
+        }
+        return items.onEach { item ->
+            val recoveredPoster = recovered[item.url]
+            if (!recoveredPoster.isNullOrBlank() && (needsPoster(item) || sourceBase == AV_BASE)) {
+                item.posterUrl = recoveredPoster
+            }
         }
     }
 
@@ -480,12 +495,16 @@ class AnimESProvider : MainAPI() {
             val slug = match.groupValues[1]
             val number = match.groupValues[2].toIntOrNull() ?: continue
             val title = titleFromSlug(slug)
-            val poster = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(m.groupValues[2])?.value?.let { img ->
-                listOf("data-src", "data-lazy-src", "data-original", "src").firstNotNullOfOrNull { attr ->
-                    Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(img)?.groupValues?.get(1)
-                }
-            }?.let { try { URI(AV_BASE).resolve(it).toString() } catch (_: Exception) { it } }
-            found.putIfAbsent("$slug/$number", newAnimeSearchResponse("$title - Episodio $number •AnimeAV", "$AV_BASE/media/$slug/", TvType.Anime) { posterUrl = poster })
+            val poster = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(m.groupValues[2])?.value
+                ?.let { posterFromImgTag(it, AV_BASE) }
+                ?: extractPosterNear(html, m.range.first, AV_BASE)
+            val item = newAnimeSearchResponse("$title - Episodio $number •AnimeAV", "$AV_BASE/media/$slug/", TvType.Anime) {
+                posterUrl = poster
+            }
+            val key = "$slug/$number"
+            val previous = found[key]
+            if (previous == null) found[key] = item
+            else if (previous.posterUrl.isNullOrBlank() && !poster.isNullOrBlank()) previous.posterUrl = poster
         }
         return found.values.toList()
     }
