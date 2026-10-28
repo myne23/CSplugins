@@ -1275,6 +1275,17 @@ class AnimESProvider : MainAPI() {
                 addServer(match.groupValues[1], match.groupValues[2], language)
             }
         }
+
+        // Algunas fichas (como Shiguang Dailiren III) exponen los botones del reproductor
+        // fuera de los arrays SUB/DUB, o dentro de un objeto con estructura distinta.
+        // Leer los pares nombre/URL globalmente y deducir el idioma por el bloque precedente.
+        for (match in namedUrl.findAll(embeds)) {
+            val before = embeds.substring(0, match.range.first)
+            val dubAt = before.lastIndexOf("DUB", ignoreCase = true)
+            val subAt = before.lastIndexOf("SUB", ignoreCase = true)
+            val language = if (dubAt > subAt) "LAT" else "SUB"
+            addServer(match.groupValues[1], match.groupValues[2], language)
+        }
         for (languageMatch in AV_LANGUAGE_BLOCK.findAll(embeds)) {
             val language = if (languageMatch.groupValues[1].equals("SUB", true)) "SUB" else "LAT"
             val block = languageMatch.groupValues[2]
