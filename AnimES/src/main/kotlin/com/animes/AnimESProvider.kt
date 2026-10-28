@@ -311,27 +311,25 @@ class AnimESProvider : MainAPI() {
         }
 
         val metaPatterns = listOf(
-            Regex("""<meta\\b[^>]*(?:property|name)=["'](?:og:image|twitter:image|twitter:image:src)["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-            Regex("""<meta\\b[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image|twitter:image:src)["']""", RegexOption.IGNORE_CASE)
+            Regex("""<meta\b[^>]*(?:property|name)=["'](?:og:image|twitter:image|twitter:image:src)["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+            Regex("""<meta\b[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image|twitter:image:src)["']""", RegexOption.IGNORE_CASE)
         )
         for (regex in metaPatterns) {
             resolveImage(regex.find(html)?.groupValues?.get(1))?.let { return it }
         }
 
-        val images = Regex("""<img\\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html).map { it.value }.toList()
+        val images = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html).map { it.value }.toList()
         for (img in images) {
             val attrs = listOf("data-lazy-src", "data-src", "data-original", "data-image", "data-srcset", "srcset", "src")
             for (attr in attrs) {
-                val raw = Regex("""\\b$attr\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                val raw = Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                     .find(img)?.groupValues?.get(1)
-                resolveImage(raw)?.let { url ->
-                    if (url.contains("placeholder", true) || url.contains("blank.", true)) continue
-                    return url
-                }
+                val url = resolveImage(raw)
+                if (url != null) return url
             }
         }
 
-        val cssImages = Regex("""(?:background-image\\s*:\\s*url\\(|data-bg=["']|data-background=["'])([^)"']+)""", RegexOption.IGNORE_CASE)
+        val cssImages = Regex("""(?:background-image\s*:\s*url\(|data-bg=["']|data-background=["'])([^)"']+)""", RegexOption.IGNORE_CASE)
         for (match in cssImages.findAll(html)) resolveImage(match.groupValues[1])?.let { return it }
         return null
     }
