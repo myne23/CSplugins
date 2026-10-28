@@ -1062,6 +1062,14 @@ class AnimESProvider : MainAPI() {
         val decodedPage = html
             .replace("\\/", "/")
             .replace("\\u002F", "/", ignoreCase = true)
+            .replace("\\u003A", ":", ignoreCase = true)
+            .replace("\\u003D", "=", ignoreCase = true)
+            .replace("&#x2f;", "/", ignoreCase = true)
+            .replace("&#47;", "/", ignoreCase = true)
+            .replace("&#x3d;", "=", ignoreCase = true)
+            .replace("&quot;", "\\"", ignoreCase = true)
+            .replace("&#039;", "'", ignoreCase = true)
+            .replace("&#8217;", "'", ignoreCase = true)
             .replace("&amp;", "&")
         val pathAttrRegex = Regex("""\b(?:href|data-href|data-url|data-src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", RegexOption.IGNORE_CASE)
         for (m in pathAttrRegex.findAll(decodedPage)) {
@@ -1092,20 +1100,24 @@ class AnimESProvider : MainAPI() {
             playbackFetched++
             val found = collectSourceUrls(playbackHtml, playbackUrl)
             if (found.isNotEmpty()) {
-                // Conservar candidatos de la ficha, y sumar los del reproductor real.
-                candidates = LinkedHashSet<String>().apply {
-                    addAll(candidates)
-                    addAll(found)
-                }
-                if (found.any {
+                val hasRealContainer = found.any {
                     it.contains("mytsumi.com/container.php", true) ||
                         it.contains("mytsumi.com/multiplayer/options.php", true) ||
                         it.contains("mytsumi.com/multiplayer/contenedor.php", true)
-                }) {
+                }
+                if (hasRealContainer) {
+                    // La página /<id>/anime/<slug>/ es la página de reproducción real.
+                    // Priorizarla evita mezclar servidores de la ficha y duplicar fuentes.
+                    candidates = LinkedHashSet(found)
                     sourcePage = playbackUrl
                     html = playbackHtml
+                } else {
+                    // Mantener los enlaces alternativos encontrados si aún no apareció
+                    // un contenedor MyTsumi real.
+                    candidates.addAll(found)
                 }
-                log("AnimeYT playback page " + playbackUrl + " sources=" + found.size)
+                log("AnimeYT playback page " + playbackUrl + " sources=" + found.size +
+                    " mytsumi=" + hasRealContainer)
             }
         }
         if (playbackFetched > 0) {
