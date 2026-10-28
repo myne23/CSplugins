@@ -478,6 +478,10 @@ class AnimESProvider : MainAPI() {
             "linkclick" to listOf("shiguang dailiren", "shiguang dailiren ii", "shiguang dailiren iii"),
             "the daily life of the immortal king" to listOf("xian wang de richang shenghuo")
         )
+        val directAliasSlugs = mapOf(
+            "link click" to listOf("shiguang-dailiren", "shiguang-dailiren-ii", "shiguang-dailiren-iii"),
+            "linkclick" to listOf("shiguang-dailiren", "shiguang-dailiren-ii", "shiguang-dailiren-iii")
+        )
         val queryForms = linkedSetOf(query.trim())
         aliases[normalizeTitle(query).replace(" ", "")]?.let(queryForms::addAll)
         aliases[normalizeTitle(query)]?.let(queryForms::addAll)
@@ -509,6 +513,29 @@ class AnimESProvider : MainAPI() {
             val title = normalizeTitle(result.name.removeSuffix(" •AnimeAV"))
             if (title in aliasTitles) 9000 else animeTitleScore(query, result.name)
         }.take(40)
+
+        // Algunos títulos conocidos en inglés no existen con ese nombre en AnimeAV.
+        // Comprobar directamente sus slugs alternativos antes de recorrer el catálogo.
+        val directSlugs = directAliasSlugs[queryKey] ?: directAliasSlugs[queryKey.replace(" ", "")].orEmpty()
+        if (directSlugs.isNotEmpty()) {
+            val direct = coroutineScope {
+                directSlugs.map { slug -> async {
+                    val url = "$AV_BASE/media/$slug/"
+                    try {
+                        val response = withTimeoutOrNull(6000) { app.get(url, headers = headers) } ?: return@async null
+                        if (!response.isSuccessful) return@async null
+                        val pageTitle = Regex("""<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                            .find(response.text)?.groupValues?.get(1)?.let(::cleanHtml)
+                            ?.replace(Regex("""\s*[-|]\s*AnimeAV1.*$""", RegexOption.IGNORE_CASE), "")
+                            ?: titleFromSlug(slug)
+                        newAnimeSearchResponse("$pageTitle •AnimeAV", url, TvType.Anime) {
+                            posterUrl = extractPosterFromHtml(response.text, url)
+                        }
+                    } catch (_: Exception) { null }
+                } }.awaitAll().filterNotNull()
+            }
+            if (direct.isNotEmpty()) return direct
+        }
 
         // El catálogo de AnimeAV está paginado; si el filtro del sitio no se refleja en el HTML,
         // recorrer las páginas disponibles para no limitar la búsqueda a los primeros resultados.
@@ -709,8 +736,8 @@ class AnimESProvider : MainAPI() {
             if (browser != null && browser.blocks > 1) {
                 seasonNames = (0 until browser.blocks).map { block ->
                     val from = block * 50 + 1
-                    val to = if (block == browser.blocks - 1) maxOf(maxEpisode, browser.blocks * 50) else (block + 1) * 50
-                    SeasonData(season = block + 1, name = "Capítulos " + from + "-" + to, displaySeason = block + 1)
+                    val to = if (block == browser.blocks - 1) maxEpisode else minOf((block + 1) * 50, maxEpisode)
+                    SeasonData(season = block + 1, name = "Capítulos " + from + "-" + to)
                 }
             }
         }
