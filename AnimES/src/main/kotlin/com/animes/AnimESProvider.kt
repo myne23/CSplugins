@@ -332,7 +332,11 @@ class AnimESProvider : MainAPI() {
         // del enlace del capítulo), buscarla en la ficha de la serie.
         return coroutineScope {
             items.map { item -> async {
-                if (!item.posterUrl.isNullOrBlank()) return@async item
+                val currentPoster = item.posterUrl.orEmpty()
+                val badPoster = currentPoster.isBlank() || currentPoster.startsWith("data:", true) ||
+                    currentPoster.contains("placeholder", true) || currentPoster.contains("blank.", true) ||
+                    currentPoster.contains("lazyload", true) || currentPoster.contains("no-image", true)
+                if (!badPoster) return@async item
                 val headers = if (sourceBase == AV_BASE) {
                     mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")
                 } else apiHeaders
