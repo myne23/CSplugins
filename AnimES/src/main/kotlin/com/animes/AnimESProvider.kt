@@ -298,6 +298,53 @@ class AnimESProvider : MainAPI() {
         return found.values.toList()
     }
 
+    private fun extractPosterFromHtml(html: String, baseUrl: String): String? {
+        val metaPatterns = listOf(
+            Regex("""<meta\b[^>]*(?:property|name)=["'](?:og:image|twitter:image|twitter:image:src)["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+            Regex("""<meta\b[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image|twitter:image:src)["']""", RegexOption.IGNORE_CASE)
+        )
+        for (regex in metaPatterns) {
+            val raw = regex.find(html)?.groupValues?.get(1)?.replace("&amp;", "&")?.trim().orEmpty()
+            if (raw.isNotBlank() && !raw.startsWith("data:", true)) {
+                val url = try { URI(baseUrl).resolve(raw).toString() } catch (_: Exception) { raw }
+                if (url.startsWith("https://", true)) return url
+            }
+        }
+        val images = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html).map { it.value }.toList()
+        for (img in images) {
+            val raw = listOf("data-lazy-src", "data-src", "data-original", "data-srcset", "src")
+                .firstNotNullOfOrNull { attr ->
+                    Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(img)?.groupValues?.get(1)
+                }?.substringBefore(",")?.trim()?.substringBefore(" ")
+                ?.replace("&amp;", "&").orEmpty()
+            if (raw.isBlank() || raw.startsWith("data:", true) ||
+                raw.contains("placeholder", true) || raw.contains("blank.", true) || raw.contains("lazyload", true)) continue
+            val url = try { URI(baseUrl).resolve(raw).toString() } catch (_: Exception) { raw }
+            if (url.startsWith("https://", true) && (url.contains(".jpg", true) || url.contains(".jpeg", true) ||
+                    url.contains(".png", true) || url.contains(".webp", true) || url.contains("wp.com", true) ||
+                    url.contains("cdn.", true) || url.contains("image", true))) return url
+        }
+        return null
+    }
+
+    private suspend fun fillMissingPosters(items: List<SearchResponse>, sourceBase: String): List<SearchResponse> {
+        // Si el enlace de episodio no trae la imagen (el HTML actual separa los posters
+        // del enlace del capítulo), buscarla en la ficha de la serie.
+        return coroutineScope {
+            items.map { item -> async {
+                if (!item.posterUrl.isNullOrBlank()) return@async item
+                val headers = if (sourceBase == AV_BASE) {
+                    mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")
+                } else apiHeaders
+                val html = try { withTimeoutOrNull(4500) { app.get(item.url, headers = headers).text } ?: "" }
+                    catch (_: Exception) { "" }
+                val poster = extractPosterFromHtml(html, item.url)
+                if (poster.isNullOrBlank()) item else item.apply { posterUrl = poster }
+            } }.awaitAll()
+        }
+    }
+
+
     private fun extractLatestEpisodes(html: String): List<SearchResponse> {
         val found = linkedMapOf<String, SearchResponse>()
         val anchorRe = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
@@ -426,9 +473,19 @@ class AnimESProvider : MainAPI() {
     }
 
     private suspend fun searchAnimeAvResults(query: String): List<SearchResponse> {
-        val encoded = URLEncoder.encode(query.trim(), "UTF-8")
+        val aliases = mapOf(
+            "link click" to listOf("shiguang dailiren", "shiguang dailiren ii", "shiguang dailiren iii"),
+            "linkclick" to listOf("shiguang dailiren", "shiguang dailiren ii", "shiguang dailiren iii"),
+            "the daily life of the immortal king" to listOf("xian wang de richang shenghuo")
+        )
+        val queryForms = linkedSetOf(query.trim())
+        aliases[normalizeTitle(query).replace(" ", "")]?.let(queryForms::addAll)
+        aliases[normalizeTitle(query)]?.let(queryForms::addAll)
         val headers = mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")
-        val urls = listOf("$AV_BASE/catalogo?search=$encoded", "$AV_BASE/catalogo?q=$encoded", "$AV_BASE/catalogo?buscar=$encoded", "$AV_BASE/catalogo?s=$encoded", "$AV_BASE/?s=$encoded", "$AV_BASE/?q=$encoded")
+        val urls = queryForms.flatMap { form ->
+            val encoded = URLEncoder.encode(form, "UTF-8")
+            listOf("$AV_BASE/catalogo?search=$encoded", "$AV_BASE/catalogo?q=$encoded", "$AV_BASE/catalogo?buscar=$encoded", "$AV_BASE/catalogo?s=$encoded", "$AV_BASE/?s=$encoded", "$AV_BASE/?q=$encoded")
+        }.distinct()
         val results = coroutineScope {
             urls.map { url -> async {
                 try {
@@ -437,8 +494,21 @@ class AnimESProvider : MainAPI() {
                 } catch (_: Exception) { emptyList() }
             } }.awaitAll().flatten()
         }
-        val matched = results.filter { isRelevantSearchTitle(query, it.name) }.distinctBy { it.url }
-        if (matched.isNotEmpty()) return matched.sortedByDescending { animeTitleScore(query, it.name) }.take(40)
+        val aliasesForQuery = mapOf(
+            "link click" to setOf("shiguang dailiren", "shiguang dailiren ii", "shiguang dailiren iii"),
+            "linkclick" to setOf("shiguang dailiren", "shiguang dailiren ii", "shiguang dailiren iii"),
+            "the daily life of the immortal king" to setOf("xian wang de richang shenghuo")
+        )
+        val queryKey = normalizeTitle(query)
+        val aliasTitles = aliasesForQuery[queryKey] ?: aliasesForQuery[queryKey.replace(" ", "")].orEmpty()
+        val matched = results.filter { result ->
+            isRelevantSearchTitle(query, result.name) ||
+                normalizeTitle(result.name.removeSuffix(" •AnimeAV")).let { it in aliasTitles || aliasTitles.any(it::contains) }
+        }.distinctBy { it.url }
+        if (matched.isNotEmpty()) return matched.sortedByDescending { result ->
+            val title = normalizeTitle(result.name.removeSuffix(" •AnimeAV"))
+            if (title in aliasTitles) 9000 else animeTitleScore(query, result.name)
+        }.take(40)
 
         // El catálogo de AnimeAV está paginado; si el filtro del sitio no se refleja en el HTML,
         // recorrer las páginas disponibles para no limitar la búsqueda a los primeros resultados.
@@ -518,11 +588,14 @@ class AnimESProvider : MainAPI() {
                 val av = async { try { app.get("$AV_BASE/", headers = mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")).text } catch (_: Exception) { "" } }
                 yt.await() to av.await()
             }
-            val ytItems = extractLatestEpisodes(sectionHtml(ytHtml, SECTION_RECENT).ifBlank { ytHtml })
-            val avItems = extractAnimeAvLatestEpisodes(avHtml)
+            val ytItems = fillMissingPosters(
+                extractLatestEpisodes(sectionHtml(ytHtml, SECTION_RECENT).ifBlank { ytHtml }), mainUrl
+            )
+            val avItems = fillMissingPosters(extractAnimeAvLatestEpisodes(avHtml), AV_BASE)
             return newHomePageResponse(request.name, (avItems + ytItems).distinctBy { it.url + "|" + it.name })
         }
         val url = when (request.name) {
+            SECTION_RESUB -> if (page <= 1) "$mainUrl/tag/resubido/" else "$mainUrl/tag/resubido/page/$page/"
             SECTION_EXPLORE -> if (page <= 1) "$mainUrl/tv/" else "$mainUrl/tv/page/$page/"
             SECTION_MOVIES -> if (page <= 1) "$mainUrl/pelicula/" else "$mainUrl/pelicula/page/$page/"
             else -> "$mainUrl/"
@@ -534,7 +607,7 @@ class AnimESProvider : MainAPI() {
             SECTION_EXPLORE -> extractAnimeCards(html, "tv")
             else -> emptyList()
         }
-        return newHomePageResponse(request.name, items, hasNext = items.isNotEmpty() && items.size >= 18 && request.name in setOf(SECTION_EXPLORE, SECTION_MOVIES))
+        return newHomePageResponse(request.name, items, hasNext = items.isNotEmpty() && request.name in setOf(SECTION_RESUB, SECTION_EXPLORE, SECTION_MOVIES))
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
