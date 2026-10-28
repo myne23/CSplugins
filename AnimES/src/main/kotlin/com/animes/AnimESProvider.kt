@@ -70,8 +70,10 @@ private val AV_CARD = Regex(
     RegexOption.IGNORE_CASE
 )
 private val AV_EMBEDS = Regex("""embeds\s*:\s*\{([\s\S]*?)\}\s*,\s*downloads""", RegexOption.DOT_MATCHES_ALL)
-private val AV_SERVER = Regex("""["']?server["']?\s*:\s*["']([^"']+)["']\s*,\s*["']?url["']?\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+private val AV_SERVER = Regex("""["']?(?:server|name|provider|host)["']?\s*:\s*["']([^"']+)["']\s*,\s*["']?(?:url|link|embed|src)["']?\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
 private val AV_LANGUAGE_BLOCK = Regex("""["']?(SUB|DUB)["']?\s*:\s*\[([\s\S]*?)\]""", RegexOption.IGNORE_CASE)
+private val AV_URL_FIELD = Regex("""["']?(?:url|link|embed|src)["']?\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+private val AV_SERVER_FIELD = Regex("""["']?(?:server|name|provider|host)["']?\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
 
 private val MEGA_EMBED = Regex("""mega\.nz/[^?#]*embed/([^?#]+)""", RegexOption.IGNORE_CASE)
 private val MEGA_FALLBACK =
@@ -940,34 +942,144 @@ class AnimESProvider : MainAPI() {
         return sink.count > 0
     }
 
+    private fun collectSourceUrls(html: String, baseUrl: String): LinkedHashSet<String> {
+        val found = linkedSetOf<String>()
+        fun add(value: String?) {
+            val raw = value.orEmpty().trim().replace("\\/", "/")
+                .replace("\\u0026", "&", true).replace("\\u002F", "/", true)
+                .replace("&amp;", "&").replace("&#038;", "&")
+                .trimEnd(',', ';', ')', ']', '\\')
+            if (raw.isBlank() || raw.startsWith("data:", true) || raw.startsWith("javascript:", true)) return
+            val resolved = try { URI(baseUrl).resolve(raw).toString() } catch (_: Exception) { raw }
+            if (!resolved.startsWith("http://", true) && !resolved.startsWith("https://", true)) return
+            val host = try { URI(resolved).host.orEmpty().lowercase() } catch (_: Exception) { "" }
+            val path = try { URI(resolved).path.orEmpty() } catch (_: Exception) { "" }
+            val media = Regex("""\\.(?:m3u8|mp4|mpd|webm)(?:$|\\?)""", RegexOption.IGNORE_CASE).containsMatchIn(resolved)
+            val hosts = listOf("mytsumi.com", "archive.org", "ok.ru", "bysekoze.com", "bysesukior.com",
+                "n1mwq.org", "abyssplayer.com", "mega.nz", "mega.io", "voe.sx", "mp4upload.com", "upnshare.com")
+            val knownHost = hosts.any { host == it || host.endsWith("." + it) }
+            val playerPath = Regex("""embed|/e/|/v/|player|video|iframe|container\\.php|options\\.php""",
+                RegexOption.IGNORE_CASE).containsMatchIn(path)
+            if (media || knownHost || playerPath) found += resolved
+        }
+        val tagRegex = Regex("""<(?:iframe|source|video|a|button)\\b[^>]*>""", RegexOption.IGNORE_CASE)
+        val attrNames = listOf("src", "data-src", "data-lazy-src", "href", "data-href", "data-url",
+            "data-player-url", "data-video", "data-embed")
+        for (m in tagRegex.findAll(html)) {
+            for (attr in attrNames) {
+                val a = Regex("""\\b$attr\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))""",
+                    RegexOption.IGNORE_CASE).find(m.value) ?: continue
+                add(a.groupValues.drop(1).firstOrNull { it.isNotBlank() })
+            }
+        }
+        val urlRegex = Regex("""https?:\\\\?/\\\\?/[^\\s"'<>\\\\)]+""", RegexOption.IGNORE_CASE)
+        for (m in urlRegex.findAll(html)) add(m.value)
+        return found
+    }
+
     private suspend fun loadAnimeYtSources(pageUrl: String, sink: LinkSink, subtitleCallback: (SubtitleFile) -> Unit) {
-        val html = try { app.get(pageUrl, headers = apiHeaders + mapOf("Referer" to "$mainUrl/")).text }
-        catch (e: CancellationException) { throw e }
-        catch (e: Exception) { log("AnimeYT episode fetch failed $pageUrl: ${e.message}"); return }
-        val candidates = linkedSetOf<String>()
-        val attrs = Regex("""<(?:iframe|source|video)\b[^>]*(?:src|data-src)\s*=\s*["']([^"']+)["'][^>]*>""", RegexOption.IGNORE_CASE)
-        for (m in attrs.findAll(html)) {
-            val raw = m.groupValues[1].replace("&amp;", "&").trim()
-            if (raw.isNotBlank() && !raw.startsWith("data:") && !raw.startsWith("javascript:")) candidates += absoluteAnimeUrl(raw)
+        var sourcePage = pageUrl
+        var html = try {
+            app.get(pageUrl, headers = apiHeaders + mapOf("Referer" to "$mainUrl/")).text
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { log("AnimeYT page fetch failed " + pageUrl + ": " + e.message); return }
+
+        var candidates = collectSourceUrls(html, sourcePage)
+        // Las fichas de películas a veces apuntan a una ruta de reproducción independiente.
+        if (candidates.isEmpty()) {
+            val playbackPaths = linkedSetOf<String>()
+            val pathRegex = Regex("""(?:https?:\\\\?/\\\\?/animeyt\\.cc)?(/\\d+/anime/[^\\s"'<>\\\\?#]+)""", RegexOption.IGNORE_CASE)
+            for (m in pathRegex.findAll(html)) {
+                val path = m.groupValues[1].trimEnd('/', '\\', ',')
+                if (Regex("""^/\\d+/anime/[^/]+$""", RegexOption.IGNORE_CASE).matches(path))
+                    playbackPaths += "$mainUrl$path/"
+            }
+            for (playbackUrl in playbackPaths.take(5)) {
+                val playbackHtml = try {
+                    app.get(playbackUrl, headers = apiHeaders + mapOf("Referer" to pageUrl)).text
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { continue }
+                val found = collectSourceUrls(playbackHtml, playbackUrl)
+                if (found.isNotEmpty()) {
+                    sourcePage = playbackUrl
+                    html = playbackHtml
+                    candidates = found
+                    break
+                }
+            }
         }
-        val quotedUrls = Regex("""https?:\\?/\\?/[^"'<>\s]+""", RegexOption.IGNORE_CASE)
-        for (m in quotedUrls.findAll(html)) {
-            val raw = m.value.replace("\\/", "/").replace("&amp;", "&").trimEnd(',', ';', ')')
-            if (raw.contains("mytsumi.com", true) || raw.contains("ok.ru", true) || raw.contains("mega.nz", true) ||
-                raw.contains("abyssplayer", true) || raw.contains("bysesukior", true) || raw.contains(".m3u8", true) || raw.contains(".mp4", true)) candidates += raw
+
+        // MyTsumi es un contenedor de servidores; sus botones contienen las URLs reales.
+        val containers = candidates.filter {
+            it.contains("mytsumi.com/container.php", true) ||
+                it.contains("mytsumi.com/multiplayer/contenedor.php", true) ||
+                it.contains("mytsumi.com/multiplayer/options.php", true)
         }
-        for (candidate in candidates.take(16)) {
-            if (candidate.contains(".m3u8", true) || candidate.contains(".mp4", true)) {
-                try {
+        for (container in containers) {
+            var containerUrl = container
+            if (container.contains("/multiplayer/options.php", true)) {
+                val optionsHtml = try { app.get(container, headers = apiHeaders + mapOf("Referer" to sourcePage)).text }
+                    catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { "" }
+                val encoded = Regex("""(?:const|let|var)\\s+azakuEncodedURL\\s*=\\s*["']([^"']+)["']""",
+                    RegexOption.IGNORE_CASE).find(optionsHtml)?.groupValues?.get(1)
+                if (!encoded.isNullOrBlank()) {
+                    val decoded = try {
+                        val normalized = encoded.replace('-', '+').replace('_', '/')
+                        val padded = normalized + "=".repeat((4 - normalized.length % 4) % 4)
+                        String(java.util.Base64.getDecoder().decode(padded), Charsets.UTF_8)
+                    } catch (_: Exception) { "" }
+                    if (decoded.startsWith("http", true) && decoded.contains("mytsumi.com/multiplayer/contenedor.php", true))
+                        containerUrl = decoded
+                }
+            }
+            val openUrl = if (Regex("""[?&]open=1(?:&|$)""").containsMatchIn(containerUrl)) containerUrl
+                else containerUrl + if (containerUrl.contains("?")) "&open=1" else "?open=1"
+            val containerHtml = try {
+                app.get(openUrl, headers = apiHeaders + mapOf("Referer" to sourcePage)).text
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { log("MyTsumi container failed: " + e.message); "" }
+            val inner = collectSourceUrls(containerHtml, openUrl)
+            val tabs = Regex("""(?:const|let|var)\\s+videoTabs\\s*=\\s*(\\[[\\s\\S]*?\\])\\s*;""",
+                RegexOption.IGNORE_CASE).find(containerHtml)?.groupValues?.get(1)
+            if (!tabs.isNullOrBlank()) try {
+                val array = JSONArray(tabs)
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    val raw = item.optString("url")
+                    if (raw.isNotBlank()) inner += try { URI(openUrl).resolve(raw).toString() } catch (_: Exception) { raw }
+                }
+            } catch (e: Exception) { log("MyTsumi videoTabs parse failed: " + e.message) }
+            for (candidate in inner) {
+                if (candidate.contains("mytsumi.com/container.php", true) ||
+                    candidate.contains("mytsumi.com/multiplayer/", true)) continue
+                if (candidate.substringBefore("?").matches(Regex(""".*\\.(?:m3u8|mp4|mpd|webm)$""", RegexOption.IGNORE_CASE))) {
+                    safely("MyTsumi direct media") {
+                        sink.emit(newExtractorLink(source = name, name = "AnimeYT", url = candidate,
+                            type = if (candidate.substringBefore("?").endsWith(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO) {
+                            referer = openUrl
+                            quality = getQualityFromName(candidate)
+                        }, TAG_ANIMEYT)
+                    }
+                } else runExtractor(candidate, listOf(openUrl, sourcePage, "$mainUrl/", "https://mytsumi.com/").distinct(),
+                    TAG_ANIMEYT, sink, subtitleCallback)
+            }
+        }
+
+        for (candidate in candidates) {
+            if (containers.contains(candidate)) continue
+            if (candidate.substringBefore("?").matches(Regex(""".*\\.(?:m3u8|mp4|mpd|webm)$""", RegexOption.IGNORE_CASE))) {
+                safely("AnimeYT direct media") {
                     sink.emit(newExtractorLink(source = name, name = "AnimeYT", url = candidate,
                         type = if (candidate.substringBefore("?").endsWith(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO) {
-                        referer = pageUrl
+                        referer = sourcePage
                         quality = getQualityFromName(candidate)
                     }, TAG_ANIMEYT)
-                } catch (e: Exception) { log("Direct link failed: ${e.message}") }
-            } else runExtractor(candidate, listOf(pageUrl, "$mainUrl/", "https://mytsumi.com/").distinct(), TAG_ANIMEYT, sink, subtitleCallback)
+                }
+            } else runExtractor(candidate, listOf(sourcePage, "$mainUrl/", "https://mytsumi.com/").distinct(),
+                TAG_ANIMEYT, sink, subtitleCallback)
         }
-        log("AnimeYT candidates=${candidates.size} url=$pageUrl")
+        log("AnimeYT candidates=" + candidates.size + " url=" + sourcePage)
     }
     private fun parseMega(url: String): Pair<String, String>? {
         var handle = ""
@@ -1102,22 +1214,42 @@ class AnimESProvider : MainAPI() {
         // en vez de descartar el episodio antes de inspeccionar sus servidores.
         val embeds = AV_EMBEDS.find(res.text)?.groupValues?.get(1) ?: res.text
 
-        val servers = AV_LANGUAGE_BLOCK
-            .findAll(embeds)
-            .flatMap { languageMatch ->
-                val language = if (languageMatch.groupValues[1] == "SUB") "SUB" else "LAT"
-                AV_SERVER.findAll(languageMatch.groupValues[2]).map { match ->
-                    Triple(match.groupValues[1], match.groupValues[2], language)
-                }.toList()
+        val servers = linkedSetOf<Triple<String, String, String>>()
+        for (languageMatch in AV_LANGUAGE_BLOCK.findAll(embeds)) {
+            val language = if (languageMatch.groupValues[1].equals("SUB", true)) "SUB" else "LAT"
+            val block = languageMatch.groupValues[2]
+            for (match in AV_SERVER.findAll(block)) {
+                val rawUrl = match.groupValues[2].replace("\\/", "/").replace("\\u0026", "&", true)
+                servers += Triple(match.groupValues[1], rawUrl, language)
             }
-            .filter { (_, rawUrl, _) -> sink.claimEmbed(rawUrl) }
-            .toList()
+            for (obj in Regex("""\{[^{}]{0,1800}\}""", RegexOption.DOT_MATCHES_ALL).findAll(block)) {
+                val server = AV_SERVER_FIELD.find(obj.value)?.groupValues?.get(1) ?: continue
+                val rawUrl = AV_URL_FIELD.find(obj.value)?.groupValues?.get(1) ?: continue
+                val decoded = rawUrl.replace("\\/", "/").replace("\\u0026", "&", true)
+                if (decoded.startsWith("http", true) || decoded.startsWith("//"))
+                    servers += Triple(server, if (decoded.startsWith("//")) "https:" + decoded else decoded, language)
+            }
+        }
+        if (servers.isEmpty()) {
+            for (obj in Regex("""\{[^{}]{0,1800}\}""", RegexOption.DOT_MATCHES_ALL).findAll(embeds)) {
+                val server = AV_SERVER_FIELD.find(obj.value)?.groupValues?.get(1) ?: continue
+                val rawUrl = AV_URL_FIELD.find(obj.value)?.groupValues?.get(1) ?: continue
+                val decoded = rawUrl.replace("\\/", "/").replace("\\u0026", "&", true)
+                if (decoded.startsWith("http", true) || decoded.startsWith("//")) {
+                    val dubAt = embeds.lastIndexOf("DUB", obj.range.first, true)
+                    val subAt = embeds.lastIndexOf("SUB", obj.range.first, true)
+                    val language = if (dubAt > subAt) "LAT" else "SUB"
+                    servers += Triple(server, if (decoded.startsWith("//")) "https:" + decoded else decoded, language)
+                }
+            }
+        }
+        val uniqueServers = servers.filter { (_, rawUrl, _) -> sink.claimEmbed(rawUrl) }
 
-        log("AnimeAV servidores únicos=${servers.size}")
+        log("AnimeAV servidores únicos=" + uniqueServers.size)
 
         // UPNShare ya no bloquea el lanzamiento de los extractores: todo en paralelo.
         coroutineScope {
-            servers
+            uniqueServers
                 .map { (server, rawUrl, language) ->
                     async {
                         val animeAvTag = "$TAG_ANIMEAV · $language"
