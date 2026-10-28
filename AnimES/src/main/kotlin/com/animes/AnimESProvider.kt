@@ -69,9 +69,9 @@ private val AV_CARD = Regex(
     """<h3[^>]*>(.*?)</h3>[\s\S]*?<a[^>]+href="(/media/[^"]+)"""",
     RegexOption.IGNORE_CASE
 )
-private val AV_EMBEDS = Regex("""embeds:\{(.*?)\},downloads""", RegexOption.DOT_MATCHES_ALL)
-private val AV_SERVER = Regex("""server:"([^"]+)",url:"([^"]+)"""")
-private val AV_LANGUAGE_BLOCK = Regex("""(SUB|DUB):\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL)
+private val AV_EMBEDS = Regex("""embeds\s*:\s*\{([\s\S]*?)\}\s*,\s*downloads""", RegexOption.DOT_MATCHES_ALL)
+private val AV_SERVER = Regex("""server\s*:\s*"([^"]+)"\s*,\s*url\s*:\s*"([^"]+)"""")
+private val AV_LANGUAGE_BLOCK = Regex("""(SUB|DUB)\s*:\s*\[([\s\S]*?)\]""", RegexOption.DOT_MATCHES_ALL)
 
 private val MEGA_EMBED = Regex("""mega\.nz/[^?#]*embed/([^?#]+)""", RegexOption.IGNORE_CASE)
 private val MEGA_FALLBACK =
@@ -313,7 +313,22 @@ class AnimESProvider : MainAPI() {
             return url.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
         }
 
-        // Los atributos de meta pueden aparecer en distinto orden según la plantilla.
+        // Primero priorizar imágenes marcadas explícitamente como portada/póster.
+        val imageTags = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html).toList()
+        for (imageMatch in imageTags) {
+            val tag = imageMatch.value
+            val alt = Regex("""\balt\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                .find(tag)?.groupValues?.get(1).orEmpty()
+            if (!alt.contains("portada", true) && !alt.contains("póster", true) &&
+                !alt.contains("poster", true) && !alt.contains("cover", true)) continue
+            for (attr in listOf("data-lazy-src", "data-src", "data-original", "data-image", "data-url", "src")) {
+                val raw = Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .find(tag)?.groupValues?.get(1)
+                resolveImage(raw)?.let { return it }
+            }
+        }
+
+        // Los atributos de meta pueden aparecer en cualquier orden.
         val metaTags = Regex("""<meta\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html)
         for (tagMatch in metaTags) {
             val tag = tagMatch.value
@@ -325,17 +340,13 @@ class AnimESProvider : MainAPI() {
             resolveImage(raw)?.let { return it }
         }
 
-        val imageTags = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html)
         for (imageMatch in imageTags) {
             val tag = imageMatch.value
-            val attrs = listOf("data-lazy-src", "data-src", "data-original", "data-image", "data-url",
-                "data-srcset", "srcset", "data-bg", "src")
-            for (attr in attrs) {
+            for (attr in listOf("data-lazy-src", "data-src", "data-original", "data-image", "data-url",
+                "data-srcset", "srcset", "src")) {
                 val raw = Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                     .find(tag)?.groupValues?.get(1)
-                val url = resolveImage(raw) ?: continue
-                if (url.contains("placeholder", true) || url.contains("blank.", true)) continue
-                return url
+                resolveImage(raw)?.let { return it }
             }
         }
 
@@ -779,12 +790,32 @@ class AnimESProvider : MainAPI() {
         val canonical = "$AV_BASE/media/$slug/"
         val headers = mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")
         val html = try { app.get(canonical, headers = headers).text } catch (_: Exception) { return null }
-        val title = Regex("""<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-            .find(html)?.groupValues?.get(1)?.let(::cleanHtml)?.replace(Regex("""\s*[-|]\s*AnimeAV1.*$""", RegexOption.IGNORE_CASE), "") ?: titleFromSlug(slug)
-        val poster = Regex("""<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-            .find(html)?.groupValues?.get(1)?.let { try { URI(AV_BASE).resolve(it).toString() } catch (_: Exception) { it } }
+        fun metaContent(key: String): String? = Regex("""<meta\\b[^>]*>""", RegexOption.IGNORE_CASE)
+            .findAll(html).map { it.value }.firstNotNullOfOrNull { tag ->
+                val metaKey = Regex("""\\b(?:property|name)\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .find(tag)?.groupValues?.get(1)?.lowercase()
+                if (metaKey != key.lowercase()) null else Regex("""\\bcontent\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .find(tag)?.groupValues?.get(1)
+            }
+        val title = metaContent("og:title")?.let(::cleanHtml)
+            ?.replace(Regex("""\\s*[-|]\\s*AnimeAV1.*$""", RegexOption.IGNORE_CASE), "")
+            ?: Regex("""<title[^>]*>([\\s\\S]*?)</title>""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)?.let(::cleanHtml)
+            ?: titleFromSlug(slug)
+        val poster = extractPosterFromHtml(html, canonical)
         val plot = Regex("""<meta[^>]+name=["']description["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.get(1)?.let(::cleanHtml)
+        val normalizedSeries = normalizeTitle("$title $slug")
+        val seasonNumber = when {
+            Regex("""\\b(?:season|temporada)\\s*3|3rd season\\b""").containsMatchIn(normalizedSeries) ||
+                slug.endsWith("-iii") || slug.endsWith("-3") -> 3
+            Regex("""\\b(?:season|temporada)\\s*2|2nd season\\b""").containsMatchIn(normalizedSeries) ||
+                slug.endsWith("-ii") || slug.endsWith("-2") -> 2
+            Regex("""\\b(?:season|temporada)\\s*4|4th season\\b""").containsMatchIn(normalizedSeries) ||
+                slug.endsWith("-iv") || slug.endsWith("-4") -> 4
+            Regex("""\\b(?:season|temporada)\\s*5|5th season\\b""").containsMatchIn(normalizedSeries) ||
+                slug.endsWith("-v") || slug.endsWith("-5") -> 5
+            else -> 1
+        }
         val episodes = linkedMapOf<Int, Episode>()
         val anchors = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
         val safeTitle = title.replace("|", " ")
@@ -794,15 +825,17 @@ class AnimESProvider : MainAPI() {
             val epMatch = Regex("""^/media/([^/]+)/([0-9]+)/?$""", RegexOption.IGNORE_CASE).matchEntire(epPath) ?: continue
             if (epMatch.groupValues[1] != slug) continue
             val number = epMatch.groupValues[2].toIntOrNull() ?: continue
-            val epTitle = cleanHtml(m.groupValues[2]).ifBlank { "Episodio $number" }
+            // El sitio suele poner "Ver [título] [n]" en el enlace; no usarlo como
+            // nombre del capítulo porque CloudStream puede interpretarlo como una acción.
+            val epTitle = "Episodio $number T$seasonNumber"
             episodes.putIfAbsent(number, newEpisode("av|$slug|$number|$safeTitle|$epPath") {
-                name = epTitle; episode = number; season = 1; posterUrl = poster
+                name = epTitle; episode = number; season = seasonNumber; posterUrl = poster
             })
         }
         if (episodes.isEmpty()) return null
         return newTvSeriesLoadResponse(title, canonical, TvType.Anime, episodes.toSortedMap().values.toList()) {
             posterUrl = poster; this.plot = plot
-            seasonNames = listOf(SeasonData(season = 1, name = "Temporada 1", displaySeason = 1))
+            seasonNames = listOf(SeasonData(season = seasonNumber, name = "Temporada $seasonNumber", displaySeason = seasonNumber))
         }
     }
 
