@@ -165,7 +165,7 @@ private fun dedupeKey(url: String): String {
     // VOE publica varias representaciones del mismo vídeo (index/master HLS y MP4)
     // con hosts CDN y tokens distintos. El ID estable permite conservar una sola.
     if (url.contains("cloudwindow-route.com", true)) {
-        val voeId = Regex("""/engine/(?:hls2-c|hls2|download)/\d+/([a-z0-9]{12,})""", RegexOption.IGNORE_CASE)
+        val voeId = Regex("""/engine/(?:hls2-c|hls2|download)/\d+/(?:\d+/)?([a-z0-9]{12,})""", RegexOption.IGNORE_CASE)
             .find(url)?.groupValues?.get(1)
         if (!voeId.isNullOrBlank()) return "voe:$voeId"
     }
