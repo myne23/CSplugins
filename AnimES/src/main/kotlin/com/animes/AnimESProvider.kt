@@ -162,6 +162,14 @@ private val VOLATILE_PARAMS = setOf(
  * El fragmento (#...) se conserva porque ahí viajan los IDs (UPNShare, Mega).
  */
 private fun dedupeKey(url: String): String {
+    // VOE publica varias representaciones del mismo vídeo (index/master HLS y MP4)
+    // con hosts CDN y tokens distintos. El ID estable permite conservar una sola.
+    if (url.contains("cloudwindow-route.com", true)) {
+        val voeId = Regex("""/engine/(?:hls2-c|hls2|download)/\d+/([a-z0-9]{12,})""", RegexOption.IGNORE_CASE)
+            .find(url)?.groupValues?.get(1)
+        if (!voeId.isNullOrBlank()) return "voe:$voeId"
+    }
+
     val u = url.trim().substringAfter("://").removePrefix("www.")
     val fragment = u.substringAfter("#", "")
     val noFrag = u.substringBefore("#")
@@ -1152,7 +1160,18 @@ class AnimESProvider : MainAPI() {
                         else runExtractor(candidate, listOf(sourcePage, "$mainUrl/", "https://mytsumi.com/").distinct(), TAG_ANIMEYT, sink, subtitleCallback)
                     }
                     candidate.substringBefore("?").matches(Regex(""".*\.(?:m3u8|mp4|mpd|webm)$""", RegexOption.IGNORE_CASE)) -> {
-                        sink.emit(newExtractorLink(source = name, name = "AnimeYT", url = candidate,
+                        val providerName = when {
+                            candidate.contains("archive.org", true) -> "Archive.org"
+                            candidate.contains("mediafire.com", true) -> "MediaFire"
+                            candidate.contains("ok.ru", true) -> "OK.ru"
+                            candidate.contains("abyssplayer.com", true) -> "AbyssPlayer"
+                            candidate.contains("bysekoze", true) || candidate.contains("bysesukior", true) -> "Byse"
+                            candidate.contains("fireload.com", true) -> "Fireload"
+                            candidate.contains("mega.nz", true) || candidate.contains("mega.io", true) -> "MEGA"
+                            else -> runCatching { URI(candidate).host.orEmpty().removePrefix("www.") }
+                                .getOrDefault("AnimeYT").ifBlank { "AnimeYT" }
+                        }
+                        sink.emit(newExtractorLink(source = name, name = providerName, url = candidate,
                             type = if (candidate.substringBefore("?").endsWith(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO) {
                             referer = sourcePage
                             quality = getQualityFromName(candidate)
