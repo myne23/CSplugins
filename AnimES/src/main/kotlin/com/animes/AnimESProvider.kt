@@ -2,6 +2,7 @@ package com.animes
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.nicehttp.JsonAsString
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -1167,11 +1168,11 @@ class AnimESProvider : MainAPI() {
         return fit(r) + fit(ss)
     }
 
-    private suspend fun bysePostJson(url: String, headers: Map<String, String>, payload: JSONObject, timeoutSeconds: Int = 15): JSONObject {
+    private suspend fun bysePostJson(url: String, headers: Map<String, String>, payload: JSONObject, timeoutSeconds: Long = 15L): JSONObject {
         val response = app.post(
             url,
             headers = headers + mapOf("Content-Type" to "application/json", "Accept" to "application/json"),
-            json = JsonAsString(JSONObject().put("json", payload).toString()),
+            json = JsonAsString(payload.toString()),
             timeout = timeoutSeconds
         )
         if (response.code !in 200..299) error("HTTP " + response.code + " " + URI(url).path)
@@ -1299,7 +1300,7 @@ class AnimESProvider : MainAPI() {
             ) {
                 referer = pageUrl
                 quality = getQualityFromName(chosen.first)
-                headers = streamHeaders
+                this.headers = streamHeaders
             }, TAG_ANIMEYT)
             log("Byse resuelto host=" + URI(streamUrl).host)
         } catch (e: CancellationException) {
