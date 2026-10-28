@@ -1091,10 +1091,9 @@ class AnimESProvider : MainAPI() {
             return
         }
 
-        val embeds = AV_EMBEDS.find(res.text)?.groupValues?.get(1) ?: run {
-            log("AnimeAV: no se encontró embeds")
-            return
-        }
+        // Si cambió el envoltorio JS de "embeds", buscar SUB/DUB en toda la página
+        // en vez de descartar el episodio antes de inspeccionar sus servidores.
+        val embeds = AV_EMBEDS.find(res.text)?.groupValues?.get(1) ?: res.text
 
         val servers = AV_LANGUAGE_BLOCK
             .findAll(embeds)
