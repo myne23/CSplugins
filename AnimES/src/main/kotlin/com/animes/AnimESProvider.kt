@@ -1053,22 +1053,64 @@ class AnimESProvider : MainAPI() {
         catch (e: Exception) { log("AnimeYT page fetch failed " + requestedUrl + ": " + e.message); return }
 
         var candidates = collectSourceUrls(html, sourcePage)
-        if (candidates.isEmpty()) {
-            val playbackPaths = linkedSetOf<String>()
-            val pathRegex = Regex("""(?:https?:\\?/\\?/animeyt\.cc)?(/\d+/anime/[^\s"'<>\\?#]+)""", RegexOption.IGNORE_CASE)
-            for (m in pathRegex.findAll(html)) {
-                val path = m.groupValues[1].trimEnd('/', '\\', ',')
-                if (Regex("""^/\d+/anime/[^/]+$""", RegexOption.IGNORE_CASE).matches(path)) playbackPaths += "$mainUrl$path/"
-            }
-            for (playbackUrl in playbackPaths.take(5)) {
-                val playbackHtml = try { app.get(playbackUrl, headers = apiHeaders + mapOf("Referer" to sourcePage)).text }
-                catch (e: CancellationException) { throw e }
-                catch (_: Exception) { continue }
-                val found = collectSourceUrls(playbackHtml, playbackUrl)
-                if (found.isNotEmpty()) { sourcePage = playbackUrl; html = playbackHtml; candidates = found; break }
+
+        // Igual que Kino: las fichas de películas pueden no tener el reproductor.
+        // El enlace real está en una página independiente /<id>/anime/<slug>/.
+        // No depender de candidates.isEmpty(): la ficha puede contener enlaces ajenos
+        // (publicidad u otros iframes) y aun así necesitar seguir la ruta de reproducción.
+        val playbackPaths = linkedSetOf<String>()
+        val decodedPage = html
+            .replace("\\\\/", "/")
+            .replace("\\\\u002F", "/", ignoreCase = true)
+            .replace("&amp;", "&")
+        val pathAttrRegex = Regex("""\\b(?:href|data-href|data-url|data-src)\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))""", RegexOption.IGNORE_CASE)
+        for (m in pathAttrRegex.findAll(decodedPage)) {
+            val raw = m.groupValues.drop(1).firstOrNull { it.isNotBlank() }.orEmpty()
+            val absolute = runCatching { URI(sourcePage).resolve(raw).toString() }.getOrDefault(raw)
+            val path = runCatching { URI(absolute).path.orEmpty() }.getOrDefault("")
+            if (Regex("""^/\\d+/anime/[^/?#]+/?$""", RegexOption.IGNORE_CASE).matches(path)) {
+                playbackPaths += URI(absolute).let { it.scheme + "://" + it.authority + path.trimEnd('/') + "/" }
             }
         }
-
+        val rawPathRegex = Regex("""(?:https?:\\?/\\?/animeyt\\.cc)?(/\\d+/anime/[^\\s"'<>\\\\?#]+)""", RegexOption.IGNORE_CASE)
+        for (m in rawPathRegex.findAll(decodedPage)) {
+            val path = m.groupValues[1].trimEnd('/', '\\\\', ',')
+            if (Regex("""^/\\d+/anime/[^/]+$""", RegexOption.IGNORE_CASE).matches(path)) {
+                playbackPaths += "$mainUrl$path/"
+            }
+        }
+        var playbackFetched = 0
+        for (playbackUrl in playbackPaths.take(5)) {
+            if (playbackUrl.trimEnd('/') == requestedUrl.trimEnd('/')) continue
+            val playbackHtml = try {
+                app.get(playbackUrl, headers = apiHeaders + mapOf("Referer" to sourcePage)).text
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                log("AnimeYT playback page failed " + playbackUrl + ": " + e.message)
+                continue
+            }
+            playbackFetched++
+            val found = collectSourceUrls(playbackHtml, playbackUrl)
+            if (found.isNotEmpty()) {
+                // Conservar candidatos de la ficha, y sumar los del reproductor real.
+                candidates = LinkedHashSet<String>().apply {
+                    addAll(candidates)
+                    addAll(found)
+                }
+                if (found.any {
+                    it.contains("mytsumi.com/container.php", true) ||
+                        it.contains("mytsumi.com/multiplayer/options.php", true) ||
+                        it.contains("mytsumi.com/multiplayer/contenedor.php", true)
+                }) {
+                    sourcePage = playbackUrl
+                    html = playbackHtml
+                }
+                log("AnimeYT playback page " + playbackUrl + " sources=" + found.size)
+            }
+        }
+        if (playbackFetched > 0) {
+            log("AnimeYT playback fallback pages=" + playbackFetched + " candidates=" + candidates.size)
+        }
         fun isContainer(url: String): Boolean =
             url.contains("mytsumi.com/container.php", true) ||
                 url.contains("mytsumi.com/multiplayer/contenedor.php", true) ||
@@ -1152,6 +1194,10 @@ class AnimESProvider : MainAPI() {
             host == "fireload.com" && Regex("""/[0-9a-f]{12,}/""", RegexOption.IGNORE_CASE).containsMatchIn(uri?.path.orEmpty())
         }.distinct()
 
+        log("AnimeYT source candidates=" + usableCandidates.joinToString(" || ") { candidate ->
+            val uri = runCatching { URI(candidate) }.getOrNull()
+            (uri?.host.orEmpty() + uri?.path.orEmpty()).take(180)
+        })
         for (candidate in usableCandidates) {
             safely("AnimeYT candidate") {
                 when {
