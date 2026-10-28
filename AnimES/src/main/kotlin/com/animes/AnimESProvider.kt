@@ -400,8 +400,8 @@ class AnimESProvider : MainAPI() {
                         val html = withTimeoutOrNull(4500) { app.get(item.url, headers = headers).text } ?: ""
                         val poster = extractPosterFromHtml(html, item.url)
                         if (!poster.isNullOrBlank()) recovered[item.url] = poster
-                    } catch (_: CancellationException) {
-                        throw
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (_: Exception) {
                         // La miniatura original se conserva si no se pudo recuperar otra.
                     }
