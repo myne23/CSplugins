@@ -950,7 +950,7 @@ class AnimESProvider : MainAPI() {
         )
         for (match in packed.findAll(input)) {
             try {
-                val payload = match.groupValues[1].replace("\'", "'")
+                val payload = match.groupValues[1].replace("\\'", "'")
                 val radix = match.groupValues[2].toInt()
                 var count = match.groupValues[3].toInt()
                 val words = match.groupValues[4].split("|")
@@ -974,14 +974,14 @@ class AnimESProvider : MainAPI() {
     private fun collectSourceUrls(html: String, baseUrl: String): LinkedHashSet<String> {
         val found = linkedSetOf<String>()
         val source = (html + "\n" + unpackPackedScripts(html))
-            .replace("\/", "/")
-            .replace("\u002F", "/", ignoreCase = true)
-            .replace("\u0026", "&", ignoreCase = true)
+            .replace("\\/", "/")
+            .replace("\\u002F", "/", ignoreCase = true)
+            .replace("\\u0026", "&", ignoreCase = true)
             .replace("&amp;", "&")
             .replace("&#038;", "&")
 
         fun add(value: String?) {
-            val raw = value.orEmpty().trim().trimEnd(',', ';', ')', ']', '\')
+            val raw = value.orEmpty().trim().trimEnd(',', ';', ')', ']', '\\')
             if (raw.isBlank() || raw.startsWith("data:", true) ||
                 raw.startsWith("javascript:", true) || raw.startsWith("about:", true)) return
             val resolved = try { URI(baseUrl).resolve(raw).toString() } catch (_: Exception) { raw }
@@ -1025,7 +1025,7 @@ class AnimESProvider : MainAPI() {
                 add(a.groupValues.drop(1).firstOrNull { it.isNotBlank() })
             }
         }
-        val urlRegex = Regex("""https?:\?/\?/[^\s"'<>\)]+""", RegexOption.IGNORE_CASE)
+        val urlRegex = Regex("""https?:\\?/\\?/[^\s"'<>\\)]+""", RegexOption.IGNORE_CASE)
         for (m in urlRegex.findAll(source)) add(m.value)
         return found
     }
