@@ -239,8 +239,8 @@ class AnimESProvider : MainAPI() {
     override var lang = "es"
     override val hasMainPage = true
     override val mainPage = mainPageOf(
-        "$mainUrl/" to SECTION_RECENT,
-        "$mainUrl/" to SECTION_RESUB,
+        "$mainUrl/?animes-home=recent" to SECTION_RECENT,
+        "$mainUrl/tag/resubido/" to SECTION_RESUB,
         "$mainUrl/tv/" to SECTION_EXPLORE,
         "$mainUrl/pelicula/" to SECTION_MOVIES
     )
@@ -361,20 +361,26 @@ class AnimESProvider : MainAPI() {
     }
 
     private fun extractPosterNear(html: String, position: Int, baseUrl: String): String? {
-        val beforeStart = (position - 1800).coerceAtLeast(0)
-        val before = html.substring(beforeStart, position)
+        // Buscar solo dentro de una ventana local: no recorrer el documento entero
+        // para cada episodio, porque el listado puede contener muchas decenas de enlaces.
+        val start = (position - 900).coerceAtLeast(0)
+        val end = (position + 700).coerceAtMost(html.length)
+        val window = html.substring(start, end)
+        val localPosition = position - start
+        val before = window.substring(0, localPosition)
+        val boundary = maxOf(
+            before.lastIndexOf("</article>", ignoreCase = true),
+            before.lastIndexOf("</li>", ignoreCase = true),
+            before.lastIndexOf("</div>", ignoreCase = true)
+        )
         val imageStart = before.lastIndexOf("<img", ignoreCase = true)
-        if (imageStart >= 0) {
-            val absoluteStart = beforeStart + imageStart
-            val tagEnd = html.indexOf(">", absoluteStart)
-            val boundary = maxOf(html.lastIndexOf("</article>", position, ignoreCase = true),
-                html.lastIndexOf("</li>", position, ignoreCase = true))
-            if (tagEnd > absoluteStart && (boundary < absoluteStart)) {
-                posterFromImgTag(html.substring(absoluteStart, tagEnd + 1), baseUrl)?.let { return it }
+        if (imageStart > boundary) {
+            val tagEnd = window.indexOf(">", imageStart)
+            if (tagEnd > imageStart && tagEnd < localPosition) {
+                posterFromImgTag(window.substring(imageStart, tagEnd + 1), baseUrl)?.let { return it }
             }
         }
-        val afterEnd = (position + 1200).coerceAtMost(html.length)
-        val after = html.substring(position, afterEnd)
+        val after = window.substring(localPosition)
         val img = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(after)?.value
         return img?.let { posterFromImgTag(it, baseUrl) }
     }
@@ -724,12 +730,12 @@ class AnimESProvider : MainAPI() {
                 yt.await() to av.await()
             }
 
-            // Usar las carátulas del propio HTML de recientes. Antes se abría la ficha de
-            // cada serie en tandas secuenciales para recuperar imágenes, retrasando toda
-            // la categoría y haciendo que la pantalla pareciera reordenarse al actualizar.
+            // Usar únicamente las carátulas incluidas en las páginas de inicio.
+            // No abrir fichas individuales: evita peticiones extra y reduce el retraso visual.
             val ytItems = extractLatestEpisodes(sectionHtml(ytHtml, SECTION_RECENT).ifBlank { ytHtml })
             val avItems = extractAnimeAvLatestEpisodes(avHtml)
-            val items = (avItems + ytItems).distinctBy { it.url + "|" + it.name }
+            // AnimeYT primero para conservar la fuente principal al inicio; AnimeAV se agrega después.
+            val items = (ytItems + avItems).distinctBy { it.url + "|" + it.name }
 
             if (items.isNotEmpty()) {
                 recentCacheItems = items
