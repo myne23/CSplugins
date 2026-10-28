@@ -1067,7 +1067,7 @@ class AnimESProvider : MainAPI() {
             .replace("&#x2f;", "/", ignoreCase = true)
             .replace("&#47;", "/", ignoreCase = true)
             .replace("&#x3d;", "=", ignoreCase = true)
-            .replace("&quot;", "\\"", ignoreCase = true)
+            .replace("&quot;", "\"", ignoreCase = true)
             .replace("&#039;", "'", ignoreCase = true)
             .replace("&#8217;", "'", ignoreCase = true)
             .replace("&amp;", "&")
