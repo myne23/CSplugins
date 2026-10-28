@@ -1060,22 +1060,22 @@ class AnimESProvider : MainAPI() {
         // (publicidad u otros iframes) y aun así necesitar seguir la ruta de reproducción.
         val playbackPaths = linkedSetOf<String>()
         val decodedPage = html
-            .replace("\\\\/", "/")
-            .replace("\\\\u002F", "/", ignoreCase = true)
+            .replace("\\/", "/")
+            .replace("\\u002F", "/", ignoreCase = true)
             .replace("&amp;", "&")
-        val pathAttrRegex = Regex("""\\b(?:href|data-href|data-url|data-src)\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))""", RegexOption.IGNORE_CASE)
+        val pathAttrRegex = Regex("""\b(?:href|data-href|data-url|data-src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", RegexOption.IGNORE_CASE)
         for (m in pathAttrRegex.findAll(decodedPage)) {
             val raw = m.groupValues.drop(1).firstOrNull { it.isNotBlank() }.orEmpty()
             val absolute = runCatching { URI(sourcePage).resolve(raw).toString() }.getOrDefault(raw)
             val path = runCatching { URI(absolute).path.orEmpty() }.getOrDefault("")
-            if (Regex("""^/\\d+/anime/[^/?#]+/?$""", RegexOption.IGNORE_CASE).matches(path)) {
+            if (Regex("""^/\d+/anime/[^/?#]+/?$""", RegexOption.IGNORE_CASE).matches(path)) {
                 playbackPaths += URI(absolute).let { it.scheme + "://" + it.authority + path.trimEnd('/') + "/" }
             }
         }
-        val rawPathRegex = Regex("""(?:https?:\\?/\\?/animeyt\\.cc)?(/\\d+/anime/[^\\s"'<>\\\\?#]+)""", RegexOption.IGNORE_CASE)
+        val rawPathRegex = Regex("""(?:https?:\\?/\\?/animeyt\.cc)?(/\d+/anime/[^\s"'<>\\?#]+)""", RegexOption.IGNORE_CASE)
         for (m in rawPathRegex.findAll(decodedPage)) {
-            val path = m.groupValues[1].trimEnd('/', '\\\\', ',')
-            if (Regex("""^/\\d+/anime/[^/]+$""", RegexOption.IGNORE_CASE).matches(path)) {
+            val path = m.groupValues[1].trimEnd('/', '\\', ',')
+            if (Regex("""^/\d+/anime/[^/]+$""", RegexOption.IGNORE_CASE).matches(path)) {
                 playbackPaths += "$mainUrl$path/"
             }
         }
