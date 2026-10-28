@@ -944,36 +944,63 @@ class AnimESProvider : MainAPI() {
 
     private fun collectSourceUrls(html: String, baseUrl: String): LinkedHashSet<String> {
         val found = linkedSetOf<String>()
+        val source = html
+            .replace("\\/", "/")
+            .replace("\\u002F", "/", ignoreCase = true)
+            .replace("\\u0026", "&", ignoreCase = true)
+            .replace("&amp;", "&")
+            .replace("&#038;", "&")
+
         fun add(value: String?) {
-            val raw = value.orEmpty().trim().replace("\\/", "/")
-                .replace("\\u0026", "&", true).replace("\\u002F", "/", true)
-                .replace("&amp;", "&").replace("&#038;", "&")
+            val raw = value.orEmpty().trim()
                 .trimEnd(',', ';', ')', ']', '\\')
-            if (raw.isBlank() || raw.startsWith("data:", true) || raw.startsWith("javascript:", true)) return
+            if (raw.isBlank() || raw.startsWith("data:", true) ||
+                raw.startsWith("javascript:", true) || raw.startsWith("about:", true)) return
+
             val resolved = try { URI(baseUrl).resolve(raw).toString() } catch (_: Exception) { raw }
             if (!resolved.startsWith("http://", true) && !resolved.startsWith("https://", true)) return
-            val host = try { URI(resolved).host.orEmpty().lowercase() } catch (_: Exception) { "" }
-            val path = try { URI(resolved).path.orEmpty() } catch (_: Exception) { "" }
-            val media = Regex("""\.(?:m3u8|mp4|mpd|webm)(?:$|\?)""", RegexOption.IGNORE_CASE).containsMatchIn(resolved)
-            val hosts = listOf("mytsumi.com", "archive.org", "ok.ru", "bysekoze.com", "bysesukior.com",
-                "n1mwq.org", "abyssplayer.com", "mega.nz", "mega.io", "voe.sx", "mp4upload.com", "upnshare.com")
-            val knownHost = hosts.any { host == it || host.endsWith("." + it) }
-            val playerPath = Regex("""embed|/e/|/v/|player|video|iframe|container\.php|options\.php""",
-                RegexOption.IGNORE_CASE).containsMatchIn(path)
-            if (media || knownHost || playerPath) found += resolved
+            val uri = try { URI(resolved) } catch (_: Exception) { return }
+            val host = uri.host.orEmpty().lowercase().removePrefix("www.")
+            val path = uri.path.orEmpty()
+            val lowerPath = path.lowercase()
+            val media = Regex("""\.(?:m3u8|mp4|mpd|webm)$""", RegexOption.IGNORE_CASE)
+                .containsMatchIn(path)
+            val mytsumiContainer = host == "mytsumi.com" &&
+                ((lowerPath == "/container.php" && uri.rawQuery.orEmpty().contains(Regex("""(?:^|&)id="""))) ||
+                    lowerPath == "/multiplayer/options.php")
+            val okruPlayer = host == "ok.ru" && Regex("""/videoembed/\d+""", RegexOption.IGNORE_CASE).containsMatchIn(path)
+            val asset = Regex("""\.(?:png|jpe?g|gif|webp|svg|css|js|ico|woff2?)(?:$|\?)""", RegexOption.IGNORE_CASE)
+                .containsMatchIn(uri.toString())
+            val embedPath = Regex("""(?:embed|/e/|/v/|player|video|iframe)""", RegexOption.IGNORE_CASE)
+                .containsMatchIn(path)
+            val adHost = Regex("""(?:doubleclick|googlesyndication|googleadservices|adservice)""", RegexOption.IGNORE_CASE)
+                .containsMatchIn(host)
+
+            if (adHost || asset) return
+            when {
+                media -> found += resolved
+                mytsumiContainer -> found += resolved
+                okruPlayer -> found += resolved
+                host != "animeyt.cc" && !host.endsWith(".animeyt.cc") && embedPath -> found += resolved
+            }
         }
-        val tagRegex = Regex("""<(?:iframe|source|video|a|button)\b[^>]*>""", RegexOption.IGNORE_CASE)
-        val attrNames = listOf("src", "data-src", "data-lazy-src", "href", "data-href", "data-url",
-            "data-player-url", "data-video", "data-embed")
-        for (m in tagRegex.findAll(html)) {
+
+        val tagRegex = Regex("""<(?:iframe|a|button|source|video)\b[^>]*>""", RegexOption.IGNORE_CASE)
+        val attrNames = listOf("src", "data-src", "data-lazy-src", "href", "data-href",
+            "data-url", "data-player-url", "data-video", "data-embed")
+        for (m in tagRegex.findAll(source)) {
             for (attr in attrNames) {
                 val a = Regex("""\b$attr\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""",
                     RegexOption.IGNORE_CASE).find(m.value) ?: continue
                 add(a.groupValues.drop(1).firstOrNull { it.isNotBlank() })
             }
         }
+
+        // Fallback para URLs serializadas en scripts, sin convertir enlaces de la propia ficha
+        // de AnimeYT en fuentes falsas (que terminaban como "AnimeYT · AnimeYT").
         val urlRegex = Regex("""https?:\\?/\\?/[^\s"'<>\\)]+""", RegexOption.IGNORE_CASE)
-        for (m in urlRegex.findAll(html)) add(m.value)
+        for (m in urlRegex.findAll(source)) add(m.value)
+
         return found
     }
 
