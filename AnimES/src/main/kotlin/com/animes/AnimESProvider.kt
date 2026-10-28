@@ -462,7 +462,42 @@ class AnimESProvider : MainAPI() {
         }
         log("AnimeYT candidates=${candidates.size} url=$pageUrl")
     }
-}
+    private fun parseMega(url: String): Pair<String, String>? {
+        var handle = ""
+        var key = ""
+
+        val part = MEGA_EMBED.find(url)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.trimEnd('/')
+
+        if (!part.isNullOrBlank()) {
+            val fragment = part.trimStart('!', '#')
+            val hashIndex = fragment.indexOf('#')
+
+            if (hashIndex > 0) {
+                handle = fragment.substring(0, hashIndex).trim().trimStart('!', '#')
+                key = fragment.substring(hashIndex + 1).trim()
+            } else {
+                val bangIndex = fragment.indexOf('!')
+                if (bangIndex > 0) {
+                    handle = fragment.substring(0, bangIndex).trim()
+                    key = fragment.substring(bangIndex + 1).trim()
+                }
+            }
+        }
+
+        if (handle.isBlank() || key.isBlank()) {
+            MEGA_FALLBACK.find(url)?.let {
+                handle = it.groupValues[1].trim().trimStart('!', '#')
+                key = it.groupValues[2].trim()
+            }
+        }
+
+        return if (handle.isBlank() || key.isBlank()) null else handle to key
+    }
+
     private suspend fun emitMega(urlVideo: String, qualityValue: Int, sink: LinkSink) {
         val (handle, key) = parseMega(urlVideo) ?: run {
             log("MEGA handle/key vacío")
