@@ -942,9 +942,38 @@ class AnimESProvider : MainAPI() {
         return sink.count > 0
     }
 
+    private fun unpackPackedScripts(input: String): String {
+        val output = StringBuilder()
+        val packed = Regex(
+            """eval\\(function\\(p,a,c,k,e,d\\)\\{[\\s\\S]*?\\}\\(['"]([\\s\\S]*?)['"],\\s*(\\d+),\\s*(\\d+),\\s*['"]([\\s\\S]*?)['"]\\.split\\(['"]\\|['"]\\)""",
+            RegexOption.IGNORE_CASE
+        )
+        for (match in packed.findAll(input)) {
+            try {
+                val payload = match.groupValues[1].replace("\\'", "'")
+                val radix = match.groupValues[2].toInt()
+                var count = match.groupValues[3].toInt()
+                val words = match.groupValues[4].split("|")
+                if (radix < 2 || radix > 62 || count > 10000) continue
+                fun encode(n: Int): String {
+                    if (n < radix) return if (n > 35) (n + 29).toChar().toString() else n.toString(radix)
+                    return encode(n / radix) + if (n % radix > 35) (n % radix + 29).toChar() else (n % radix).toString(radix)
+                }
+                val dictionary = HashMap<String, String>()
+                while (count > 0) {
+                    count--
+                    dictionary[encode(count)] = words.getOrNull(count).orEmpty().ifBlank { encode(count) }
+                }
+                val decoded = Regex("""\\b\\w+\\b""").replace(payload) { token -> dictionary[token.value] ?: token.value }
+                output.append('\n').append(decoded)
+            } catch (_: Exception) { }
+        }
+        return output.toString()
+    }
+
     private fun collectSourceUrls(html: String, baseUrl: String): LinkedHashSet<String> {
         val found = linkedSetOf<String>()
-        val source = html
+        val source = (html + "\n" + unpackPackedScripts(html))
             .replace("\\/", "/")
             .replace("\\u002F", "/", ignoreCase = true)
             .replace("\\u0026", "&", ignoreCase = true)
@@ -952,55 +981,52 @@ class AnimESProvider : MainAPI() {
             .replace("&#038;", "&")
 
         fun add(value: String?) {
-            val raw = value.orEmpty().trim()
-                .trimEnd(',', ';', ')', ']', '\\')
+            val raw = value.orEmpty().trim().trimEnd(',', ';', ')', ']', '\\')
             if (raw.isBlank() || raw.startsWith("data:", true) ||
                 raw.startsWith("javascript:", true) || raw.startsWith("about:", true)) return
-
             val resolved = try { URI(baseUrl).resolve(raw).toString() } catch (_: Exception) { raw }
             if (!resolved.startsWith("http://", true) && !resolved.startsWith("https://", true)) return
             val uri = try { URI(resolved) } catch (_: Exception) { return }
             val host = uri.host.orEmpty().lowercase().removePrefix("www.")
             val path = uri.path.orEmpty()
             val lowerPath = path.lowercase()
-            val media = Regex("""\.(?:m3u8|mp4|mpd|webm)$""", RegexOption.IGNORE_CASE)
-                .containsMatchIn(path)
+            val media = Regex("""\.(?:m3u8|mp4|mpd|webm)$""", RegexOption.IGNORE_CASE).containsMatchIn(path)
             val mytsumiContainer = host == "mytsumi.com" &&
                 ((lowerPath == "/container.php" && uri.rawQuery.orEmpty().contains(Regex("""(?:^|&)id="""))) ||
                     lowerPath == "/multiplayer/options.php")
             val okruPlayer = host == "ok.ru" && Regex("""/videoembed/\d+""", RegexOption.IGNORE_CASE).containsMatchIn(path)
+            val knownProvider = host == "archive.org" || host.endsWith(".archive.org") ||
+                host == "ok.ru" || host.endsWith(".ok.ru") ||
+                host.contains("bysekoze") || host.contains("bysesukior") || host == "n1mwq.org" ||
+                host == "abyssplayer.com" || host.endsWith(".abyssplayer.com") ||
+                host == "mega.nz" || host.endsWith(".mega.nz") || host == "mega.io" || host.endsWith(".mega.io") ||
+                host == "fireload.com" || host.endsWith(".fireload.com")
             val asset = Regex("""\.(?:png|jpe?g|gif|webp|svg|css|js|ico|woff2?)(?:$|\?)""", RegexOption.IGNORE_CASE)
                 .containsMatchIn(uri.toString())
-            val embedPath = Regex("""(?:embed|/e/|/v/|player|video|iframe)""", RegexOption.IGNORE_CASE)
+            val embedPath = Regex("""(?:embed|/e/|/v/|player|video|iframe|/d/|/file/)""", RegexOption.IGNORE_CASE)
                 .containsMatchIn(path)
-            val adHost = Regex("""(?:doubleclick|googlesyndication|googleadservices|adservice)""", RegexOption.IGNORE_CASE)
-                .containsMatchIn(host)
-
+            val adHost = Regex("""(?:doubleclick|googlesyndication|googleadservices|adservice)""", RegexOption.IGNORE_CASE).containsMatchIn(host)
             if (adHost || asset) return
             when {
                 media -> found += resolved
                 mytsumiContainer -> found += resolved
                 okruPlayer -> found += resolved
+                knownProvider -> found += resolved
                 host != "animeyt.cc" && !host.endsWith(".animeyt.cc") && embedPath -> found += resolved
             }
         }
 
         val tagRegex = Regex("""<(?:iframe|a|button|source|video)\b[^>]*>""", RegexOption.IGNORE_CASE)
-        val attrNames = listOf("src", "data-src", "data-lazy-src", "href", "data-href",
-            "data-url", "data-player-url", "data-video", "data-embed")
+        val attrNames = listOf("src", "data-src", "data-lazy-src", "href", "data-href", "data-url",
+            "data-player-url", "data-video", "data-embed")
         for (m in tagRegex.findAll(source)) {
             for (attr in attrNames) {
-                val a = Regex("""\b$attr\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""",
-                    RegexOption.IGNORE_CASE).find(m.value) ?: continue
+                val a = Regex("""\b$attr\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", RegexOption.IGNORE_CASE).find(m.value) ?: continue
                 add(a.groupValues.drop(1).firstOrNull { it.isNotBlank() })
             }
         }
-
-        // Fallback para URLs serializadas en scripts, sin convertir enlaces de la propia ficha
-        // de AnimeYT en fuentes falsas (que terminaban como "AnimeYT · AnimeYT").
         val urlRegex = Regex("""https?:\\?/\\?/[^\s"'<>\\)]+""", RegexOption.IGNORE_CASE)
         for (m in urlRegex.findAll(source)) add(m.value)
-
         return found
     }
 
