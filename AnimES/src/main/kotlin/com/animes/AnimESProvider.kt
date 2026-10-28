@@ -447,7 +447,9 @@ class AnimESProvider : MainAPI() {
                 batch.map { item -> async {
                     try {
                         val html = withTimeoutOrNull(4500) { app.get(item.url, headers = headers).text } ?: ""
-                        val poster = extractPosterFromHtml(html, item.url)                        if (!poster.isNullOrBlank()) recovered[item.url] = poster                    } catch (e: CancellationException) {
+                        val poster = extractPosterFromHtml(html, item.url)
+                        if (!poster.isNullOrBlank()) recovered[item.url] = poster
+                    } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
                         // La miniatura original se conserva si no se pudo recuperar otra.
@@ -895,8 +897,10 @@ class AnimESProvider : MainAPI() {
                 val to = (block + 1) * 50
                 episodeItems += parseAnimeYtEpisodes(blockHtml, slug, titleForAv, poster, block + 1).filter { it.first in from..to }
             }
-            if (episodeItems.isEmpty()) episodeItems += initialEpisodes        } else {
-            episodeItems += initialEpisodes        }
+            if (episodeItems.isEmpty()) episodeItems += initialEpisodes
+        } else {
+            episodeItems += initialEpisodes
+        }
         val dedupedEpisodes = episodeItems.distinctBy { it.second.data }
             .sortedWith(compareBy<Pair<Int, Episode>> { it.second.season ?: 1 }.thenBy { it.first })
         if (dedupedEpisodes.isEmpty()) { log("No episodes found for " + pageUrl); return null }
@@ -1344,12 +1348,14 @@ class AnimESProvider : MainAPI() {
             .replace("&#x3d;", "=", ignoreCase = true)
             .replace("&quot;", "\"", ignoreCase = true)
             .replace("&#039;", "'", ignoreCase = true)
-            .replace("&#8217;", "'", ignoreCase = true)            .replace("&amp;", "&")
+            .replace("&#8217;", "'", ignoreCase = true)
+            .replace("&amp;", "&")
         val pathAttrRegex = Regex("""\b(?:href|data-href|data-url|data-src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", RegexOption.IGNORE_CASE)
         for (m in pathAttrRegex.findAll(decodedPage)) {
             val raw = m.groupValues.drop(1).firstOrNull { it.isNotBlank() }.orEmpty()
             val absolute = runCatching { URI(sourcePage).resolve(raw).toString() }.getOrDefault(raw)
-            val path = runCatching { URI(absolute).path.orEmpty() }.getOrDefault("")            if (Regex("""^/\d+/anime/[^/?#]+/?$""", RegexOption.IGNORE_CASE).matches(path)) {
+            val path = runCatching { URI(absolute).path.orEmpty() }.getOrDefault("")
+            if (Regex("""^/\d+/anime/[^/?#]+/?$""", RegexOption.IGNORE_CASE).matches(path)) {
                 playbackPaths += URI(absolute).let { it.scheme + "://" + it.authority + path.trimEnd('/') + "/" }
             }
         }
