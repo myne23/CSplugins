@@ -397,16 +397,29 @@ class AnimESProvider : MainAPI() {
             } }.awaitAll().flatten()
         }
         val matched = candidates.filter { isRelevantSearchTitle(query, it.name) }.distinctBy { it.url }
-        if (matched.isNotEmpty() && matched.take(8).map { it.url }.joinToString("|") != baseline) return matched.sortedByDescending { animeTitleScore(query, it.name) }
-        val pages = (2..12).map { "$mainUrl/tv/page/$it/" } + listOf("$mainUrl/")
-        val catalog = coroutineScope {
-            pages.map { url -> async {
-                try {
-                    val html = withTimeoutOrNull(8000) { app.get(url, headers = apiHeaders).text } ?: ""
-                    val extras = if (url == "$mainUrl/") extractAnimeCards(sectionHtml(html, SECTION_RESUB), "tv") else emptyList()
-                    extractAnimeCards(html, "tv") + extras
-                } catch (_: Exception) { emptyList() }
-            } }.awaitAll().flatten()
+        if (matched.isNotEmpty() && matched.take(8).map { it.url }.joinToString("|") != baseline) {
+            return matched.sortedByDescending { animeTitleScore(query, it.name) }.take(40)
+        }
+
+        // Respaldo equivalente al índice incremental de AnimeYT/Kino: recorrer el catálogo
+        // por tandas y detenerse cuando aparezcan coincidencias, sin lanzar 60 peticiones juntas.
+        val catalog = mutableListOf<SearchResponse>()
+        val homeHtml = try { withTimeoutOrNull(8000) { app.get("$mainUrl/", headers = apiHeaders).text } ?: "" } catch (_: Exception) { "" }
+        catalog += extractAnimeCards(homeHtml, "tv")
+        catalog += extractAnimeCards(sectionHtml(homeHtml, SECTION_RESUB), "tv")
+        for (start in 2..60 step 12) {
+            val end = minOf(start + 11, 60)
+            val batch = coroutineScope {
+                (start..end).map { page -> async {
+                    try {
+                        val html = withTimeoutOrNull(8000) { app.get("$mainUrl/tv/page/$page/", headers = apiHeaders).text } ?: ""
+                        extractAnimeCards(html, "tv")
+                    } catch (_: Exception) { emptyList() }
+                } }.awaitAll().flatten()
+            }
+            catalog += batch
+            val found = (baseCards + catalog).filter { isRelevantSearchTitle(query, it.name) }.distinctBy { it.url }
+            if (found.isNotEmpty()) return found.sortedByDescending { animeTitleScore(query, it.name) }.take(40)
         }
         return (baseCards + catalog).filter { isRelevantSearchTitle(query, it.name) }.distinctBy { it.url }
             .sortedByDescending { animeTitleScore(query, it.name) }.take(40)
@@ -426,8 +439,12 @@ class AnimESProvider : MainAPI() {
         }
         val matched = results.filter { isRelevantSearchTitle(query, it.name) }.distinctBy { it.url }
         if (matched.isNotEmpty()) return matched.sortedByDescending { animeTitleScore(query, it.name) }.take(40)
+
+        // El catálogo de AnimeAV está paginado; si el filtro del sitio no se refleja en el HTML,
+        // recorrer las páginas disponibles para no limitar la búsqueda a los primeros resultados.
+        val pages = listOf("$AV_BASE/catalogo", "$AV_BASE/") + (2..10).map { "$AV_BASE/catalogo?page=$it" }
         val fallback = coroutineScope {
-            listOf("$AV_BASE/catalogo", "$AV_BASE/").map { url -> async {
+            pages.map { url -> async {
                 try {
                     val html = withTimeoutOrNull(9000) { app.get(url, headers = headers).text } ?: ""
                     extractAnimeAvCards(html)
