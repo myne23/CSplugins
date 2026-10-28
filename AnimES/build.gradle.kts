@@ -6,7 +6,7 @@ dependencies {
 version = 1
 
 cloudstream {
-    description = "AnimoraTV provider"
+    description = "AnimES provider"
     authors = listOf("mmilew")
 
     status = 1
@@ -16,7 +16,7 @@ cloudstream {
     requiresResources = true
     language = "es"
 
-    iconUrl = "https://www.animoratv.com/favicon.ico"
+    iconUrl = "https://animeyt.cc/"
 }
 
 android {

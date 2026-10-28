@@ -1,4 +1,4 @@
-package com.animoratv
+package com.animes
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -43,17 +43,18 @@ private const val UPN_IV = "1234567890oiuytr"
 
 private const val EXTRACTOR_TIMEOUT_MS = 7_000L
 private const val ANIMEAV_TIMEOUT_MS = 12_000L
-private const val ANIMORA_API_TIMEOUT_MS = 10_000L
 private const val HOME_CACHE_MS = 180_000L
 
-private const val TAG_ANIMORA = "Animora"
+private const val TAG_ANIMEYT = "AnimeYT"
 private const val TAG_ANIMEAV = "AnimeAV"
 
 private const val SECTION_RECENT = "Últimos episodios"
+private const val SECTION_RESUB = "Resubidos"
 private const val SECTION_EXPLORE = "Explorar"
+private const val SECTION_MOVIES = "Películas"
 
 private fun log(msg: String) {
-    if (DEBUG) println("AnimoraTV: $msg")
+    if (DEBUG) println("AnimES: $msg")
 }
 
 /* ====================================================================
@@ -227,464 +228,241 @@ private class LinkSink(private val callback: (ExtractorLink) -> Unit) {
     }
 }
 
-private fun JSONArray.objects(): List<JSONObject> =
-    (0 until length()).mapNotNull { optJSONObject(it) }
-
 /* ====================================================================
  * Provider
  * ==================================================================== */
 
-class AnimoraTVProvider : MainAPI() {
-
-    override var mainUrl = "https://www.animoratv.com"
-    override var name = "AnimoraTV"
-
-    override val supportedTypes = setOf(TvType.Anime, TvType.TvSeries)
-
+class AnimESProvider : MainAPI() {
+    override var mainUrl = "https://animeyt.cc"
+    override var name = "AnimES"
+    override val supportedTypes = setOf(TvType.Anime, TvType.TvSeries, TvType.AnimeMovie)
     override var lang = "es"
     override val hasMainPage = true
-
     override val mainPage = mainPageOf(
-        "$mainUrl/api/episodios/recientes?limite=36" to SECTION_RECENT,
-        "$mainUrl/api/animes/populares" to "Populares",
-        "$mainUrl/api/animes?limite=24&pagina=1&sort=recientes" to SECTION_EXPLORE
+        "$mainUrl/" to SECTION_RECENT,
+        "$mainUrl/" to SECTION_RESUB,
+        "$mainUrl/tv/" to SECTION_EXPLORE,
+        "$mainUrl/pelicula/" to SECTION_MOVIES
     )
-
     private val apiHeaders: Map<String, String>
-        get() = mapOf(
-            "User-Agent" to UA,
-            "Accept" to "application/json, text/plain, */*",
-            "Referer" to "$mainUrl/",
-            "Origin" to mainUrl
-        )
-
-    private val jsonCache = ConcurrentHashMap<String, Pair<Long, JSONObject>>()
-
-    // título normalizado -> slug de AnimeAV (evita repetir la búsqueda en cada episodio)
+        get() = mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9",
+            "Accept" to "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", "Referer" to "$mainUrl/")
     private val animeAvSlugCache = ConcurrentHashMap<String, String>()
 
-    /* ------------------------------------------------------------
-     * HTTP / JSON
-     * ------------------------------------------------------------ */
+    private fun cleanHtml(value: String): String = value.replace(HTML_TAG, " ")
+        .replace("&nbsp;", " ", ignoreCase = true).replace("&#8211;", "–").replace("&#8212;", "—")
+        .replace("&amp;", "&").replace("&quot;", "\"").replace("&#039;", "'").replace("&#39;", "'")
+        .replace(Regex("\\s+"), " ").trim()
 
-    /**
-     * GET JSON con headers, reintentos y caché opcional.
-     * Devuelve null si falla (antes un 403/429/HTML rompía todo con una excepción,
-     * que es la causa más probable de que la página principal a veces no cargue).
-     */
-    private suspend fun getJson(
-        url: String,
-        cacheMs: Long = 0L,
-        retries: Int = 2
-    ): JSONObject? {
+    private fun absoluteAnimeUrl(value: String): String = try { URI(mainUrl).resolve(value).toString() } catch (_: Exception) { value }
+    private fun pathOf(value: String): String = try { URI(value).path ?: value } catch (_: Exception) { value.substringBefore("?").substringBefore("#") }
+    private fun titleFromSlug(slug: String): String = slug.removeSuffix("/")
+        .replace(Regex("-temporada-\\d+.*$"), "").replace(Regex("-capitulo-\\d+(?:-\\d+)?(?:-\\d{4})?$"), "")
+        .replace("-", " ").replace(Regex("\\s+"), " ").trim()
+        .replace(Regex("\\b\\p{L}")) { it.value.uppercase() }
 
-        if (cacheMs > 0) {
-            val cached = jsonCache[url]
-            if (cached != null && System.currentTimeMillis() - cached.first < cacheMs) {
-                return cached.second
-            }
+    private fun extractAnimeCards(html: String, expectedKind: String = "tv"): List<SearchResponse> {
+        val titles = linkedMapOf<String, String>()
+        val headingRe = Regex("""<h[1-4][^>]*>\s*<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
+        for (m in headingRe.findAll(html)) {
+            val href = Regex("""\bhref\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(m.groupValues[1])?.groupValues?.get(1) ?: continue
+            val path = pathOf(absoluteAnimeUrl(href)).trimEnd('/')
+            val title = cleanHtml(m.groupValues[2])
+            if (title.isNotBlank()) titles.putIfAbsent(path, title)
         }
-
-        for (attempt in 0..retries) {
-            try {
-                val res = app.get(url, headers = apiHeaders)
-
-                if (res.isSuccessful) {
-                    val json = JSONObject(res.text)
-                    if (cacheMs > 0) jsonCache[url] = System.currentTimeMillis() to json
-                    return json
+        val found = linkedMapOf<String, SearchResponse>()
+        val anchorRe = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
+        for (m in anchorRe.findAll(html)) {
+            val href = Regex("""\bhref\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(m.groupValues[1])?.groupValues?.get(1) ?: continue
+            val path = pathOf(absoluteAnimeUrl(href)).trimEnd('/')
+            val match = Regex("""^/(tv|pelicula)/([^/]+)$""", RegexOption.IGNORE_CASE).matchEntire(path) ?: continue
+            val kind = match.groupValues[1].lowercase()
+            if (expectedKind != "any" && kind != expectedKind) continue
+            val slug = match.groupValues[2]
+            if (slug == "page") continue
+            val key = "$kind/$slug"
+            if (found.containsKey(key)) continue
+            val inner = m.groupValues[2]
+            val title = titles[path].orEmpty().ifBlank {
+                Regex("""<img\b[^>]*\balt\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(inner)?.groupValues?.get(1)?.let(::cleanHtml).orEmpty()
+            }.ifBlank { titleFromSlug(slug) }
+            val poster = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(inner)?.value?.let { img ->
+                listOf("data-src", "data-lazy-src", "data-original", "src").firstNotNullOfOrNull { attr ->
+                    Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(img)?.groupValues?.get(1)
                 }
-
-                log("HTTP ${res.code} en $url (intento ${attempt + 1})")
-                if (res.code == 404) return null
-
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log("getJson ERROR $url -> ${e.javaClass.simpleName}: ${e.message}")
+            }?.let(::absoluteAnimeUrl)
+            found[key] = newAnimeSearchResponse(title, "$mainUrl/$kind/$slug/", if (kind == "pelicula") TvType.AnimeMovie else TvType.Anime) {
+                posterUrl = poster
             }
-
-            if (attempt < retries) delay(400L * (attempt + 1))
         }
-
-        return null
+        return found.values.toList()
     }
 
-    /* ------------------------------------------------------------
-     * Parsers (tolerantes a cambios de forma en la respuesta)
-     * ------------------------------------------------------------ */
-
-    private fun animeArray(json: JSONObject): JSONArray? =
-        when (val data = json.opt("data")) {
-            is JSONArray -> data
-            is JSONObject -> data.optJSONArray("animes")
-            else -> json.optJSONArray("animes")
-        }
-
-    private fun parseAnimeList(json: JSONObject): List<SearchResponse> =
-        (animeArray(json)?.objects() ?: emptyList())
-            .mapNotNull { anime ->
-                val title = anime.optString("titulo").ifBlank { anime.optString("tituloIngles") }
-                val slug = anime.optString("slug")
-                if (title.isBlank() || slug.isBlank()) return@mapNotNull null
-
-                newAnimeSearchResponse(title, "$mainUrl/anime/$slug", TvType.Anime) {
-                    posterUrl = anime.optString("portada").ifBlank { null }
+    private fun extractLatestEpisodes(html: String): List<SearchResponse> {
+        val found = linkedMapOf<String, SearchResponse>()
+        val anchorRe = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
+        for (m in anchorRe.findAll(html)) {
+            val href = Regex("""\bhref\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(m.groupValues[1])?.groupValues?.get(1) ?: continue
+            val path = pathOf(absoluteAnimeUrl(href))
+            val epMatch = Regex("""^/(\d+)/anime/([^/]+)/?$""", RegexOption.IGNORE_CASE).matchEntire(path) ?: continue
+            val epSlug = epMatch.groupValues[2]
+            val numMatch = Regex("""-capitulo-(\d+)(?:-(5))?(?:-\d{4})?$""", RegexOption.IGNORE_CASE).find(epSlug) ?: continue
+            if (numMatch.groupValues[2].isNotBlank()) continue
+            val number = numMatch.groupValues[1].toIntOrNull() ?: continue
+            val seriesSlug = epSlug.replace(Regex("-capitulo-\\d+(?:-\\d+)?(?:-\\d{4})?$"), "")
+            if (seriesSlug.isBlank()) continue
+            val poster = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(m.groupValues[2])?.value?.let { img ->
+                listOf("data-src", "data-lazy-src", "data-original", "src").firstNotNullOfOrNull { attr ->
+                    Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(img)?.groupValues?.get(1)
                 }
-            }
-            .distinctBy { it.url }
-
-    private fun parseRecentEpisodes(json: JSONObject): List<SearchResponse> =
-        (json.optJSONArray("data")?.objects() ?: emptyList())
-            .mapNotNull { episode ->
-                val anime = episode.optJSONObject("anime") ?: return@mapNotNull null
-
-                val title = anime.optString("titulo").ifBlank { anime.optString("tituloIngles") }
-                val slug = anime.optString("slug")
-                val number = episode.optInt("numero", 0)
-                if (title.isBlank() || slug.isBlank() || number <= 0) return@mapNotNull null
-
-                newAnimeSearchResponse(
-                    "$title - Episodio $number",
-                    "$mainUrl/anime/$slug/episodio/$number",
-                    TvType.Anime
-                ) {
-                    posterUrl = episode.optString("miniatura")
-                        .ifBlank { anime.optString("portada") }
-                        .ifBlank { null }
-                }
-            }
-            .distinctBy { it.url }
-
-    /* ------------------------------------------------------------
-     * Main page / search / load
-     * ------------------------------------------------------------ */
-
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-
-        val isExplore = request.name == SECTION_EXPLORE
-
-        val url =
-            if (isExplore) "$mainUrl/api/animes?limite=24&pagina=$page&sort=recientes"
-            else request.data
-
-        val json = getJson(url, cacheMs = HOME_CACHE_MS)
-
-        val items = when {
-            json == null -> emptyList()
-            request.name == SECTION_RECENT -> parseRecentEpisodes(json)
-            else -> parseAnimeList(json)
+            }?.let(::absoluteAnimeUrl)
+            found.putIfAbsent(path, newAnimeSearchResponse("\${titleFromSlug(seriesSlug)} - Episodio $number", "$mainUrl/tv/$seriesSlug/", TvType.Anime) {
+                posterUrl = poster
+            })
         }
+        return found.values.toList()
+    }
 
-        return newHomePageResponse(
-            request.name,
-            items,
-            hasNext = isExplore && items.size >= 24
-        )
+    private fun sectionHtml(html: String, label: String): String {
+        val headings = Regex("""<h([1-6])\b[^>]*>[\s\S]*?</h\1>""", RegexOption.IGNORE_CASE).findAll(html).toList()
+        val normalize: (String) -> String = { cleanHtml(it).lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ") }
+        val current = headings.firstOrNull { normalize(it.value).contains(normalize(label)) } ?: return ""
+        val level = Regex("""<h(\d)""", RegexOption.IGNORE_CASE).find(current.value)?.groupValues?.get(1)?.toIntOrNull() ?: 6
+        val next = headings.firstOrNull { it.range.first > current.range.first && ((Regex("""<h(\d)""", RegexOption.IGNORE_CASE).find(it.value)?.groupValues?.get(1)?.toIntOrNull() ?: 6) <= level) }
+        return html.substring(current.range.last + 1, next?.range?.first ?: html.length)
+    }
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val url = when (request.name) {
+            SECTION_EXPLORE -> if (page <= 1) "$mainUrl/tv/" else "$mainUrl/tv/page/$page/"
+            SECTION_MOVIES -> if (page <= 1) "$mainUrl/pelicula/" else "$mainUrl/pelicula/page/$page/"
+            else -> "$mainUrl/"
+        }
+        val html = try { app.get(url, headers = apiHeaders).text } catch (e: Exception) { log("Home HTTP error $url: \${e.message}"); "" }
+        val items = when (request.name) {
+            SECTION_RECENT -> extractLatestEpisodes(sectionHtml(html, SECTION_RECENT).ifBlank { html })
+            SECTION_RESUB -> extractAnimeCards(sectionHtml(html, SECTION_RESUB), "tv")
+            SECTION_MOVIES -> extractAnimeCards(html, "pelicula")
+            SECTION_EXPLORE -> extractAnimeCards(html, "tv")
+            else -> emptyList()
+        }
+        return newHomePageResponse(request.name, items, hasNext = items.isNotEmpty() && items.size >= 18 && request.name in setOf(SECTION_EXPLORE, SECTION_MOVIES))
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        val encoded = URLEncoder.encode(query, "UTF-8")
-        val json = getJson("$mainUrl/api/busqueda?termino=$encoded&pagina=1&limite=30")
-            ?: return emptyList()
-        return parseAnimeList(json)
+        val encoded = URLEncoder.encode(query.trim(), "UTF-8")
+        if (encoded.isBlank()) return emptyList()
+        val urls = listOf("$mainUrl/tv/?q=$encoded", "$mainUrl/tv/?buscar=$encoded", "$mainUrl/tv/?search=$encoded", "$mainUrl/tv/?busqueda=$encoded", "$mainUrl/tv/?s=$encoded", "$mainUrl/?s=$encoded")
+        for (url in urls) {
+            try {
+                val found = extractAnimeCards(app.get(url, headers = apiHeaders).text, "tv")
+                if (found.isNotEmpty()) return found
+            } catch (e: Exception) { log("Search failed $url: \${e.message}") }
+        }
+        return emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse? {
-
-        val slug = url
-            .substringAfter("/anime/", "")
-            .substringBefore("/episodio/")
-            .substringBefore("?")
-            .substringBefore("#")
-            .trim()
-            .removeSuffix("/")
-
-        if (slug.isBlank()) return null
-
-        // Las dos requests no dependen una de la otra -> en paralelo
-        val (animeJson, episodesJson) = coroutineScope {
-            val a = async { getJson("$mainUrl/api/animes/$slug") }
-            val e = async { getJson("$mainUrl/api/animes/$slug/episodios") }
-            a.await() to e.await()
+        val path = pathOf(url).trimEnd('/')
+        val match = Regex("""^/(tv|pelicula)/([^/]+)$""", RegexOption.IGNORE_CASE).matchEntire(path) ?: return null
+        val kind = match.groupValues[1].lowercase()
+        val slug = match.groupValues[2]
+        val pageUrl = "$mainUrl/$kind/$slug/"
+        val html = try { app.get(pageUrl, headers = apiHeaders).text } catch (e: Exception) { log("Load failed $pageUrl: \${e.message}"); return null }
+        val title = Regex("""<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)?.let(::cleanHtml)
+            ?: Regex("""<title[^>]*>([\s\S]*?)</title>""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)?.let(::cleanHtml)
+            ?: titleFromSlug(slug)
+        val poster = Regex("""<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)?.let(::absoluteAnimeUrl)
+        val plot = Regex("""<meta[^>]+name=["']description["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)?.let(::cleanHtml)
+        if (kind == "pelicula") return newMovieLoadResponse(title, pageUrl, TvType.AnimeMovie, "movie|$pageUrl|$title") {
+            posterUrl = poster
+            this.plot = plot
         }
 
-        val anime = animeJson
-            ?.optJSONObject("data")
-            ?.optJSONObject("anime")
-            ?: return null
-
-        val titulo = anime.optString("titulo")
-        val tituloEn = anime.optString("tituloIngles")
-        val title = titulo.ifBlank { tituloEn }
-        if (title.isBlank()) return null
-
-        // Los títulos viajan en `data` para que loadLinks no tenga que pedirlos otra vez.
-        val titlesData = listOf(titulo, tituloEn)
-            .joinToString("|") { it.replace("|", " ").trim() }
-
-        val episodeList = (episodesJson
-            ?.optJSONObject("data")
-            ?.optJSONArray("episodios")
-            ?.objects()
-            ?: emptyList())
-            .mapIndexedNotNull { i, ep ->
-
-                val number = ep.optInt("numero", i + 1)
-                if (number <= 0) return@mapIndexedNotNull null
-
-                val epTitle = ep.optString("titulo").ifBlank { "Episodio $number" }
-                val epDesc = ep.optString("descripcion").ifBlank { null }
-                val epPoster = ep.optString("miniatura").ifBlank { null }
-
-                newEpisode("$slug|$number|$titlesData") {
-                    this.name = epTitle
-                    this.episode = number
-                    this.season = 1
-                    this.description = epDesc
-                    this.posterUrl = epPoster
-                }
+        val episodeItems = mutableListOf<Pair<Int, Episode>>()
+        val anchorRe = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
+        val seen = mutableSetOf<String>()
+        for (m in anchorRe.findAll(html)) {
+            val href = Regex("""\bhref\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(m.groupValues[1])?.groupValues?.get(1) ?: continue
+            val epPath = pathOf(absoluteAnimeUrl(href))
+            val epMatch = Regex("""^/(\d+)/anime/([^/]+)/?$""", RegexOption.IGNORE_CASE).matchEntire(epPath) ?: continue
+            if (!seen.add(epPath)) continue
+            val epSlug = epMatch.groupValues[2]
+            val numMatch = Regex("""-capitulo-(\d+)(?:-(5))?(?:-\d{4})?$""", RegexOption.IGNORE_CASE).find(epSlug) ?: continue
+            if (numMatch.groupValues[2].isNotBlank()) continue
+            val number = numMatch.groupValues[1].toIntOrNull() ?: continue
+            val epTitle = cleanHtml(m.groupValues[2]).ifBlank { "Episodio $number" }
+            val titleForAv = title.replace("|", " ").ifBlank { titleFromSlug(slug) }
+            episodeItems += number to newEpisode("$slug|$number|$titleForAv|$epPath") {
+                name = epTitle
+                episode = number
+                season = 1
+                posterUrl = poster
             }
-            .sortedBy { it.episode }
-
-        return newTvSeriesLoadResponse(title, url, TvType.Anime, episodeList) {
-            posterUrl = anime.optString("portada").ifBlank { null }
-            plot = anime.optString("sinopsis").ifBlank { null }
-            year = anime.optInt("anio").takeIf { it > 0 }
+        }
+        val episodes = episodeItems.sortedBy { it.first }.map { it.second }
+        if (episodes.isEmpty()) { log("No episodes found for $pageUrl"); return null }
+        return newTvSeriesLoadResponse(title, pageUrl, TvType.Anime, episodes) {
+            posterUrl = poster
+            this.plot = plot
         }
     }
 
-    /* ------------------------------------------------------------
-     * loadLinks
-     * ------------------------------------------------------------ */
-
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-
-        // formato: slug|episodio|titulo|tituloIngles  (los 2 últimos son opcionales)
+    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+        val sink = LinkSink(callback)
+        if (data.startsWith("movie|")) {
+            val movieUrl = data.split("|", limit = 3).getOrNull(1) ?: return false
+            safely("AnimeYT movie") { loadAnimeYtSources(movieUrl, sink, subtitleCallback) }
+            return sink.count > 0
+        }
         val parts = data.split("|", limit = 4)
         if (parts.size < 2) return false
-
-        val slug = parts[0]
-            .substringAfterLast("/anime/")
-            .substringAfterLast("/")
-            .trim()
-            .removeSuffix("/")
-
+        val slug = parts[0].trim()
         val episodeNumber = parts[1].trim().toIntOrNull() ?: return false
-
-        val titles = parts
-            .drop(2)
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-
-        log("loadLinks slug=$slug ep=$episodeNumber titles=$titles")
-
-        val sink = LinkSink(callback)
-
-        // Todo corre dentro de un único scope: si el usuario sale de la pantalla,
-        // se cancela todo (antes AnimeAV quedaba en un scope suelto sin cancelar).
+        val title = parts.getOrNull(2).orEmpty().trim().ifBlank { titleFromSlug(slug) }
+        val episodePath = parts.getOrNull(3).orEmpty().trim()
         safely("loadLinks") {
             coroutineScope {
-
-                val animeAv = async {
-                    safely("AnimeAV") {
-                        val resolved = titles.ifEmpty { fetchAnimoraTitles(slug) }
-                        if (resolved.isNotEmpty()) {
-                            withTimeoutOrNull(ANIMEAV_TIMEOUT_MS) {
-                                loadAnimeAv(resolved, episodeNumber, sink, subtitleCallback)
-                            }
-                        }
-                    }
-                }
-
-                val animora = async {
-                    safely("Animora") {
-                        loadAnimoraSources(slug, episodeNumber, sink, subtitleCallback)
-                    }
-                }
-
+                val animeAv = async { safely("AnimeAV") { withTimeoutOrNull(ANIMEAV_TIMEOUT_MS) { loadAnimeAv(listOf(title), episodeNumber, sink, subtitleCallback) } } }
+                val animeYt = async { safely("AnimeYT") { loadAnimeYtSources(episodePath.ifBlank { "$mainUrl/tv/$slug/" }, sink, subtitleCallback) } }
                 animeAv.await()
-                animora.await()
+                animeYt.await()
             }
         }
-
-        log("FINAL links=${sink.count}")
+        log("FINAL links=\${sink.count}")
         return sink.count > 0
     }
 
-    private suspend fun fetchAnimoraTitles(slug: String): List<String> {
-        val anime = getJson("$mainUrl/api/animes/$slug")
-            ?.optJSONObject("data")
-            ?.optJSONObject("anime")
-            ?: return emptyList()
-
-        return listOf(anime.optString("titulo"), anime.optString("tituloIngles"))
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
+    private suspend fun loadAnimeYtSources(pageUrl: String, sink: LinkSink, subtitleCallback: (SubtitleFile) -> Unit) {
+        val html = try { app.get(pageUrl, headers = apiHeaders + mapOf("Referer" to "$mainUrl/")).text }
+        catch (e: CancellationException) { throw e }
+        catch (e: Exception) { log("AnimeYT episode fetch failed $pageUrl: \${e.message}"); return }
+        val candidates = linkedSetOf<String>()
+        val attrs = Regex("""<(?:iframe|source|video)\b[^>]*(?:src|data-src)\s*=\s*["']([^"']+)["'][^>]*>""", RegexOption.IGNORE_CASE)
+        for (m in attrs.findAll(html)) {
+            val raw = m.groupValues[1].replace("&amp;", "&").trim()
+            if (raw.isNotBlank() && !raw.startsWith("data:") && !raw.startsWith("javascript:")) candidates += absoluteAnimeUrl(raw)
+        }
+        val quotedUrls = Regex("""https?:\\?/\\?/[^"'<>\s]+""", RegexOption.IGNORE_CASE)
+        for (m in quotedUrls.findAll(html)) {
+            val raw = m.value.replace("\\/", "/").replace("&amp;", "&").trimEnd(',', ';', ')')
+            if (raw.contains("mytsumi.com", true) || raw.contains("ok.ru", true) || raw.contains("mega.nz", true) ||
+                raw.contains("abyssplayer", true) || raw.contains("bysesukior", true) || raw.contains(".m3u8", true) || raw.contains(".mp4", true)) candidates += raw
+        }
+        for (candidate in candidates.take(16)) {
+            if (candidate.contains(".m3u8", true) || candidate.contains(".mp4", true)) {
+                try {
+                    sink.emit(newExtractorLink(source = name, name = "AnimeYT", url = candidate,
+                        type = if (candidate.substringBefore("?").endsWith(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO) {
+                        referer = pageUrl
+                        quality = getQualityFromName(candidate)
+                    }, TAG_ANIMEYT)
+                } catch (e: Exception) { log("Direct link failed: \${e.message}") }
+            } else runExtractor(candidate, listOf(pageUrl, "$mainUrl/", "https://mytsumi.com/").distinct(), TAG_ANIMEYT, sink, subtitleCallback)
+        }
+        log("AnimeYT candidates=\${candidates.size} url=$pageUrl")
     }
-
-    /* ------------------------------------------------------------
-     * Animora
-     * ------------------------------------------------------------ */
-
-    private suspend fun loadAnimoraSources(
-        slug: String,
-        episodeNumber: Int,
-        sink: LinkSink,
-        subtitleCallback: (SubtitleFile) -> Unit
-    ) {
-        val res = withTimeoutOrNull(ANIMORA_API_TIMEOUT_MS) {
-            try {
-                app.get("$mainUrl/api/video/$slug/$episodeNumber/fuentes", headers = apiHeaders)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log("API fuentes ERROR -> ${e.message}")
-                null
-            }
-        }
-
-        if (res == null || !res.isSuccessful) {
-            log("API fuentes sin respuesta válida (${res?.code})")
-            return
-        }
-
-        val fuentes = JSONObject(res.text)
-            .optJSONObject("data")
-            ?.optJSONArray("fuentes")
-            ?.objects()
-            ?: return
-
-        // Dedupe ANTES de extraer: no gastamos requests en embeds repetidos
-        // (ni dentro de Animora ni los que AnimeAV ya reclamó).
-        val servers = fuentes
-            .flatMap { it.optJSONArray("servidores")?.objects() ?: emptyList() }
-            .filter { it.optString("urlVideo").isNotBlank() }
-            .filter { sink.claimEmbed(it.optString("urlVideo")) }
-
-        log("Animora servidores únicos=${servers.size}")
-
-        // Todo en paralelo: HLS directo, Mega y extractores (antes eran 3 pasadas secuenciales).
-        coroutineScope {
-            servers
-                .map { servidor ->
-                    async {
-                        safely("Animora server") {
-                            processAnimoraServer(servidor, sink, subtitleCallback)
-                        }
-                    }
-                }
-                .awaitAll()
-        }
-    }
-
-    private suspend fun processAnimoraServer(
-        servidor: JSONObject,
-        sink: LinkSink,
-        subtitleCallback: (SubtitleFile) -> Unit
-    ) {
-        val urlVideo = servidor.optString("urlVideo")
-        val provider = servidor.optString("proveedor")
-        val qualityValue = servidor.optString("calidad")
-            .filter { it.isDigit() }
-            .toIntOrNull()
-            ?: Qualities.Unknown.value
-
-        // ---- Mega ----
-        if (isMegaServer(provider, urlVideo)) {
-            emitMega(urlVideo, qualityValue, sink)
-            return
-        }
-
-        // ---- HLS directo ----
-        if (isHlsServer(provider, urlVideo)) {
-
-            val hlsReferer = try {
-                val ref = urlVideo.substringAfter("ref=", "").substringBefore("&")
-                if (ref.isNotBlank()) URLDecoder.decode(ref, "UTF-8") else "$mainUrl/"
-            } catch (_: Exception) {
-                "$mainUrl/"
-            }
-
-            sink.emit(
-                newExtractorLink(
-                    name = provider.ifBlank { "HLS" },
-                    source = name,
-                    url = urlVideo,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    referer = hlsReferer
-                    quality = qualityValue
-                },
-                null
-            )
-            return
-        }
-
-        // ---- Extractores de CloudStream ----
-        val hostReferer = try {
-            val uri = URI(urlVideo)
-            val host = uri.host.orEmpty()
-            if (host.isBlank()) "$mainUrl/" else "${uri.scheme ?: "https"}://$host/"
-        } catch (_: Exception) {
-            "$mainUrl/"
-        }
-
-        runExtractor(
-            url = urlVideo,
-            referers = listOf(hostReferer, "$mainUrl/").distinct(),
-            tag = TAG_ANIMORA,
-            sink = sink,
-            subtitleCallback = subtitleCallback
-        )
-    }
-
-    private fun parseMega(url: String): Pair<String, String>? {
-        var handle = ""
-        var key = ""
-
-        val part = MEGA_EMBED.find(url)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-            ?.trimEnd('/')
-
-        if (!part.isNullOrBlank()) {
-            val fragment = part.trimStart('!', '#')
-            val hashIndex = fragment.indexOf('#')
-
-            if (hashIndex > 0) {
-                handle = fragment.substring(0, hashIndex).trim().trimStart('!', '#')
-                key = fragment.substring(hashIndex + 1).trim()
-            } else {
-                val bangIndex = fragment.indexOf('!')
-                if (bangIndex > 0) {
-                    handle = fragment.substring(0, bangIndex).trim()
-                    key = fragment.substring(bangIndex + 1).trim()
-                }
-            }
-        }
-
-        if (handle.isBlank() || key.isBlank()) {
-            MEGA_FALLBACK.find(url)?.let {
-                handle = it.groupValues[1].trim().trimStart('!', '#')
-                key = it.groupValues[2].trim()
-            }
-        }
-
-        return if (handle.isBlank() || key.isBlank()) null else handle to key
-    }
-
+}
     private suspend fun emitMega(urlVideo: String, qualityValue: Int, sink: LinkSink) {
         val (handle, key) = parseMega(urlVideo) ?: run {
             log("MEGA handle/key vacío")

@@ -1,4 +1,4 @@
-package com.animoratv
+package com.animes
 
 import org.json.JSONArray
 import java.io.BufferedInputStream
