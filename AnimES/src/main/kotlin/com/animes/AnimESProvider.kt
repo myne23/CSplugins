@@ -977,12 +977,24 @@ class AnimESProvider : MainAPI() {
         return found
     }
 
-NaN
+    private suspend fun loadAnimeYtSources(
+        pageUrl: String,
+        sink: LinkSink,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ) {
+        val requestedUrl = if (pageUrl.startsWith("http://", true) || pageUrl.startsWith("https://", true)) {
+            pageUrl
+        } else {
+            try { URI(mainUrl).resolve(if (pageUrl.startsWith("/")) pageUrl else "/" + pageUrl).toString() }
+            catch (_: Exception) { mainUrl + "/" + pageUrl.trimStart('/') }
+        }
+        var sourcePage = requestedUrl
+        var html = try {
+            app.get(requestedUrl, headers = apiHeaders + mapOf("Referer" to "$mainUrl/")).text
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { log("AnimeYT page fetch failed " + requestedUrl + ": " + e.message); return }
 
         var candidates = collectSourceUrls(html, sourcePage)
-        // Las fichas de películas a veces apuntan a una ruta de reproducción independiente.
         if (candidates.isEmpty()) {
             val playbackPaths = linkedSetOf<String>()
             val pathRegex = Regex("""(?:https?:\\?/\\?/animeyt\.cc)?(/\d+/anime/[^\s"'<>\\?#]+)""", RegexOption.IGNORE_CASE)
@@ -993,7 +1005,7 @@ NaN
             }
             for (playbackUrl in playbackPaths.take(5)) {
                 val playbackHtml = try {
-                    app.get(playbackUrl, headers = apiHeaders + mapOf("Referer" to pageUrl)).text
+                    app.get(playbackUrl, headers = apiHeaders + mapOf("Referer" to sourcePage)).text
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { continue }
                 val found = collectSourceUrls(playbackHtml, playbackUrl)
@@ -1006,7 +1018,6 @@ NaN
             }
         }
 
-        // MyTsumi es un contenedor de servidores; sus botones contienen las URLs reales.
         val containers = candidates.filter {
             it.contains("mytsumi.com/container.php", true) ||
                 it.contains("mytsumi.com/multiplayer/contenedor.php", true) ||
@@ -1078,6 +1089,7 @@ NaN
         }
         log("AnimeYT candidates=" + candidates.size + " url=" + sourcePage)
     }
+
     private fun parseMega(url: String): Pair<String, String>? {
         var handle = ""
         var key = ""
