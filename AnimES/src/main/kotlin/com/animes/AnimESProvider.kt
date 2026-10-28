@@ -70,8 +70,8 @@ private val AV_CARD = Regex(
     RegexOption.IGNORE_CASE
 )
 private val AV_EMBEDS = Regex("""embeds\s*:\s*\{([\s\S]*?)\}\s*,\s*downloads""", RegexOption.DOT_MATCHES_ALL)
-private val AV_SERVER = Regex("""server\s*:\s*"([^"]+)"\s*,\s*url\s*:\s*"([^"]+)"""")
-private val AV_LANGUAGE_BLOCK = Regex("""(SUB|DUB)\s*:\s*\[([\s\S]*?)\]""", RegexOption.DOT_MATCHES_ALL)
+private val AV_SERVER = Regex("""["']?server["']?\s*:\s*["']([^"']+)["']\s*,\s*["']?url["']?\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+private val AV_LANGUAGE_BLOCK = Regex("""["']?(SUB|DUB)["']?\s*:\s*\[([\s\S]*?)\]""", RegexOption.IGNORE_CASE)
 
 private val MEGA_EMBED = Regex("""mega\.nz/[^?#]*embed/([^?#]+)""", RegexOption.IGNORE_CASE)
 private val MEGA_FALLBACK =
@@ -97,6 +97,22 @@ private fun normalizeTitle(value: String): String =
         .replace(DIACRITICS, "")
         .replace(NON_ALNUM, " ")
         .trim()
+
+private fun inferSeasonNumber(value: String): Int {
+    val normalized = normalizeTitle(value)
+    for (season in 5 downTo 2) {
+        val ordinal = when (season) { 2 -> "2nd"; 3 -> "3rd"; else -> season.toString() + "th" }
+        if (Regex("""\b(?:season|temporada)\s*$season\b|\b$ordinal\s+season\b|\bseason\s+$season\b""").containsMatchIn(normalized)) return season
+    }
+    val slug = value.lowercase().substringBefore("?").trimEnd('/')
+    return when {
+        Regex("""-(?:v|5)$""").containsMatchIn(slug) -> 5
+        Regex("""-(?:iv|4)$""").containsMatchIn(slug) -> 4
+        Regex("""-(?:iii|3)$""").containsMatchIn(slug) -> 3
+        Regex("""-(?:ii|2)$""").containsMatchIn(slug) -> 2
+        else -> 1
+    }
+}
 
 private fun titleWords(normalized: String): Set<String> =
     normalized
@@ -709,9 +725,11 @@ class AnimESProvider : MainAPI() {
             if (numMatch.groupValues[2].isNotBlank() && numMatch.groupValues[2] != "5") continue
             val number = numMatch.groupValues[1].toIntOrNull() ?: continue
             if (number < 1) continue
+            val seasonNumber = inferSeasonNumber("$title $slug")
             items.putIfAbsent(epPath, number to newEpisode("$slug|$number|$safeTitle|$epPath") {
-                name = cleanHtml(m.groupValues[2]).ifBlank { "Episodio $number" }
-                episode = number; season = 1; posterUrl = poster
+                // Evitar textos de botones como "Ver desde el episodio 1".
+                name = "EP $number T$seasonNumber"
+                episode = number; season = seasonNumber; posterUrl = poster
             })
         }
         return items.values.sortedBy { it.first }
@@ -804,18 +822,7 @@ class AnimESProvider : MainAPI() {
         val poster = extractPosterFromHtml(html, canonical)
         val plot = Regex("""<meta[^>]+name=["']description["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.get(1)?.let(::cleanHtml)
-        val normalizedSeries = normalizeTitle("$title $slug")
-        val seasonNumber = when {
-            Regex("""\b(?:season|temporada)\s*3|3rd season\b""").containsMatchIn(normalizedSeries) ||
-                slug.endsWith("-iii") || slug.endsWith("-3") -> 3
-            Regex("""\b(?:season|temporada)\s*2|2nd season\b""").containsMatchIn(normalizedSeries) ||
-                slug.endsWith("-ii") || slug.endsWith("-2") -> 2
-            Regex("""\b(?:season|temporada)\s*4|4th season\b""").containsMatchIn(normalizedSeries) ||
-                slug.endsWith("-iv") || slug.endsWith("-4") -> 4
-            Regex("""\b(?:season|temporada)\s*5|5th season\b""").containsMatchIn(normalizedSeries) ||
-                slug.endsWith("-v") || slug.endsWith("-5") -> 5
-            else -> 1
-        }
+        val seasonNumber = inferSeasonNumber("$title $slug")
         val episodes = linkedMapOf<Int, Episode>()
         val anchors = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
         val safeTitle = title.replace("|", " ")
@@ -1121,16 +1128,15 @@ class AnimESProvider : MainAPI() {
                                         loadUpnShare(rawUrl, sink, animeAvTag)
                                     }
 
-                                "mp4upload", "pdrain", "voe", "byse" ->
+                                else ->
+                                    // No descartar servidores nuevos por su nombre: delegarlos al extractor.
                                     runExtractor(
                                         url = rawUrl,
-                                        referers = listOf("$AV_BASE/"),
+                                        referers = listOf("$AV_BASE/", "$AV_BASE/media/$animeSlug/$episodeNumber"),
                                         tag = animeAvTag,
                                         sink = sink,
                                         subtitleCallback = subtitleCallback
                                     )
-
-                                else -> log("AnimeAV: servidor ignorado=$server idioma=$language")
                             }
                         }
                     }
