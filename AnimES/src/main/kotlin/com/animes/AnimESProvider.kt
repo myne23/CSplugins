@@ -790,29 +790,29 @@ class AnimESProvider : MainAPI() {
         val canonical = "$AV_BASE/media/$slug/"
         val headers = mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")
         val html = try { app.get(canonical, headers = headers).text } catch (_: Exception) { return null }
-        fun metaContent(key: String): String? = Regex("""<meta\\b[^>]*>""", RegexOption.IGNORE_CASE)
+        fun metaContent(key: String): String? = Regex("""<meta\b[^>]*>""", RegexOption.IGNORE_CASE)
             .findAll(html).map { it.value }.firstNotNullOfOrNull { tag ->
-                val metaKey = Regex("""\\b(?:property|name)\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                val metaKey = Regex("""\b(?:property|name)\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                     .find(tag)?.groupValues?.get(1)?.lowercase()
-                if (metaKey != key.lowercase()) null else Regex("""\\bcontent\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                if (metaKey != key.lowercase()) null else Regex("""\bcontent\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                     .find(tag)?.groupValues?.get(1)
             }
         val title = metaContent("og:title")?.let(::cleanHtml)
-            ?.replace(Regex("""\\s*[-|]\\s*AnimeAV1.*$""", RegexOption.IGNORE_CASE), "")
-            ?: Regex("""<title[^>]*>([\\s\\S]*?)</title>""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)?.let(::cleanHtml)
+            ?.replace(Regex("""\s*[-|]\s*AnimeAV1.*$""", RegexOption.IGNORE_CASE), "")
+            ?: Regex("""<title[^>]*>([\s\S]*?)</title>""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)?.let(::cleanHtml)
             ?: titleFromSlug(slug)
         val poster = extractPosterFromHtml(html, canonical)
         val plot = Regex("""<meta[^>]+name=["']description["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.get(1)?.let(::cleanHtml)
         val normalizedSeries = normalizeTitle("$title $slug")
         val seasonNumber = when {
-            Regex("""\\b(?:season|temporada)\\s*3|3rd season\\b""").containsMatchIn(normalizedSeries) ||
+            Regex("""\b(?:season|temporada)\s*3|3rd season\b""").containsMatchIn(normalizedSeries) ||
                 slug.endsWith("-iii") || slug.endsWith("-3") -> 3
-            Regex("""\\b(?:season|temporada)\\s*2|2nd season\\b""").containsMatchIn(normalizedSeries) ||
+            Regex("""\b(?:season|temporada)\s*2|2nd season\b""").containsMatchIn(normalizedSeries) ||
                 slug.endsWith("-ii") || slug.endsWith("-2") -> 2
-            Regex("""\\b(?:season|temporada)\\s*4|4th season\\b""").containsMatchIn(normalizedSeries) ||
+            Regex("""\b(?:season|temporada)\s*4|4th season\b""").containsMatchIn(normalizedSeries) ||
                 slug.endsWith("-iv") || slug.endsWith("-4") -> 4
-            Regex("""\\b(?:season|temporada)\\s*5|5th season\\b""").containsMatchIn(normalizedSeries) ||
+            Regex("""\b(?:season|temporada)\s*5|5th season\b""").containsMatchIn(normalizedSeries) ||
                 slug.endsWith("-v") || slug.endsWith("-5") -> 5
             else -> 1
         }
