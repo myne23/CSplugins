@@ -299,31 +299,40 @@ class AnimESProvider : MainAPI() {
     }
 
     private fun extractPosterFromHtml(html: String, baseUrl: String): String? {
+        fun resolveImage(rawValue: String?): String? {
+            val raw = rawValue.orEmpty().trim().substringBefore(",").substringBefore(" ")
+                .replace("&amp;", "&").replace("\\/", "/")
+            if (raw.isBlank() || raw.startsWith("data:", true) || raw.startsWith("javascript:", true) ||
+                raw.contains("placeholder", true) || raw.contains("blank.", true) ||
+                raw.contains("lazyload", true) || raw.contains("no-image", true) ||
+                raw.contains("default-avatar", true) || raw.contains("transparent", true)) return null
+            val url = try { URI(baseUrl).resolve(raw).toString() } catch (_: Exception) { raw }
+            return url.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
+        }
+
         val metaPatterns = listOf(
-            Regex("""<meta\b[^>]*(?:property|name)=["'](?:og:image|twitter:image|twitter:image:src)["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-            Regex("""<meta\b[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image|twitter:image:src)["']""", RegexOption.IGNORE_CASE)
+            Regex("""<meta\\b[^>]*(?:property|name)=["'](?:og:image|twitter:image|twitter:image:src)["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+            Regex("""<meta\\b[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image|twitter:image:src)["']""", RegexOption.IGNORE_CASE)
         )
         for (regex in metaPatterns) {
-            val raw = regex.find(html)?.groupValues?.get(1)?.replace("&amp;", "&")?.trim().orEmpty()
-            if (raw.isNotBlank() && !raw.startsWith("data:", true)) {
-                val url = try { URI(baseUrl).resolve(raw).toString() } catch (_: Exception) { raw }
-                if (url.startsWith("https://", true)) return url
+            resolveImage(regex.find(html)?.groupValues?.get(1))?.let { return it }
+        }
+
+        val images = Regex("""<img\\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html).map { it.value }.toList()
+        for (img in images) {
+            val attrs = listOf("data-lazy-src", "data-src", "data-original", "data-image", "data-srcset", "srcset", "src")
+            for (attr in attrs) {
+                val raw = Regex("""\\b$attr\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .find(img)?.groupValues?.get(1)
+                resolveImage(raw)?.let { url ->
+                    if (url.contains("placeholder", true) || url.contains("blank.", true)) continue
+                    return url
+                }
             }
         }
-        val images = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html).map { it.value }.toList()
-        for (img in images) {
-            val raw = listOf("data-lazy-src", "data-src", "data-original", "data-srcset", "src")
-                .firstNotNullOfOrNull { attr ->
-                    Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(img)?.groupValues?.get(1)
-                }?.substringBefore(",")?.trim()?.substringBefore(" ")
-                ?.replace("&amp;", "&").orEmpty()
-            if (raw.isBlank() || raw.startsWith("data:", true) ||
-                raw.contains("placeholder", true) || raw.contains("blank.", true) || raw.contains("lazyload", true)) continue
-            val url = try { URI(baseUrl).resolve(raw).toString() } catch (_: Exception) { raw }
-            if (url.startsWith("https://", true) && (url.contains(".jpg", true) || url.contains(".jpeg", true) ||
-                    url.contains(".png", true) || url.contains(".webp", true) || url.contains("wp.com", true) ||
-                    url.contains("cdn.", true) || url.contains("image", true))) return url
-        }
+
+        val cssImages = Regex("""(?:background-image\\s*:\\s*url\\(|data-bg=["']|data-background=["'])([^)"']+)""", RegexOption.IGNORE_CASE)
+        for (match in cssImages.findAll(html)) resolveImage(match.groupValues[1])?.let { return it }
         return null
     }
 
@@ -335,8 +344,11 @@ class AnimESProvider : MainAPI() {
                 val currentPoster = item.posterUrl.orEmpty()
                 val badPoster = currentPoster.isBlank() || currentPoster.startsWith("data:", true) ||
                     currentPoster.contains("placeholder", true) || currentPoster.contains("blank.", true) ||
-                    currentPoster.contains("lazyload", true) || currentPoster.contains("no-image", true)
-                if (!badPoster) return@async item
+                    currentPoster.contains("lazyload", true) || currentPoster.contains("no-image", true) ||
+                    currentPoster.contains("default-avatar", true) || currentPoster.contains("transparent", true)
+                // AnimeAV suele devolver miniaturas vacías o de reemplazo en los listados:
+                // para ese origen validamos la portada real desde la ficha de la serie.
+                if (!badPoster && sourceBase != AV_BASE) return@async item
                 val headers = if (sourceBase == AV_BASE) {
                     mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")
                 } else apiHeaders
@@ -513,10 +525,13 @@ class AnimESProvider : MainAPI() {
             isRelevantSearchTitle(query, result.name) ||
                 normalizeTitle(result.name.removeSuffix(" •AnimeAV")).let { it in aliasTitles || aliasTitles.any(it::contains) }
         }.distinctBy { it.url }
-        if (matched.isNotEmpty()) return matched.sortedByDescending { result ->
-            val title = normalizeTitle(result.name.removeSuffix(" •AnimeAV"))
-            if (title in aliasTitles) 9000 else animeTitleScore(query, result.name)
-        }.take(40)
+        if (matched.isNotEmpty()) {
+            val ordered = matched.sortedByDescending { result ->
+                val title = normalizeTitle(result.name.removeSuffix(" •AnimeAV"))
+                if (title in aliasTitles) 9000 else animeTitleScore(query, result.name)
+            }.take(40)
+            return fillMissingPosters(ordered, AV_BASE)
+        }
 
         // Algunos títulos conocidos en inglés no existen con ese nombre en AnimeAV.
         // Comprobar directamente sus slugs alternativos antes de recorrer el catálogo.
@@ -538,7 +553,7 @@ class AnimESProvider : MainAPI() {
                     } catch (_: Exception) { null }
                 } }.awaitAll().filterNotNull()
             }
-            if (direct.isNotEmpty()) return direct
+            if (direct.isNotEmpty()) return fillMissingPosters(direct, AV_BASE)
         }
 
         // El catálogo de AnimeAV está paginado; si el filtro del sitio no se refleja en el HTML,
@@ -552,8 +567,9 @@ class AnimESProvider : MainAPI() {
                 } catch (_: Exception) { emptyList() }
             } }.awaitAll().flatten()
         }
-        return fallback.filter { isRelevantSearchTitle(query, it.name) }.distinctBy { it.url }
+        val fallbackMatches = fallback.filter { isRelevantSearchTitle(query, it.name) }.distinctBy { it.url }
             .sortedByDescending { animeTitleScore(query, it.name) }.take(40)
+        return fillMissingPosters(fallbackMatches, AV_BASE)
     }
 
     private fun episodeBrowserInfo(html: String): AnimeYtEpisodeBrowser? {
@@ -633,7 +649,9 @@ class AnimESProvider : MainAPI() {
         }
         val html = try { app.get(url, headers = apiHeaders).text } catch (_: Exception) { "" }
         val items = when (request.name) {
-            SECTION_RESUB -> extractAnimeCards(sectionHtml(html, SECTION_RESUB), "tv")
+            // La página /tag/resubido/ no siempre contiene un encabezado "Resubidos";
+            // recortar por heading vaciaba la categoría. Parsear la página completa.
+            SECTION_RESUB -> extractAnimeCards(html, "tv")
             SECTION_MOVIES -> extractAnimeCards(html, "pelicula")
             SECTION_EXPLORE -> extractAnimeCards(html, "tv")
             else -> emptyList()
