@@ -447,8 +447,7 @@ class AnimESProvider : MainAPI() {
                 batch.map { item -> async {
                     try {
                         val html = withTimeoutOrNull(4500) { app.get(item.url, headers = headers).text } ?: ""
-                        val poster = extractPosterFromHtml(html, item.url)
-                        if (!poster.isNullOrBlank()) recovered[item.url] = poster
+                        val poster = extractPosterFromHtml(html, item.url)                        if (!poster.isNullOrBlank()) recovered[item.url] = poster
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
@@ -897,8 +896,7 @@ class AnimESProvider : MainAPI() {
                 val to = (block + 1) * 50
                 episodeItems += parseAnimeYtEpisodes(blockHtml, slug, titleForAv, poster, block + 1).filter { it.first in from..to }
             }
-            if (episodeItems.isEmpty()) episodeItems += initialEpisodes
-        } else {
+            if (episodeItems.isEmpty()) episodeItems += initialEpisodes        } else {
             episodeItems += initialEpisodes
         }
         val dedupedEpisodes = episodeItems.distinctBy { it.second.data }
@@ -1040,6 +1038,14 @@ class AnimESProvider : MainAPI() {
         for (m in urlRegex.findAll(source)) add(m.value)
         val optionsRegex = Regex("""https?:\\?/\\?/(?:www\\?\.)?mytsumi\.com\\?/multiplayer\\?/options\.php[^\s"'<>\\]*""", RegexOption.IGNORE_CASE)
         for (m in optionsRegex.findAll(source)) add(m.value.replace("\\/", "/").replace("\\u002F", "/", ignoreCase = true))
+        // MyTsumi puede aparecer dentro de atributos/JSON escapados y no como una URL
+        // independiente. Normalizar entidades y capturar esos endpoints de forma explícita.
+        val looseMyTsumi = Regex("""(?:https?:)?(?:\\\\?/){2}(?:www\\\\?\\.)?mytsumi\\.com(?:\\\\?/)(?:multiplayer\\\\?/(?:options|contenedor)\\.php|container\\.php)[^\\s"'<>\\\\]*""", RegexOption.IGNORE_CASE)
+        for (m in looseMyTsumi.findAll(source)) {
+            val value = m.value.replace("\\\\/", "/").replace("\\\\u002F", "/", ignoreCase = true)
+                .replace("&amp;", "&")
+            add(if (value.startsWith("//")) "https:$value" else value)
+        }
         return found
     }
 
@@ -1347,8 +1353,7 @@ class AnimESProvider : MainAPI() {
         for (m in pathAttrRegex.findAll(decodedPage)) {
             val raw = m.groupValues.drop(1).firstOrNull { it.isNotBlank() }.orEmpty()
             val absolute = runCatching { URI(sourcePage).resolve(raw).toString() }.getOrDefault(raw)
-            val path = runCatching { URI(absolute).path.orEmpty() }.getOrDefault("")
-            if (Regex("""^/\d+/anime/[^/?#]+/?$""", RegexOption.IGNORE_CASE).matches(path)) {
+            val path = runCatching { URI(absolute).path.orEmpty() }.getOrDefault("")            if (Regex("""^/\d+/anime/[^/?#]+/?$""", RegexOption.IGNORE_CASE).matches(path)) {
                 playbackPaths += URI(absolute).let { it.scheme + "://" + it.authority + path.trimEnd('/') + "/" }
             }
         }
