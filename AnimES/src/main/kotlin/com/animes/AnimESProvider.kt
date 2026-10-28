@@ -316,7 +316,7 @@ class AnimESProvider : MainAPI() {
                     Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(img)?.groupValues?.get(1)
                 }
             }?.let(::absoluteAnimeUrl)
-            found.putIfAbsent(path, newAnimeSearchResponse("\${titleFromSlug(seriesSlug)} - Episodio $number", "$mainUrl/tv/$seriesSlug/", TvType.Anime) {
+            found.putIfAbsent(path, newAnimeSearchResponse("${titleFromSlug(seriesSlug)} - Episodio $number", "$mainUrl/tv/$seriesSlug/", TvType.Anime) {
                 posterUrl = poster
             })
         }
@@ -338,7 +338,7 @@ class AnimESProvider : MainAPI() {
             SECTION_MOVIES -> if (page <= 1) "$mainUrl/pelicula/" else "$mainUrl/pelicula/page/$page/"
             else -> "$mainUrl/"
         }
-        val html = try { app.get(url, headers = apiHeaders).text } catch (e: Exception) { log("Home HTTP error $url: \${e.message}"); "" }
+        val html = try { app.get(url, headers = apiHeaders).text } catch (e: Exception) { log("Home HTTP error $url: ${e.message}"); "" }
         val items = when (request.name) {
             SECTION_RECENT -> extractLatestEpisodes(sectionHtml(html, SECTION_RECENT).ifBlank { html })
             SECTION_RESUB -> extractAnimeCards(sectionHtml(html, SECTION_RESUB), "tv")
@@ -357,7 +357,7 @@ class AnimESProvider : MainAPI() {
             try {
                 val found = extractAnimeCards(app.get(url, headers = apiHeaders).text, "tv")
                 if (found.isNotEmpty()) return found
-            } catch (e: Exception) { log("Search failed $url: \${e.message}") }
+            } catch (e: Exception) { log("Search failed $url: ${e.message}") }
         }
         return emptyList()
     }
@@ -368,7 +368,7 @@ class AnimESProvider : MainAPI() {
         val kind = match.groupValues[1].lowercase()
         val slug = match.groupValues[2]
         val pageUrl = "$mainUrl/$kind/$slug/"
-        val html = try { app.get(pageUrl, headers = apiHeaders).text } catch (e: Exception) { log("Load failed $pageUrl: \${e.message}"); return null }
+        val html = try { app.get(pageUrl, headers = apiHeaders).text } catch (e: Exception) { log("Load failed $pageUrl: ${e.message}"); return null }
         val title = Regex("""<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)?.let(::cleanHtml)
             ?: Regex("""<title[^>]*>([\s\S]*?)</title>""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)?.let(::cleanHtml)
             ?: titleFromSlug(slug)
@@ -429,14 +429,14 @@ class AnimESProvider : MainAPI() {
                 animeYt.await()
             }
         }
-        log("FINAL links=\${sink.count}")
+        log("FINAL links=${sink.count}")
         return sink.count > 0
     }
 
     private suspend fun loadAnimeYtSources(pageUrl: String, sink: LinkSink, subtitleCallback: (SubtitleFile) -> Unit) {
         val html = try { app.get(pageUrl, headers = apiHeaders + mapOf("Referer" to "$mainUrl/")).text }
         catch (e: CancellationException) { throw e }
-        catch (e: Exception) { log("AnimeYT episode fetch failed $pageUrl: \${e.message}"); return }
+        catch (e: Exception) { log("AnimeYT episode fetch failed $pageUrl: ${e.message}"); return }
         val candidates = linkedSetOf<String>()
         val attrs = Regex("""<(?:iframe|source|video)\b[^>]*(?:src|data-src)\s*=\s*["']([^"']+)["'][^>]*>""", RegexOption.IGNORE_CASE)
         for (m in attrs.findAll(html)) {
@@ -457,10 +457,10 @@ class AnimESProvider : MainAPI() {
                         referer = pageUrl
                         quality = getQualityFromName(candidate)
                     }, TAG_ANIMEYT)
-                } catch (e: Exception) { log("Direct link failed: \${e.message}") }
+                } catch (e: Exception) { log("Direct link failed: ${e.message}") }
             } else runExtractor(candidate, listOf(pageUrl, "$mainUrl/", "https://mytsumi.com/").distinct(), TAG_ANIMEYT, sink, subtitleCallback)
         }
-        log("AnimeYT candidates=\${candidates.size} url=$pageUrl")
+        log("AnimeYT candidates=${candidates.size} url=$pageUrl")
     }
 }
     private suspend fun emitMega(urlVideo: String, qualityValue: Int, sink: LinkSink) {
