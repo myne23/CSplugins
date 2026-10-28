@@ -305,33 +305,76 @@ class AnimESProvider : MainAPI() {
             if (raw.isBlank() || raw.startsWith("data:", true) || raw.startsWith("javascript:", true) ||
                 raw.contains("placeholder", true) || raw.contains("blank.", true) ||
                 raw.contains("lazyload", true) || raw.contains("no-image", true) ||
-                raw.contains("default-avatar", true) || raw.contains("transparent", true)) return null
+                raw.contains("default-avatar", true) || raw.contains("transparent", true) ||
+                raw.contains("logo", true) && !raw.contains("cdn.", true)) return null
             val url = try { URI(baseUrl).resolve(raw).toString() } catch (_: Exception) { raw }
             return url.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
         }
 
-        val metaPatterns = listOf(
-            Regex("""<meta\b[^>]*(?:property|name)=["'](?:og:image|twitter:image|twitter:image:src)["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-            Regex("""<meta\b[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image|twitter:image:src)["']""", RegexOption.IGNORE_CASE)
-        )
-        for (regex in metaPatterns) {
-            resolveImage(regex.find(html)?.groupValues?.get(1))?.let { return it }
+        // Los atributos de meta pueden aparecer en distinto orden según la plantilla.
+        val metaTags = Regex("""<meta\\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html)
+        for (tagMatch in metaTags) {
+            val tag = tagMatch.value
+            val key = Regex("""\\b(?:property|name)\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                .find(tag)?.groupValues?.get(1)?.lowercase().orEmpty()
+            if (key !in setOf("og:image", "og:image:url", "twitter:image", "twitter:image:src")) continue
+            val raw = Regex("""\\bcontent\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                .find(tag)?.groupValues?.get(1)
+            resolveImage(raw)?.let { return it }
         }
 
-        val images = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html).map { it.value }.toList()
-        for (img in images) {
-            val attrs = listOf("data-lazy-src", "data-src", "data-original", "data-image", "data-srcset", "srcset", "src")
+        val imageTags = Regex("""<img\\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html)
+        for (imageMatch in imageTags) {
+            val tag = imageMatch.value
+            val attrs = listOf("data-lazy-src", "data-src", "data-original", "data-image", "data-url",
+                "data-srcset", "srcset", "data-bg", "src")
             for (attr in attrs) {
-                val raw = Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-                    .find(img)?.groupValues?.get(1)
-                val url = resolveImage(raw)
-                if (url != null) return url
+                val raw = Regex("""\\b$attr\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .find(tag)?.groupValues?.get(1)
+                val url = resolveImage(raw) ?: continue
+                if (url.contains("placeholder", true) || url.contains("blank.", true)) continue
+                return url
             }
         }
 
-        val cssImages = Regex("""(?:background-image\s*:\s*url\(|data-bg=["']|data-background=["'])([^)"']+)""", RegexOption.IGNORE_CASE)
+        val cssImages = Regex("""(?:background-image\\s*:\\s*url\\(|data-bg=["']|data-background=["'])([^)"']+)""", RegexOption.IGNORE_CASE)
         for (match in cssImages.findAll(html)) resolveImage(match.groupValues[1])?.let { return it }
         return null
+    }
+
+    private fun posterFromImgTag(img: String, baseUrl: String): String? {
+        val attrs = listOf("data-lazy-src", "data-src", "data-original", "data-image", "data-url",
+            "data-srcset", "srcset", "src")
+        for (attr in attrs) {
+            val raw = Regex("""\\b$attr\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                .find(img)?.groupValues?.get(1)?.substringBefore(",")?.trim()?.substringBefore(" ")
+                ?.replace("&amp;", "&") ?: continue
+            if (raw.isBlank() || raw.startsWith("data:", true) || raw.contains("placeholder", true) ||
+                raw.contains("blank.", true) || raw.contains("lazyload", true) ||
+                raw.contains("no-image", true) || raw.contains("transparent", true)) continue
+            val resolved = try { URI(baseUrl).resolve(raw).toString() } catch (_: Exception) { raw }
+            if (resolved.startsWith("http://", true) || resolved.startsWith("https://", true)) return resolved
+        }
+        return null
+    }
+
+    private fun extractPosterNear(html: String, position: Int, baseUrl: String): String? {
+        val beforeStart = (position - 1800).coerceAtLeast(0)
+        val before = html.substring(beforeStart, position)
+        val imageStart = before.lastIndexOf("<img", ignoreCase = true)
+        if (imageStart >= 0) {
+            val absoluteStart = beforeStart + imageStart
+            val tagEnd = html.indexOf(">", absoluteStart)
+            val boundary = maxOf(html.lastIndexOf("</article>", position, ignoreCase = true),
+                html.lastIndexOf("</li>", position, ignoreCase = true))
+            if (tagEnd > absoluteStart && (boundary < absoluteStart)) {
+                posterFromImgTag(html.substring(absoluteStart, tagEnd + 1), baseUrl)?.let { return it }
+            }
+        }
+        val afterEnd = (position + 1200).coerceAtMost(html.length)
+        val after = html.substring(position, afterEnd)
+        val img = Regex("""<img\\b[^>]*>""", RegexOption.IGNORE_CASE).find(after)?.value
+        return img?.let { posterFromImgTag(it, baseUrl) }
     }
 
     private suspend fun fillMissingPosters(items: List<SearchResponse>, sourceBase: String): List<SearchResponse> {
@@ -372,14 +415,15 @@ class AnimESProvider : MainAPI() {
             val number = numMatch.groupValues[1].toIntOrNull() ?: continue
             val seriesSlug = epSlug.replace(Regex("-capitulo-\\d+(?:-\\d+)?(?:-\\d{4})?$"), "")
             if (seriesSlug.isBlank()) continue
-            val poster = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(m.groupValues[2])?.value?.let { img ->
-                listOf("data-src", "data-lazy-src", "data-original", "src").firstNotNullOfOrNull { attr ->
-                    Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(img)?.groupValues?.get(1)
-                }
-            }?.let(::absoluteAnimeUrl)
-            found.putIfAbsent(path, newAnimeSearchResponse("${titleFromSlug(seriesSlug)} - Episodio $number", "$mainUrl/tv/$seriesSlug/", TvType.Anime) {
+            val poster = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(m.groupValues[2])?.value
+                ?.let { posterFromImgTag(it, mainUrl) }
+                ?: extractPosterNear(html, m.range.first, mainUrl)
+            val item = newAnimeSearchResponse("${titleFromSlug(seriesSlug)} - Episodio $number", "$mainUrl/tv/$seriesSlug/", TvType.Anime) {
                 posterUrl = poster
-            })
+            }
+            val previous = found[path]
+            if (previous == null) found[path] = item
+            else if (previous.posterUrl.isNullOrBlank() && !poster.isNullOrBlank()) previous.posterUrl = poster
         }
         return found.values.toList()
     }
@@ -387,33 +431,43 @@ class AnimESProvider : MainAPI() {
     private data class AnimeYtEpisodeBrowser(val animeId: String, val blocks: Int, val endpoint: String)
 
     private fun extractAnimeAvCards(html: String): List<SearchResponse> {
-        val titles = linkedMapOf<String, String>()
-        val headingRe = Regex("""<h[1-4][^>]*>\s*<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
-        for (m in headingRe.findAll(html)) {
-            val href = Regex("""\bhref\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(m.groupValues[1])?.groupValues?.get(1) ?: continue
-            val p = try { URI(AV_BASE).resolve(href).path?.trimEnd('/') ?: href } catch (_: Exception) { href }
-            val t = cleanHtml(m.groupValues[2])
-            if (t.isNotBlank()) titles.putIfAbsent(p, t)
-        }
-        val found = linkedMapOf<String, SearchResponse>()
-        val anchors = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
+        data class Card(var title: String, var poster: String?)
+        val found = linkedMapOf<String, Card>()
+        val anchors = Regex("""<a\\b([^>]*)>([\\s\\S]*?)</a>""", RegexOption.IGNORE_CASE)
         for (m in anchors.findAll(html)) {
-            val href = Regex("""\bhref\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(m.groupValues[1])?.groupValues?.get(1) ?: continue
+            val href = Regex("""\\bhref\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                .find(m.groupValues[1])?.groupValues?.get(1) ?: continue
             val p = try { URI(AV_BASE).resolve(href).path?.trimEnd('/') ?: href } catch (_: Exception) { href }
             val match = Regex("""^/media/([^/]+)$""", RegexOption.IGNORE_CASE).matchEntire(p) ?: continue
             val slug = match.groupValues[1]
             val inner = m.groupValues[2]
-            val title = titles[p].orEmpty().ifBlank {
-                Regex("""<img\b[^>]*\balt\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(inner)?.groupValues?.get(1)?.let(::cleanHtml).orEmpty()
-            }.ifBlank { titleFromSlug(slug) }
-            val poster = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(inner)?.value?.let { img ->
-                listOf("data-src", "data-lazy-src", "data-original", "src").firstNotNullOfOrNull { attr ->
-                    Regex("""\b$attr\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(img)?.groupValues?.get(1)
-                }
-            }?.let { try { URI(AV_BASE).resolve(it).toString() } catch (_: Exception) { it } }
-            found.putIfAbsent(slug, newAnimeSearchResponse("$title •AnimeAV", "$AV_BASE/media/$slug/", TvType.Anime) { posterUrl = poster })
+            val img = Regex("""<img\\b[^>]*>""", RegexOption.IGNORE_CASE).find(inner)?.value
+            val alt = img?.let {
+                Regex("""\\balt\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1)
+            }?.let(::cleanHtml)?.replace(Regex("""^(?:portada|p[oó]ster|poster)\\s+(?:de\\s+)?""", RegexOption.IGNORE_CASE), "")?.trim().orEmpty()
+            val anchorText = cleanHtml(inner).takeIf { it.isNotBlank() && !it.equals(alt, true) }.orEmpty()
+            val title = when {
+                anchorText.isNotBlank() && !anchorText.startsWith("Ver ", true) -> anchorText
+                alt.isNotBlank() -> alt
+                else -> titleFromSlug(slug)
+            }
+            val poster = img?.let { posterFromImgTag(it, AV_BASE) }
+                ?: extractPosterNear(html, m.range.first, AV_BASE)
+            val previous = found[slug]
+            if (previous == null) {
+                found[slug] = Card(title, poster)
+            } else {
+                if (previous.poster.isNullOrBlank() && !poster.isNullOrBlank()) previous.poster = poster
+                if ((previous.title.isBlank() || previous.title.startsWith("Portada ", true) ||
+                        previous.title.startsWith("Póster ", true) || previous.title.startsWith("Poster ", true)) &&
+                    title.isNotBlank()) previous.title = title
+            }
         }
-        return found.values.toList()
+        return found.map { (slug, card) ->
+            newAnimeSearchResponse("\${card.title} •AnimeAV", "$AV_BASE/media/$slug/", TvType.Anime) {
+                posterUrl = card.poster
+            }
+        }
     }
 
     private fun extractAnimeAvLatestEpisodes(html: String): List<SearchResponse> {
@@ -496,18 +550,48 @@ class AnimESProvider : MainAPI() {
             "link click" to listOf("shiguang-dailiren", "shiguang-dailiren-ii", "shiguang-dailiren-iii"),
             "linkclick" to listOf("shiguang-dailiren", "shiguang-dailiren-ii", "shiguang-dailiren-iii")
         )
-        val queryForms = linkedSetOf(query.trim())
-        aliases[normalizeTitle(query).replace(" ", "")]?.let(queryForms::addAll)
-        aliases[normalizeTitle(query)]?.let(queryForms::addAll)
+        val queryKey = normalizeTitle(query)
+        val directSlugs = directAliasSlugs[queryKey] ?: directAliasSlugs[queryKey.replace(" ", "")].orEmpty()
         val headers = mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")
+        // Los alias conocidos se consultan primero: evita lanzar decenas de búsquedas
+        // que no filtran el catálogo y después abrir cada ficha por separado.
+        if (directSlugs.isNotEmpty()) {
+            val direct = coroutineScope {
+                directSlugs.map { slug -> async {
+                    val url = "$AV_BASE/media/$slug/"
+                    try {
+                        val response = withTimeoutOrNull(6000) { app.get(url, headers = headers) } ?: return@async null
+                        if (!response.isSuccessful) return@async null
+                        val html = response.text
+                        val pageTitle = Regex("""<meta\\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html)
+                            .map { it.value }
+                            .firstNotNullOfOrNull { tag ->
+                                val key = Regex("""\\b(?:property|name)\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                                    .find(tag)?.groupValues?.get(1)?.lowercase()
+                                if (key != "og:title") null else Regex("""\\bcontent\\s*=\\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                                    .find(tag)?.groupValues?.get(1)?.let(::cleanHtml)
+                            }?.replace(Regex("""\\s*[-|]\\s*AnimeAV1.*$""", RegexOption.IGNORE_CASE), "")
+                                ?: titleFromSlug(slug)
+                        newAnimeSearchResponse("$pageTitle •AnimeAV", url, TvType.Anime) {
+                            posterUrl = extractPosterFromHtml(html, url)
+                        }
+                    } catch (_: Exception) { null }
+                } }.awaitAll().filterNotNull()
+            }
+            if (direct.isNotEmpty()) return direct
+        }
+
+        val queryForms = linkedSetOf(query.trim())
+        aliases[queryKey.replace(" ", "")]?.let(queryForms::addAll)
+        aliases[queryKey]?.let(queryForms::addAll)
         val urls = queryForms.flatMap { form ->
             val encoded = URLEncoder.encode(form, "UTF-8")
-            listOf("$AV_BASE/catalogo?search=$encoded", "$AV_BASE/catalogo?q=$encoded", "$AV_BASE/catalogo?buscar=$encoded", "$AV_BASE/catalogo?s=$encoded", "$AV_BASE/?s=$encoded", "$AV_BASE/?q=$encoded")
+            listOf("$AV_BASE/catalogo?search=$encoded", "$AV_BASE/catalogo?q=$encoded")
         }.distinct()
         val results = coroutineScope {
             urls.map { url -> async {
                 try {
-                    val html = withTimeoutOrNull(8000) { app.get(url, headers = headers).text } ?: ""
+                    val html = withTimeoutOrNull(6500) { app.get(url, headers = headers).text } ?: ""
                     extractAnimeAvCards(html)
                 } catch (_: Exception) { emptyList() }
             } }.awaitAll().flatten()
@@ -517,7 +601,6 @@ class AnimESProvider : MainAPI() {
             "linkclick" to setOf("shiguang dailiren", "shiguang dailiren ii", "shiguang dailiren iii"),
             "the daily life of the immortal king" to setOf("xian wang de richang shenghuo")
         )
-        val queryKey = normalizeTitle(query)
         val aliasTitles = aliasesForQuery[queryKey] ?: aliasesForQuery[queryKey.replace(" ", "")].orEmpty()
         val matched = results.filter { result ->
             isRelevantSearchTitle(query, result.name) ||
@@ -528,30 +611,7 @@ class AnimESProvider : MainAPI() {
                 val title = normalizeTitle(result.name.removeSuffix(" •AnimeAV"))
                 if (title in aliasTitles) 9000 else animeTitleScore(query, result.name)
             }.take(40)
-            return fillMissingPosters(ordered, AV_BASE)
-        }
-
-        // Algunos títulos conocidos en inglés no existen con ese nombre en AnimeAV.
-        // Comprobar directamente sus slugs alternativos antes de recorrer el catálogo.
-        val directSlugs = directAliasSlugs[queryKey] ?: directAliasSlugs[queryKey.replace(" ", "")].orEmpty()
-        if (directSlugs.isNotEmpty()) {
-            val direct = coroutineScope {
-                directSlugs.map { slug -> async {
-                    val url = "$AV_BASE/media/$slug/"
-                    try {
-                        val response = withTimeoutOrNull(6000) { app.get(url, headers = headers) } ?: return@async null
-                        if (!response.isSuccessful) return@async null
-                        val pageTitle = Regex("""<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-                            .find(response.text)?.groupValues?.get(1)?.let(::cleanHtml)
-                            ?.replace(Regex("""\s*[-|]\s*AnimeAV1.*$""", RegexOption.IGNORE_CASE), "")
-                            ?: titleFromSlug(slug)
-                        newAnimeSearchResponse("$pageTitle •AnimeAV", url, TvType.Anime) {
-                            posterUrl = extractPosterFromHtml(response.text, url)
-                        }
-                    } catch (_: Exception) { null }
-                } }.awaitAll().filterNotNull()
-            }
-            if (direct.isNotEmpty()) return fillMissingPosters(direct, AV_BASE)
+            return ordered
         }
 
         // El catálogo de AnimeAV está paginado; si el filtro del sitio no se refleja en el HTML,
@@ -567,7 +627,7 @@ class AnimESProvider : MainAPI() {
         }
         val fallbackMatches = fallback.filter { isRelevantSearchTitle(query, it.name) }.distinctBy { it.url }
             .sortedByDescending { animeTitleScore(query, it.name) }.take(40)
-        return fillMissingPosters(fallbackMatches, AV_BASE)
+        return fallbackMatches
     }
 
     private fun episodeBrowserInfo(html: String): AnimeYtEpisodeBrowser? {
@@ -610,7 +670,7 @@ class AnimESProvider : MainAPI() {
             if (number < 1) continue
             items.putIfAbsent(epPath, number to newEpisode("$slug|$number|$safeTitle|$epPath") {
                 name = cleanHtml(m.groupValues[2]).ifBlank { "Episodio $number" }
-                episode = number; season = seasonBlock; posterUrl = poster
+                episode = number; season = 1; posterUrl = poster
             })
         }
         return items.values.sortedBy { it.first }
@@ -753,13 +813,8 @@ class AnimESProvider : MainAPI() {
         return newTvSeriesLoadResponse(title, pageUrl, TvType.Anime, dedupedEpisodes.map { it.second }) {
             posterUrl = poster
             this.plot = plot
-            if (browser != null && browser.blocks > 1) {
-                seasonNames = (0 until browser.blocks).map { block ->
-                    val from = block * 50 + 1
-                    val to = if (block == browser.blocks - 1) maxEpisode else minOf((block + 1) * 50, maxEpisode)
-                    SeasonData(season = block + 1, name = "Capítulos " + from + "-" + to)
-                }
-            }
+            // No convertir los bloques del sitio en temporadas: todos los capítulos
+            // pertenecen a la temporada 1 y CloudStream agrupa la lista por rangos.
         }
     }
 
