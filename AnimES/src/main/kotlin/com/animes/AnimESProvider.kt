@@ -27,7 +27,7 @@ import javax.crypto.spec.SecretKeySpec
  * ==================================================================== */
 
 // Poné true para ver los logs (println) mientras debuggeás.
-private const val DEBUG = false
+private const val DEBUG = true
 
 // Si es true, los links que salen de extractores se etiquetan con su origen
 // ("Voe · Animora" / "Voe · AnimeAV") para distinguir los que parecen repetidos.
@@ -977,12 +977,9 @@ class AnimESProvider : MainAPI() {
         return found
     }
 
-    private suspend fun loadAnimeYtSources(pageUrl: String, sink: LinkSink, subtitleCallback: (SubtitleFile) -> Unit) {
-        var sourcePage = pageUrl
-        var html = try {
-            app.get(pageUrl, headers = apiHeaders + mapOf("Referer" to "$mainUrl/")).text
+NaN
         } catch (e: CancellationException) { throw e }
-        catch (e: Exception) { log("AnimeYT page fetch failed " + pageUrl + ": " + e.message); return }
+        catch (e: Exception) { log("AnimeYT page fetch failed " + requestedUrl + ": " + e.message); return }
 
         var candidates = collectSourceUrls(html, sourcePage)
         // Las fichas de películas a veces apuntan a una ruta de reproducción independiente.
@@ -1215,6 +1212,30 @@ class AnimESProvider : MainAPI() {
         val embeds = AV_EMBEDS.find(res.text)?.groupValues?.get(1) ?: res.text
 
         val servers = linkedSetOf<Triple<String, String, String>>()
+        fun normalizeServerUrl(value: String): String {
+            val decoded = value.replace("\\/", "/").replace("\\u0026", "&", true)
+                .replace("&amp;", "&").trim()
+            return if (decoded.startsWith("//")) "https:$decoded" else decoded
+        }
+        fun addServer(server: String, value: String, language: String) {
+            val url = normalizeServerUrl(value)
+            if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) return
+            if (url.contains("animeav1.com", true) || url.contains("zilla-networks.com", true) ||
+                url.contains("google", true) && url.contains("analytics", true)) return
+            servers += Triple(server.trim(), url, language)
+        }
+        // Hay versiones del reproductor que serializan los servidores como SUB: { HLS: "url" }
+        // en lugar de SUB: [{ server: "HLS", url: "..." }]. Leer también esos pares clave/URL.
+        val namedUrl = Regex(
+            """["']?(HLS|UPNShare|Voe|Byse|Mega|MP4Upload|Archive\.org|OK\.ru|Bysekoze|AbyssPlayer)["']?\s*:\s*["'](https?:\\?/\\?/[^"']+|//[^"']+)["']""",
+            RegexOption.IGNORE_CASE
+        )
+        for (languageMatch in AV_LANGUAGE_BLOCK.findAll(embeds)) {
+            val language = if (languageMatch.groupValues[1].equals("SUB", true)) "SUB" else "LAT"
+            for (match in namedUrl.findAll(languageMatch.groupValues[2])) {
+                addServer(match.groupValues[1], match.groupValues[2], language)
+            }
+        }
         for (languageMatch in AV_LANGUAGE_BLOCK.findAll(embeds)) {
             val language = if (languageMatch.groupValues[1].equals("SUB", true)) "SUB" else "LAT"
             val block = languageMatch.groupValues[2]
@@ -1225,22 +1246,17 @@ class AnimESProvider : MainAPI() {
             for (obj in Regex("""\{[^{}]{0,1800}\}""", RegexOption.DOT_MATCHES_ALL).findAll(block)) {
                 val server = AV_SERVER_FIELD.find(obj.value)?.groupValues?.get(1) ?: continue
                 val rawUrl = AV_URL_FIELD.find(obj.value)?.groupValues?.get(1) ?: continue
-                val decoded = rawUrl.replace("\\/", "/").replace("\\u0026", "&", true)
-                if (decoded.startsWith("http", true) || decoded.startsWith("//"))
-                    servers += Triple(server, if (decoded.startsWith("//")) "https:" + decoded else decoded, language)
+                addServer(server, rawUrl, language)
             }
         }
         if (servers.isEmpty()) {
             for (obj in Regex("""\{[^{}]{0,1800}\}""", RegexOption.DOT_MATCHES_ALL).findAll(embeds)) {
                 val server = AV_SERVER_FIELD.find(obj.value)?.groupValues?.get(1) ?: continue
                 val rawUrl = AV_URL_FIELD.find(obj.value)?.groupValues?.get(1) ?: continue
-                val decoded = rawUrl.replace("\\/", "/").replace("\\u0026", "&", true)
-                if (decoded.startsWith("http", true) || decoded.startsWith("//")) {
-                    val dubAt = embeds.lastIndexOf("DUB", obj.range.first, true)
-                    val subAt = embeds.lastIndexOf("SUB", obj.range.first, true)
-                    val language = if (dubAt > subAt) "LAT" else "SUB"
-                    servers += Triple(server, if (decoded.startsWith("//")) "https:" + decoded else decoded, language)
-                }
+                val dubAt = embeds.lastIndexOf("DUB", obj.range.first, true)
+                val subAt = embeds.lastIndexOf("SUB", obj.range.first, true)
+                val language = if (dubAt > subAt) "LAT" else "SUB"
+                addServer(server, rawUrl, language)
             }
         }
         val uniqueServers = servers.filter { (_, rawUrl, _) -> sink.claimEmbed(rawUrl) }
