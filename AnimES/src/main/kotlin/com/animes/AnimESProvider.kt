@@ -1283,7 +1283,20 @@ class AnimESProvider : MainAPI() {
 
         if (finished == null) log("TIMEOUT extractor $url")
 
-        for (link in collected) sink.emit(link, tag)
+        val hasVoeHls = collected.any {
+            it.name.contains("voe", true) &&
+                !it.name.contains("mp4", true) &&
+                (it.url.contains(".m3u8", true) || it.type == ExtractorLinkType.M3U8)
+        }
+        for (link in collected) {
+            // Si VOE entrega HLS y MP4 del mismo reproductor, conservar HLS.
+            if (tag.contains(TAG_ANIMEAV, true) && hasVoeHls &&
+                link.name.contains("voe mp4", true)) {
+                log("VOE MP4 duplicado ignorado; se conserva HLS")
+                continue
+            }
+            sink.emit(link, tag)
+        }
     }
 
     /* ------------------------------------------------------------
