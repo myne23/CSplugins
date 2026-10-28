@@ -1351,7 +1351,7 @@ class AnimESProvider : MainAPI() {
                 playbackPaths += URI(absolute).let { it.scheme + "://" + it.authority + path.trimEnd('/') + "/" }
             }
         }
-        val rawPathRegex = Regex("""(?:https?:\\?/\\/[^\\s"'<>\\\\]+)?(/\\d+/anime/[^\\s"'<>\\\\?#&]+)""", RegexOption.IGNORE_CASE)
+        val rawPathRegex = Regex("""(?:https?:\\?/\\?/[^\\s"'<>\\]+)?(/\d+/anime/[^\s"'<>\\?#&]+)""", RegexOption.IGNORE_CASE)
         for (m in rawPathRegex.findAll(decodedPage)) {
             val path = m.groupValues[1].trimEnd('/', '\\', ',', '.', ';', ')')
             if (Regex("""^/\d+/anime/[^/]+$""", RegexOption.IGNORE_CASE).matches(path)) {
