@@ -249,6 +249,11 @@ class AnimESProvider : MainAPI() {
             "Accept" to "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", "Referer" to "$mainUrl/")
     private val animeAvSlugCache = ConcurrentHashMap<String, String>()
 
+    // Cache corto para que la sección de recientes conserve el mismo orden al volver
+    // a la pantalla y no repita las peticiones mientras las carátulas terminan de cargar.
+    @Volatile private var recentCacheAt = 0L
+    @Volatile private var recentCacheItems: List<SearchResponse> = emptyList()
+
     private fun cleanHtml(value: String): String = value.replace(HTML_TAG, " ")
         .replace("&nbsp;", " ", ignoreCase = true).replace("&#8211;", "–").replace("&#8212;", "—")
         .replace("&amp;", "&").replace("&quot;", "\"").replace("&#039;", "'").replace("&#39;", "'")
@@ -707,16 +712,30 @@ class AnimESProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (request.name == SECTION_RECENT) {
+            val now = System.currentTimeMillis()
+            val cached = recentCacheItems
+            if (cached.isNotEmpty() && now - recentCacheAt < HOME_CACHE_MS) {
+                return newHomePageResponse(request.name, cached)
+            }
+
             val (ytHtml, avHtml) = coroutineScope {
                 val yt = async { try { app.get("$mainUrl/", headers = apiHeaders).text } catch (_: Exception) { "" } }
                 val av = async { try { app.get("$AV_BASE/", headers = mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")).text } catch (_: Exception) { "" } }
                 yt.await() to av.await()
             }
-            val ytItems = fillMissingPosters(
-                extractLatestEpisodes(sectionHtml(ytHtml, SECTION_RECENT).ifBlank { ytHtml }), mainUrl
-            )
-            val avItems = fillMissingPosters(extractAnimeAvLatestEpisodes(avHtml), AV_BASE)
-            return newHomePageResponse(request.name, (avItems + ytItems).distinctBy { it.url + "|" + it.name })
+
+            // Usar las carátulas del propio HTML de recientes. Antes se abría la ficha de
+            // cada serie en tandas secuenciales para recuperar imágenes, retrasando toda
+            // la categoría y haciendo que la pantalla pareciera reordenarse al actualizar.
+            val ytItems = extractLatestEpisodes(sectionHtml(ytHtml, SECTION_RECENT).ifBlank { ytHtml })
+            val avItems = extractAnimeAvLatestEpisodes(avHtml)
+            val items = (avItems + ytItems).distinctBy { it.url + "|" + it.name }
+
+            if (items.isNotEmpty()) {
+                recentCacheItems = items
+                recentCacheAt = now
+            }
+            return newHomePageResponse(request.name, items)
         }
         val url = when (request.name) {
             SECTION_RESUB -> if (page <= 1) "$mainUrl/tag/resubido/" else "$mainUrl/tag/resubido/page/$page/"
