@@ -1407,7 +1407,30 @@ class AnimESProvider : MainAPI() {
                 }
                 link.headers = streamHeaders
                 sink.emit(link, TAG_ANIMEYT)
-                log("OK.ru playlist HLS encontrada id=$id; headers compatibles con Kino")
+
+                // Mantener el HLS adaptativo y añadir solo un MP4 como respaldo
+                // si ExoPlayer no puede abrir la playlist. No listar todas las calidades.
+                val fallbackVideo = videoEntry.findAll(page).mapNotNull { match ->
+                    val q = quality(match.groupValues[1])
+                    val url = match.groupValues[2].replace("\\/", "/").trim()
+                    if (q <= 0 || url.isBlank()) null else Triple(q, match.groupValues[1], url)
+                }.distinctBy { it.third }.maxByOrNull { it.first }
+                if (fallbackVideo != null) {
+                    val fallback = newExtractorLink(
+                        source = name,
+                        name = "OK.ru · ${fallbackVideo.first}p · AnimeYT",
+                        url = fallbackVideo.third,
+                        type = ExtractorLinkType.VIDEO
+                    ) {
+                        referer = "https://ok.ru/"
+                        quality = fallbackVideo.first
+                    }
+                    fallback.headers = streamHeaders
+                    sink.emit(fallback, TAG_ANIMEYT)
+                    log("OK.ru HLS + respaldo directo ${fallbackVideo.first}p id=$id")
+                } else {
+                    log("OK.ru playlist HLS encontrada id=$id; sin MP4 de respaldo")
+                }
                 return
             }
 
