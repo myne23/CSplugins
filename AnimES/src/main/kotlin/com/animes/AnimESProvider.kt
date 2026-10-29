@@ -1358,13 +1358,13 @@ class AnimESProvider : MainAPI() {
         sink: LinkSink,
         subtitleCallback: (SubtitleFile) -> Unit
     ) {
-        val id = Regex("""/(?:videoembed|video)/(\d+)""", RegexOption.IGNORE_CASE)
+        val id = Regex("""/(?:videoembed|video)/(\\d+)""", RegexOption.IGNORE_CASE)
             .find(runCatching { URI(embedUrl).path.orEmpty() }.getOrDefault(""))?.groupValues?.getOrNull(1)
             ?: return
         val okEmbedUrl = "https://ok.ru/videoembed/$id"
         val collected = ConcurrentLinkedQueue<ExtractorLink>()
 
-        // Primero intentar el extractor oficial de CloudStream.
+        // Primero probar el extractor de CloudStream, conservando sus headers originales.
         val finished = withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
             try {
                 loadExtractor(okEmbedUrl, pageUrl.ifBlank { "$mainUrl/" }, subtitleCallback) { link ->
@@ -1378,38 +1378,36 @@ class AnimESProvider : MainAPI() {
             true
         }
 
-        if (finished == null) {
-            log("OK.ru loadExtractor TIMEOUT id=$id")
-        }
+        if (finished == null) log("OK.ru loadExtractor TIMEOUT id=$id")
 
-        val links = collected
-            .distinctBy { it.url }
-            .sortedByDescending { it.quality }
-
+        val links = collected.distinctBy { it.url }.sortedByDescending { it.quality }
         if (links.isNotEmpty()) {
             for (link in links) {
                 val qualityLabel = link.quality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
-                val normalized = newExtractorLink(
-                    source = name,
-                    name = "OK.ru$qualityLabel",
-                    url = link.url,
-                    type = link.type
-                ) {
-                    referer = link.referer
-                    quality = link.quality
-                    headers = link.headers
-                    extractorData = link.extractorData
-                }
-                sink.emit(normalized, TAG_ANIMEYT)
+                sink.emit(
+                    newExtractorLink(
+                        source = name,
+                        name = "OK.ru$qualityLabel",
+                        url = link.url,
+                        type = link.type
+                    ) {
+                        referer = link.referer.ifBlank { okEmbedUrl }
+                        quality = link.quality
+                        headers = link.headers + mapOf(
+                            "User-Agent" to UA,
+                            "Referer" to link.referer.ifBlank { okEmbedUrl },
+                            "Origin" to "https://ok.ru"
+                        )
+                        extractorData = link.extractorData
+                    },
+                    TAG_ANIMEYT
+                )
             }
-
             log("OK.ru extractor oficial links=${links.size} id=$id")
             return
         }
 
-        // Fallback basado en el resolver funcional de AnimeYT:
-        // leer data-options -> flashvars.metadata -> HLS/MP4, en vez de buscar
-        // hlsManifestUrl directamente en el HTML (normalmente viene dentro de JSON escapado).
+        // Fallback siguiendo el resolver de AnimeYT: data-options -> flashvars.metadata.
         val html = try {
             app.get(
                 okEmbedUrl,
@@ -1428,9 +1426,9 @@ class AnimESProvider : MainAPI() {
 
         fun decodeOkHtml(value: String): String =
             value
-                .replace("&quot;", "\"", ignoreCase = true)
-                .replace("&#34;", "\"", ignoreCase = true)
-                .replace("&#x22;", "\"", ignoreCase = true)
+                .replace("&quot;", "\" ", ignoreCase = true).replace("\" ", "\"")
+                .replace("&#34;", "\" ", ignoreCase = true).replace("\" ", "\"")
+                .replace("&#x22;", "\" ", ignoreCase = true).replace("\" ", "\"")
                 .replace("&apos;", "'", ignoreCase = true)
                 .replace("&#39;", "'", ignoreCase = true)
                 .replace("&#x27;", "'", ignoreCase = true)
@@ -1439,19 +1437,18 @@ class AnimESProvider : MainAPI() {
                 .replace("\\u0026", "&", ignoreCase = true)
 
         val optionsRaw = Regex(
-            """data-options\s*=\s*"([^"]+)"""",
+            """data-options\\s*=\\s*"([^"]+)"""",
             RegexOption.IGNORE_CASE
         ).find(html)?.groupValues?.getOrNull(1)
             ?: Regex(
-                """data-options\s*=\s*'([^']+)'""",
+                """data-options\\s*=\\s*'([^']+)'""",
                 RegexOption.IGNORE_CASE
             ).find(html)?.groupValues?.getOrNull(1)
 
         val metadata = try {
             val options = optionsRaw?.let { JSONObject(decodeOkHtml(it)) }
             val flashvars = options?.optJSONObject("flashvars")
-            val rawMetadata = flashvars?.opt("metadata")
-            when (rawMetadata) {
+            when (val rawMetadata = flashvars?.opt("metadata")) {
                 is JSONObject -> rawMetadata
                 is String -> JSONObject(decodeOkHtml(rawMetadata))
                 else -> null
@@ -1466,97 +1463,48 @@ class AnimESProvider : MainAPI() {
             return
         }
 
+        // Usar exclusivamente HLS: los MP4 de metadata.videos producen HTTP 400
+        // en este caso y solo agregan opciones que no se pueden reproducir.
         val okHeaders = mapOf(
             "User-Agent" to UA,
-            "Referer" to "https://ok.ru/"
+            "Referer" to okEmbedUrl,
+            "Origin" to "https://ok.ru",
+            "Accept" to "*/*"
         )
         val hlsUrl = sequenceOf(
             metadata.optString("hlsManifestUrl"),
             metadata.optString("hlsMasterPlaylistUrl"),
             metadata.optString("ondemandHls")
         ).firstOrNull { candidate ->
-            candidate.startsWith("https://", true) || candidate.startsWith("http://", true)
+            (candidate.startsWith("https://", true) || candidate.startsWith("http://", true)) &&
+                runCatching { URI(candidate).path.orEmpty().contains(".m3u8", true) }.getOrDefault(false)
         }
 
-        val videos = metadata.optJSONArray("videos") ?: JSONArray()
-        val rankedVideos = (0 until videos.length()).mapNotNull { index ->
-            val video = videos.optJSONObject(index) ?: return@mapNotNull null
-            val url = video.optString("url").takeIf {
-                it.startsWith("https://", true) || it.startsWith("http://", true)
-            } ?: return@mapNotNull null
-            val qualityName = video.optString("name").ifBlank { "video" }
-            val qualityRank = when (qualityName.lowercase()) {
-                "mobile" -> 1
-                "lowest" -> 2
-                "low" -> 3
-                "sd" -> 4
-                "hd" -> 5
-                "full" -> 6
-                "quad" -> 7
-                "ultra" -> 8
-                else -> 0
-            }
-            Triple(url, qualityName, qualityRank)
-        }.distinctBy { it.first }.sortedByDescending { it.third }
+        if (hlsUrl.isNullOrBlank()) {
+            log("OK.ru metadata sin HLS m3u8 válido id=$id")
+            return
+        }
 
-        var emitted = 0
-        if (!hlsUrl.isNullOrBlank()) {
-            val hlsUri = runCatching { URI(hlsUrl) }.getOrNull()
-            if (hlsUri != null && hlsUri.host != null &&
-                hlsUri.path.orEmpty().contains(".m3u8", true)
+        val hlsUri = runCatching { URI(hlsUrl) }.getOrNull()
+        if (hlsUri?.host == null) {
+            log("OK.ru HLS URL inválida id=$id")
+            return
+        }
+
+        sink.emit(
+            newExtractorLink(
+                source = name,
+                name = "OK.ru · HLS",
+                url = hlsUrl,
+                type = ExtractorLinkType.M3U8
             ) {
-                sink.emit(
-                    newExtractorLink(
-                        source = name,
-                        name = "OK.ru · HLS",
-                        url = hlsUrl,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        referer = "https://ok.ru/"
-                        quality = Qualities.Unknown.value
-                        headers = okHeaders
-                    },
-                    TAG_ANIMEYT
-                )
-                emitted++
-                log("OK.ru HLS metadata encontrado id=$id host=${hlsUri.host}")
-            }
-        }
-
-        // Los MP4 de metadata.videos quedan disponibles como respaldo si el HLS no abre.
-        for ((url, qualityName, _) in rankedVideos.take(4)) {
-            val qualityValue = when (qualityName.lowercase()) {
-                "mobile" -> 144
-                "lowest" -> 240
-                "low" -> 360
-                "sd" -> 480
-                "hd" -> 720
-                "full" -> 1080
-                "quad" -> 1440
-                "ultra" -> 2160
-                else -> Qualities.Unknown.value
-            }
-            sink.emit(
-                newExtractorLink(
-                    source = name,
-                    name = "OK.ru · $qualityName",
-                    url = url,
-                    type = ExtractorLinkType.VIDEO
-                ) {
-                    referer = "https://ok.ru/"
-                    quality = qualityValue
-                    headers = okHeaders
-                },
-                TAG_ANIMEYT
-            )
-            emitted++
-        }
-
-        if (emitted == 0) {
-            log("OK.ru metadata sin HLS ni MP4 válidos id=$id")
-        } else {
-            log("OK.ru metadata fallback links=$emitted id=$id")
-        }
+                referer = okEmbedUrl
+                quality = Qualities.Unknown.value
+                headers = okHeaders
+            },
+            TAG_ANIMEYT
+        )
+        log("OK.ru HLS metadata encontrado id=$id host=${hlsUri.host}; UA+Referer+Origin configurados; MP4 omitidos")
     }
 
     private suspend fun loadAnimeYtSources(
