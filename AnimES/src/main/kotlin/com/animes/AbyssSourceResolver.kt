@@ -11,14 +11,23 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-internal data class AbyssSource(val url: String, val filename: String, val referer: String)
+internal data class AbyssSource(
+    val url: String,
+    val filename: String,
+    val referer: String,
+    val expectedSize: Long = 0L,
+    val partSize: Long = 0L,
+    val segmented: Boolean = false,
+    val md5Id: String = "",
+    val resId: Int = 0
+)
 internal class ResolveFailure(val code: String, message: String) : Exception(message)
 
 internal object AbyssSourceResolver {
     private const val UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36"
     private val latin1: Charset = Charsets.ISO_8859_1
 
-    fun resolve(ref: String, cancelled: java.util.concurrent.atomic.AtomicBoolean, progress: (Int, String) -> Unit): AbyssSource {
+    fun resolve(ref: String, cancelled: java.util.concurrent.atomic.AtomicBoolean, diagnostic: (String, String) -> Unit = { _, _ -> }, progress: (Int, String) -> Unit): AbyssSource {
         val parts = ref.split(":", limit = 4)
         if (parts.size != 4 || parts[0] != "abyss") throw ResolveFailure("unsupported", "Referencia Abyss inválida / Invalid Abyss reference")
         val rawSlug = parts[1]
@@ -29,13 +38,13 @@ internal object AbyssSourceResolver {
         val parsedEmbed = try { URL(embed) } catch (_: Exception) {
             throw ResolveFailure("unsupported", "URL de Abyss inválida / Invalid Abyss URL")
         }
-        // AnimeYT/MyTsumi entrega el enlace público abyssplayer.com/<slug>, pero
-        // la página con los metadatos cifrados vive en player.abyssplayer.com.
         val embedUrl = if (parsedEmbed.protocol == "https" &&
             (parsedEmbed.host.equals("abyssplayer.com", true) || parsedEmbed.host.equals("www.abyssplayer.com", true))) {
             URL("https", "player.abyssplayer.com", parsedEmbed.port, parsedEmbed.file)
         } else parsedEmbed
-        if (embedUrl.protocol != "https" || embedUrl.host != "player.abyssplayer.com") throw ResolveFailure("unsupported", "El enlace no pertenece a AbyssPlayer / Link is not from AbyssPlayer")
+        if (embedUrl.protocol != "https" || !embedUrl.host.equals("player.abyssplayer.com", true)) {
+            throw ResolveFailure("unsupported", "El enlace no pertenece a AbyssPlayer / Link is not from AbyssPlayer")
+        }
         val normalizedEmbed = embedUrl.toExternalForm()
 
         progress(8, "Abriendo reproductor Abyss… / Opening Abyss player…")
@@ -70,38 +79,258 @@ internal object AbyssSourceResolver {
         val payload = try { JSONObject(plaintext) } catch (_: Exception) {
             throw ResolveFailure("bad_response", "No se pudieron descifrar los metadatos MP4 / Could not decrypt MP4 metadata")
         }
-        val mp4 = payload.optJSONObject("mp4")
-        val sources = mp4?.optJSONArray("sources") ?: JSONArray()
-        val rawObjects = (0 until sources.length()).mapNotNull { sources.optJSONObject(it) }
-        val candidates = rawObjects.filter {
-            val sourceUrl = it.optString("url").trim()
-            val sourcePath = it.optString("path").trim()
-            (sourceUrl.startsWith("https://", true) || sourceUrl.startsWith("http://", true)) &&
-                sourcePath.isNotBlank()
+        // Abyss variants may wrap provider metadata inside a "media" object.
+        // Normalize both shapes before selecting a source.
+        val media = payload.optJSONObject("media") ?: payload
+        val mp4 = media.optJSONObject("mp4")
+        val hls = media.optJSONObject("hls")
+        if (mp4 == null) {
+            val keys = media.keys().asSequence().take(12).toList().joinToString(",")
+            if (hls != null) {
+                val hlsKeys = hls.keys().asSequence().take(12).toList().joinToString(",")
+                val hlsSources = hls.optJSONArray("sources")
+                val metadata = hls.optJSONObject("metadata")
+                val streamsCount = metadata?.optJSONArray("streams")?.length() ?: 0
+                val mediaCount = metadata?.optJSONArray("media")?.length() ?: 0
+                throw ResolveFailure(
+                    "hls_only",
+                    "Abyss parece ofrecer HLS pero no MP4 / HLS detected without MP4; mediaKeys=$keys hlsKeys=$hlsKeys hlsSources=${hlsSources?.length() ?: 0} streams=$streamsCount media=$mediaCount"
+                )
+            }
+            throw ResolveFailure("unavailable", "Abyss no ofrece fuentes MP4 reconocibles / No MP4 sources object; payloadKeys=$keys")
         }
-        if (candidates.isEmpty()) {
-            val payloadKeys = payload.keys().asSequence().toList().sorted().joinToString(",")
-            val mp4Keys = mp4?.keys()?.asSequence()?.toList()?.sorted()?.joinToString(",") ?: "missing"
-            val sourceKeys = rawObjects.take(4).map { obj ->
-                obj.keys().asSequence().toList().sorted().joinToString("+").ifBlank { "empty-object" }
-            }.joinToString(";").ifBlank { "none" }
-            throw ResolveFailure(
-                "unavailable",
-                "Abyss metadata has no usable MP4 source (payloadKeys=$payloadKeys, mp4Keys=$mp4Keys, sourceCount=${sources.length()}, sourceKeys=$sourceKeys)"
+        val sources = mp4.optJSONArray("sources") ?: JSONArray()
+        val rawSources = (0 until sources.length()).mapNotNull { sources.optJSONObject(it) }
+        val firstDatas = mp4.optJSONArray("fristDatas") ?: JSONArray()
+        val domains = mp4.optJSONArray("domains") ?: JSONArray()
+        val firstDataObjects = (0 until firstDatas.length()).mapNotNull { index ->
+            firstDatas.optJSONObject(index)?.let { index to it }
+        }
+        val options = rawSources.map { json ->
+            val resId = json.optInt("res_id", 0)
+            val size = json.optLong("size", 0L)
+            val matched = firstDataObjects.firstOrNull { (_, item) ->
+                item.optInt("res_id", 0) == resId &&
+                    (item.optLong("size", -1L) == size || item.optLong("size", -1L) < 0L)
+            } ?: firstDataObjects.firstOrNull { (_, item) -> item.optInt("res_id", 0) == resId }
+            val dataIndex = matched?.first ?: -1
+            val data = matched?.second
+            var sourceUrl = json.optString("url").takeUnless { it == "null" }.orEmpty()
+            var sourcePath = json.optString("path").takeUnless { it == "null" }.orEmpty()
+            var directUrl = ""
+            if (sourceUrl.isBlank() || sourcePath.isBlank()) {
+                val metadataUrl = data?.optString("url").takeUnless { it == "null" }.orEmpty()
+                val candidate = metadataUrl.ifBlank { sourceUrl }
+                if (candidate.startsWith("https://", true) || candidate.startsWith("//")) {
+                    val absolute = if (candidate.startsWith("//")) "https:$candidate" else candidate
+                    runCatching {
+                        val parsed = URL(absolute)
+                        if (parsed.protocol == "https" && parsed.host.isNotBlank()) {
+                            if (parsed.path.isNullOrBlank() || parsed.path == "/") {
+                                directUrl = absolute
+                            } else {
+                                sourceUrl = "https://${parsed.authority}"
+                                sourcePath = parsed.file.removePrefix("/")
+                            }
+                        }
+                    }
+                } else if (candidate.isNotBlank() && !candidate.startsWith("http://", true)) {
+                    val domainValue = if (dataIndex >= 0) domains.optString(dataIndex).orEmpty() else ""
+                    val domain = domainValue.removePrefix("https://").removePrefix("http://").trim().trimEnd('/')
+                    if (domain.isNotBlank() && !domain.contains('/') && !domain.contains(' ')) {
+                        directUrl = "https://$domain/${candidate.trimStart('/')}"
+                    }
+                }
+            }
+            if (sourcePath.isNotBlank() && sourceUrl.startsWith("https://")) directUrl = ""
+            val allKeys = (json.keys().asSequence().toList() +
+                (data?.keys()?.asSequence()?.map { "fristDatas.$it" }?.toList() ?: emptyList())).distinct()
+            AbyssSourceOption(
+                label = json.optString("label").takeUnless { it == "null" }.orEmpty(),
+                resId = resId,
+                size = size,
+                partSize = data?.optLong("partSize", json.optLong("partSize", 0L)) ?: json.optLong("partSize", 0L),
+                status = json.optBoolean("status", false),
+                path = sourcePath,
+                url = sourceUrl,
+                keys = allKeys,
+                directUrl = directUrl,
+                sub = json.optString("sub").takeUnless { it == "null" }.orEmpty()
             )
         }
-        val wanted = when (quality.lowercase()) { "3", "480", "480p" -> 480; "4", "720", "720p" -> 720; "5", "1080", "1080p" -> 1080; else -> Int.MAX_VALUE }
-        val source = candidates.sortedByDescending { qualityHeight(it) }.firstOrNull { qualityHeight(it) <= wanted }
-            ?: candidates.maxByOrNull { qualityHeight(it) }!!
-        val base = source.getString("url").trimEnd('/')
-        val path = source.getString("path").trimStart('/')
-        val finalUrl = "$base/$path"
-        val filename = URL(finalUrl).path.substringAfterLast('/').ifBlank { path.substringAfterLast('/') }
+        // First preserve the exact v0.2.9 / Actions #40 source selection and URL
+        // construction. Only opt into Sora when that exact legacy candidate is
+        // positively identified as a split first-part URL.
+        val legacyWanted = when (quality.lowercase()) {
+            "3", "480", "480p" -> 480
+            "4", "720", "720p" -> 720
+            "5", "1080", "1080p" -> 1080
+            else -> Int.MAX_VALUE
+        }
+        val legacyCandidates = rawSources.filter {
+            it.optString("url").startsWith("https://") && it.optString("path").isNotBlank()
+        }
+        val legacyJson = legacyCandidates.sortedByDescending { qualityHeight(it) }
+            .firstOrNull { qualityHeight(it) <= legacyWanted }
+            ?: legacyCandidates.maxByOrNull { qualityHeight(it) }
+        if (legacyJson != null) {
+            val legacyBase = legacyJson.getString("url").trimEnd('/')
+            val legacyPath = legacyJson.getString("path").trimStart('/')
+            val legacyUrl = "$legacyBase/$legacyPath"
+            val legacyFilename = URL(legacyUrl).path.substringAfterLast('/').ifBlank { legacyPath.substringAfterLast('/') }
+            val legacyResId = legacyJson.optInt("res_id", 0)
+            val legacySize = legacyJson.optLong("size", 0L)
+            val legacyOption = options.firstOrNull {
+                it.resId == legacyResId && it.path.trimStart('/') == legacyPath && it.url.trimEnd('/') == legacyBase
+            }
+            val legacyPartSize = legacyOption?.partSize ?: 0L
+            val rawDomainLegacy = domains.optString(0).takeUnless { it == "null" }.orEmpty()
+                .removePrefix("https://").removePrefix("http://").trim().trimEnd('/')
+            val suffixLegacy = rawDomainLegacy.substringAfter(".", "")
+            val legacySub = legacyOption?.sub.orEmpty()
+            val legacySoraBase = if (legacySub.isNotBlank() && suffixLegacy.isNotBlank()) "https://$legacySub.$suffixLegacy" else ""
+            val legacyHasSoraMetadata = legacySoraBase.isNotBlank() && legacyPartSize > 0L &&
+                legacySize > legacyPartSize && md5Id.isNotBlank() && legacyResId > 0
+            val legacyProbe = if (legacyHasSoraMetadata) probeDirectCandidate(legacyUrl, referer, legacySize, legacyPartSize, cancelled) else "legacy-direct"
+            val useSoraForLegacySource = legacyHasSoraMetadata &&
+                (legacyProbe == "first-part-only" || legacyProbe == "partial-total-$legacyPartSize")
+            if (!useSoraForLegacySource) {
+                diagnostic("source_transport", "transport=legacy-direct-v029 url=$legacyUrl probe=$legacyProbe")
+                progress(88, "Preparando transmisión segura… / Preparing stream…")
+                if (cancelled.get()) throw ResolveFailure("cancelled", "Resolución cancelada / Resolution cancelled")
+                progress(100, "Fuente encontrada / Source found")
+                return AbyssSource(legacyUrl, legacyFilename, referer)
+            }
+            diagnostic("source_transport", "transport=abyss-sora reason=confirmed-first-part expected=$legacySize partSize=$legacyPartSize resId=$legacyResId")
+            progress(88, "Preparando transmisión segura… / Preparing stream…")
+            if (cancelled.get()) throw ResolveFailure("cancelled", "Resolución cancelada / Resolution cancelled")
+            progress(100, "Fuente encontrada / Source found")
+            return AbyssSource(legacySoraBase, "$md5Id-$legacyResId.mp4", referer, legacySize, legacyPartSize, true, md5Id, legacyResId)
+        }
+        val selection = AbyssSourceSelection.select(options, quality)
+        val selected = selection.selected
+        val diagnosticSummary = AbyssSourceSelection.diagnosticSummary(options, selection)
+        diagnostic("source_selection", diagnosticSummary)
+        if (selected == null) {
+            if (selection.failureCode == "unsupported") {
+                throw ResolveFailure("unsupported", selection.failureMessage ?: "Formato fragmentado no compatible aún / Split format not supported yet")
+            }
+            val mp4Keys = mp4.keys().asSequence().toList().joinToString(",")
+            val domains = describeMetadata(mp4.opt("domains"))
+            val firstDatas = describeMetadata(mp4.opt("fristDatas"))
+            if (hls != null) {
+                val hlsKeys = hls.keys().asSequence().take(12).toList().joinToString(",")
+                val hlsSources = hls.optJSONArray("sources")
+                val metadata = hls.optJSONObject("metadata")
+                val streamsCount = metadata?.optJSONArray("streams")?.length() ?: 0
+                val mediaCount = metadata?.optJSONArray("media")?.length() ?: 0
+                throw ResolveFailure(
+                    "hls_only",
+                    "Abyss no tiene MP4 utilizable; HLS disponible / No usable MP4; HLS metadata found; mp4Keys=$mp4Keys sourceCountBefore=${options.size} sourceCountAfter=0 hlsKeys=$hlsKeys hlsSources=${hlsSources?.length() ?: 0} streams=$streamsCount media=$mediaCount"
+                )
+            }
+            throw ResolveFailure(
+                "unavailable",
+                "No hay fuentes MP4 válidas / No valid MP4 sources; sourceCountBefore=${options.size} sourceCountAfter=0 domains=$domains fristDatas=$firstDatas"
+            )
+        }
+        // Match the reference client exactly: buildSegmentUrl(domains.firstOrNull(), source.sub)
+        // returns https://<sub>.<domain suffix>, where suffix is everything after the first dot.
+        val path = selected.path.trimStart('/')
+        val directCandidate = selected.directUrl.ifBlank { "${selected.url.trimEnd('/')}/$path" }
+        val rawDomain = domains.optString(0).takeUnless { it == "null" }.orEmpty()
+            .removePrefix("https://").removePrefix("http://").trim().trimEnd('/')
+        val domainSuffix = rawDomain.substringAfter(".", "")
+        val soraBase = if (selected.sub.isNotBlank() && domainSuffix.isNotBlank()) {
+            "https://${selected.sub}.$domainSuffix"
+        } else ""
+        // Preserve direct transport only when a tiny Range probe confirms the full MP4.
+        // Some apparently valid file paths expose only the first partSize bytes.
+        val metadataSaysSplit = soraBase.isNotBlank() &&
+            selected.partSize > 0L && selected.size > selected.partSize &&
+            md5Id.isNotBlank() && selected.resId > 0
+        val directProbe = if (metadataSaysSplit) {
+            probeDirectCandidate(directCandidate, referer, selected.size, selected.partSize, cancelled)
+        } else "not-needed"
+        // Keep the commit-40 direct transport as the safe default. Switch to Sora
+        // only when the probe positively identifies a first-part-only URL; transient
+        // probe failures must not silently change a previously working series to Sora.
+        val directIsFirstPartOnly = directProbe == "first-part-only" ||
+            directProbe == "partial-total-${selected.partSize}"
+        val segmented = metadataSaysSplit && directIsFirstPartOnly
+        diagnostic("direct_transport_probe", "result=$directProbe expectedSize=${selected.size} partSize=${selected.partSize} useSora=$segmented decision=${if (segmented) "confirmed-split" else "legacy-direct"}")
+        val segmentBase = if (segmented) soraBase else ""
+        val finalUrl = if (segmented) segmentBase else directCandidate
+        val filename = if (segmented) "$md5Id-${selected.resId}.mp4" else URL(finalUrl).path.substringAfterLast('/').ifBlank { path.substringAfterLast('/') }
         if (!finalUrl.startsWith("https://")) throw ResolveFailure("unsupported", "La fuente no usa HTTPS / Source is not HTTPS")
         progress(88, "Preparando transmisión segura… / Preparing stream…")
         if (cancelled.get()) throw ResolveFailure("cancelled", "Resolución cancelada / Resolution cancelled")
         progress(100, "Fuente encontrada / Source found")
-        return AbyssSource(finalUrl, filename, referer)
+        diagnostic("source_transport", if (segmented) "transport=abyss-sora size=${selected.size} resId=${selected.resId} md5Id=$md5Id domain=${rawDomain.take(100)} sub=${selected.sub} domainSuffix=${domainSuffix.take(100)} base=$segmentBase" else "transport=direct url=$finalUrl")
+        return AbyssSource(finalUrl, filename, referer, selected.size, selected.partSize, segmented, md5Id, selected.resId)
+    }
+
+    /**
+     * Determine whether an apparently direct Abyss URL represents the complete file.
+     * Only request one byte and disconnect without consuming the response body.
+     */
+    private fun probeDirectCandidate(
+        candidate: String,
+        referer: String,
+        expectedSize: Long,
+        partSize: Long,
+        cancelled: java.util.concurrent.atomic.AtomicBoolean
+    ): String {
+        if (cancelled.get()) return "cancelled"
+        val conn = runCatching { URL(candidate).openConnection() as HttpURLConnection }.getOrElse {
+            return "probe-error-${it.javaClass.simpleName}"
+        }
+        return try {
+            conn.connectTimeout = 2500
+            conn.readTimeout = 2500
+            conn.instanceFollowRedirects = true
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("Range", "bytes=0-0")
+            conn.setRequestProperty("User-Agent", UA)
+            conn.setRequestProperty("Referer", referer)
+            conn.setRequestProperty("Origin", "https://player.abyssplayer.com")
+            val code = conn.responseCode
+            val contentRange = conn.getHeaderField("Content-Range").orEmpty()
+            val rangeTotal = Regex("/(\\d+)\\s*$").find(contentRange)?.groupValues?.get(1)?.toLongOrNull()
+            val bodyLength = conn.contentLengthLong
+            when {
+                code == HttpURLConnection.HTTP_PARTIAL && rangeTotal == expectedSize -> "full-range"
+                code in 200..299 && bodyLength == expectedSize -> "full-body"
+                code == HttpURLConnection.HTTP_PARTIAL && rangeTotal == partSize -> "first-part-only"
+                code in 200..299 && bodyLength == partSize -> "first-part-only"
+                code == HttpURLConnection.HTTP_PARTIAL -> "partial-total-${rangeTotal ?: "unknown"}"
+                else -> "http-$code"
+            }
+        } catch (e: Exception) {
+            "probe-error-${e.javaClass.simpleName}"
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun describeMetadata(value: Any?): String {
+        return when (value) {
+            null, JSONObject.NULL -> "null"
+            is JSONObject -> "object(keys=" + value.keys().asSequence().take(12).toList().joinToString(",") + ")"
+            is JSONArray -> {
+                val first = value.opt(0)
+                val firstSummary = when (first) {
+                    is JSONObject -> "object(keys=" + first.keys().asSequence().take(12).toList().joinToString(",") + ")"
+                    is JSONArray -> "array(count=" + first.length() + ")"
+                    is String -> "string(" + first.take(80).replace(" ", "_") + ")"
+                    null, JSONObject.NULL -> "null"
+                    else -> first.javaClass.simpleName
+                }
+                "array(count=${value.length()},first=$firstSummary)"
+            }
+            is String -> "string(" + value.take(80).replace(" ", "_") + ")"
+            else -> value.javaClass.simpleName
+        }
     }
 
     private fun qualityHeight(o: JSONObject): Int {
