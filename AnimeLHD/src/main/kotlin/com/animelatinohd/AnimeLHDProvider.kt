@@ -438,10 +438,18 @@ class AnimeLHDProvider : MainAPI() {
 
         val parts = data.split("|")
         if (parts.size < 2) return false
-        val slug = parts[0].trim()
+        val rawSlug = parts[0].trim()
+        // Algunas versiones de CloudStream pueden entregar el data como URL completa.
+        // El endpoint /ver/ espera únicamente el slug (por ejemplo: link-click).
+        val slug = rawSlug
+            .substringBefore("?")
+            .substringBefore("#")
+            .trimEnd('/')
+            .substringAfterLast('/')
+            .ifBlank { rawSlug }
         val episode = parts[1].trim().toIntOrNull() ?: return false
 
-        log("LOADLINKS START | slug=" + slug + " | episodio=" + episode + " | casting=" + isCasting)
+        log("LOADLINKS START | rawSlug=" + rawSlug + " | slug=" + slug + " | episodio=" + episode + " | casting=" + isCasting)
         val html = fetch("$WEB/ver/$slug/$episode") ?: run {
             log("LOADLINKS ABORT | no se pudo descargar la página")
             return false
