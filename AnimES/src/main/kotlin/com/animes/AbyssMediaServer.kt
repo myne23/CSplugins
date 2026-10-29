@@ -288,6 +288,7 @@ internal class AbyssMediaServer {
         if (now < (soraPrefetchRetryAfter[target.absolutePath] ?: 0L)) return
         if (!soraPrefetchScheduled.add(target.absolutePath)) return
         Thread({
+            var superseded = false
             try {
                 synchronized(target.absolutePath.intern()) {
                     if (target.exists()) return@synchronized
@@ -308,6 +309,7 @@ internal class AbyssMediaServer {
                         }
                     }
                     if (failure is SoraSegmentSupersededException) {
+                        superseded = true
                         diagnostic("upstream_segment_superseded", "index=$index ${failure.message ?: "seek moved"}")
                         File(target.parentFile, target.name + ".part").delete()
                     } else if (failure != null) {
@@ -322,7 +324,7 @@ internal class AbyssMediaServer {
                 diagnostic("upstream_prefetch_error", "index=$index ${e.javaClass.simpleName}: ${e.message ?: "no message"}")
             } finally {
                 // Retry after a short cooldown, not on every polling iteration.
-                if (target.exists() || failure is SoraSegmentSupersededException) soraPrefetchRetryAfter.remove(target.absolutePath)
+                if (target.exists() || superseded) soraPrefetchRetryAfter.remove(target.absolutePath)
                 else soraPrefetchRetryAfter[target.absolutePath] = System.currentTimeMillis() + 1500L
                 soraPrefetchScheduled.remove(target.absolutePath)
             }
