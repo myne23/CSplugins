@@ -1336,6 +1336,71 @@ class AnimESProvider : MainAPI() {
         }
     }
 
+    private suspend fun resolveOkRu(embedUrl: String, pageUrl: String, sink: LinkSink) {
+        val id = Regex("""/(?:videoembed|video)/(\d+)""", RegexOption.IGNORE_CASE)
+            .find(runCatching { URI(embedUrl).path.orEmpty() }.getOrDefault(""))?.groupValues?.getOrNull(1)
+            ?: return
+        val okEmbedUrl = "https://ok.ru/videoembed/$id"
+        val referers = listOf(pageUrl, "$mainUrl/", "https://ok.ru/").distinct()
+        val videoEntry = Regex("""["']name["']\s*:\s*["']([a-z]+)["']\s*,\s*["']url["']\s*:\s*["'](https?://[^"'\\]+)""", RegexOption.IGNORE_CASE)
+        val hlsEntry = Regex("""["'](?:hlsManifestUrl|ondemandHls|hlsMasterPlaylistUrl)["']\s*:\s*["'](https?://[^"'\\]+)""", RegexOption.IGNORE_CASE)
+        fun quality(name: String): Int = when (name.lowercase()) {
+            "mobile" -> 144
+            "lowest" -> 240
+            "low" -> 360
+            "sd" -> 480
+            "hd" -> 720
+            "full" -> 1080
+            "quad" -> 1440
+            "ultra" -> 2160
+            else -> 0
+        }
+        for (ref in referers) {
+            val response = try {
+                app.get(okEmbedUrl, headers = apiHeaders + mapOf("Referer" to ref))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("OK.ru fetch failed: " + e.message)
+                continue
+            }
+            if (!response.isSuccessful) continue
+            val page = response.text
+                .replace("&quot;", "\"", ignoreCase = true)
+                .replace("&amp;", "&", ignoreCase = true)
+                .replace(Regex("""\\+u0026""", RegexOption.IGNORE_CASE), "&")
+                .replace(Regex("""\\+(?:/|u002f)""", RegexOption.IGNORE_CASE), "/")
+                .replace(Regex("""\\+u003d""", RegexOption.IGNORE_CASE), "=")
+            val hls = hlsEntry.find(page)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+            if (!hls.isNullOrBlank()) {
+                sink.emit(newExtractorLink(source = name, name = "OK.ru · HLS", url = hls,
+                    type = ExtractorLinkType.M3U8) {
+                    referer = okEmbedUrl
+                    quality = Qualities.Unknown.value
+                    headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
+                }, TAG_ANIMEYT)
+                log("OK.ru resuelto HLS id=$id")
+                return
+            }
+            val best = videoEntry.findAll(page).mapNotNull { match ->
+                val q = quality(match.groupValues[1])
+                val url = match.groupValues[2].replace("\\/", "/").trim()
+                if (q <= 0 || url.isBlank()) null else Triple(q, match.groupValues[1], url)
+            }.maxByOrNull { it.first }
+            if (best != null) {
+                sink.emit(newExtractorLink(source = name, name = "OK.ru · \${best.first}p", url = best.third,
+                    type = ExtractorLinkType.VIDEO) {
+                    referer = okEmbedUrl
+                    quality = best.first
+                    headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
+                }, TAG_ANIMEYT)
+                log("OK.ru resuelto calidad=\${best.first} id=$id")
+                return
+            }
+        }
+        log("OK.ru sin fuentes reproducibles id=$id")
+    }
+
     private suspend fun loadAnimeYtSources(
         pageUrl: String,
         sink: LinkSink,
@@ -1520,11 +1585,28 @@ class AnimESProvider : MainAPI() {
         }
 
         // Fireload suele presentar páginas HTML de descarga con una falsa extensión .mp4.
-        val usableCandidates = resolvedCandidates.filterNot { candidate ->
+        val filteredCandidates = resolvedCandidates.filterNot { candidate ->
             val uri = runCatching { URI(candidate) }.getOrNull()
             val host = uri?.host.orEmpty().lowercase().removePrefix("www.")
             host == "fireload.com" && Regex("""/[0-9a-f]{12,}/""", RegexOption.IGNORE_CASE).containsMatchIn(uri?.path.orEmpty())
         }.distinct()
+
+        // Si MediaFire ofrece el mismo archivo en varias resoluciones, conservar solo la mejor.
+        val mediafireGroups = filteredCandidates
+            .filter { runCatching { URI(it).host.orEmpty().lowercase().removePrefix("www.") == "mediafire.com" }.getOrDefault(false) }
+            .groupBy { candidate ->
+                val path = runCatching { URI(candidate).path.orEmpty() }.getOrDefault("")
+                val filename = path.split('/').lastOrNull { it.contains(".mp4", true) || it.contains(".mkv", true) || it.contains(".m4v", true) }
+                    .orEmpty()
+                filename.replace(Regex("""(?i)[._ -]?(?:2160|1440|1080|720|480|360)p?(?=\.|$)"""), "")
+                    .lowercase()
+            }
+        val bestMediafire = mediafireGroups.values.mapNotNull { group ->
+            group.maxByOrNull { getQualityFromName(it) }
+        }.toSet()
+        val usableCandidates = filteredCandidates.filterNot {
+            runCatching { URI(it).host.orEmpty().lowercase().removePrefix("www.") == "mediafire.com" }.getOrDefault(false)
+        } + bestMediafire
 
         log("AnimeYT source candidates=" + usableCandidates.joinToString(" || ") { candidate ->
             val uri = runCatching { URI(candidate) }.getOrNull()
@@ -1533,6 +1615,10 @@ class AnimESProvider : MainAPI() {
         for (candidate in usableCandidates) {
             safely("AnimeYT candidate") {
                 when {
+                    runCatching { URI(candidate).host.orEmpty().lowercase().removePrefix("www.") }.getOrDefault("")
+                        .let { it == "ok.ru" || it.endsWith(".ok.ru") } -> {
+                        resolveOkRu(candidate, sourcePage, sink)
+                    }
                     runCatching { URI(candidate).host.orEmpty().lowercase().removePrefix("www.") }.getOrDefault("")
                         .let { it.contains("bysekoze.com") || it.contains("bysesukior.com") || it == "n1mwq.org" || it.endsWith(".n1mwq.org") } -> {
                         resolveBysekoze(candidate, sourcePage, sink)
