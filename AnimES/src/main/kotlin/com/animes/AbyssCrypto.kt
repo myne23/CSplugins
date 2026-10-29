@@ -11,6 +11,16 @@ internal object AbyssCrypto {
         MessageDigest.getInstance("MD5").digest(value.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
 
+    /** Mirrors the reference downloader's getKey(Number): each decimal digit becomes its numeric byte value. */
+    fun md5NumericDigits(value: Long): String {
+        require(value >= 0L) { "Expected a non-negative numeric value" }
+        val digitBytes = value.toString().map { char ->
+            if (char.isDigit()) char.digitToInt().toByte() else char.code.toByte()
+        }.toByteArray()
+        return MessageDigest.getInstance("MD5").digest(digitBytes)
+            .joinToString("") { "%02x".format(it) }
+    }
+
     fun decryptCtr(ciphertext: ByteArray, keyHex: String): ByteArray {
         require(keyHex.length == 32 && keyHex.all { it in "0123456789abcdefABCDEF" }) { "Expected a 32-character MD5 hex key" }
         val key = keyHex.toByteArray(Charsets.US_ASCII)
