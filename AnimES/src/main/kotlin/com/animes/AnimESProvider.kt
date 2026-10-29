@@ -1422,7 +1422,7 @@ class AnimESProvider : MainAPI() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            log("OK.ru HTML fallback ERROR id=$id: \${e.javaClass.simpleName}: \${e.message}")
+            log("OK.ru HTML fallback ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
             return
         }
 
@@ -1457,12 +1457,12 @@ class AnimESProvider : MainAPI() {
                 else -> null
             }
         } catch (e: Exception) {
-            log("OK.ru metadata parse ERROR id=$id: \${e.javaClass.simpleName}: \${e.message}")
+            log("OK.ru metadata parse ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
 
         if (metadata == null) {
-            log("OK.ru sin data-options/metadata válido id=$id html=\${html.length}")
+            log("OK.ru sin data-options/metadata válido id=$id html=${html.length}")
             return
         }
 
@@ -1512,14 +1512,14 @@ class AnimESProvider : MainAPI() {
                         url = hlsUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
-                        referer = okEmbedUrl
+                        referer = "https://ok.ru/"
                         quality = Qualities.Unknown.value
                         headers = okHeaders
                     },
                     TAG_ANIMEYT
                 )
                 emitted++
-                log("OK.ru HLS metadata encontrado id=$id host=\${hlsUri.host}")
+                log("OK.ru HLS metadata encontrado id=$id host=${hlsUri.host}")
             }
         }
 
@@ -1543,7 +1543,7 @@ class AnimESProvider : MainAPI() {
                     url = url,
                     type = ExtractorLinkType.VIDEO
                 ) {
-                    referer = okEmbedUrl
+                    referer = "https://ok.ru/"
                     quality = qualityValue
                     headers = okHeaders
                 },
