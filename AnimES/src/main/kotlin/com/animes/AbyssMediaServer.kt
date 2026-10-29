@@ -8,6 +8,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
 import java.net.HttpURLConnection
+import java.util.concurrent.ConcurrentHashMap
 import android.util.Base64
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -23,11 +24,15 @@ internal class AbyssMediaServer {
     private val random = SecureRandom()
     private val cache = File(System.getProperty("java.io.tmpdir") ?: "/data/local/tmp", "animes-abyss-chunks").apply { mkdirs() }
     @Volatile private var socket: ServerSocket? = null
-    @Volatile private var source: AbyssSource? = null
-    @Volatile private var token: String? = null
-    @Volatile private var probedUrl: String? = null
-    @Volatile private var probedLength: Long = -1L
+    // Varias calidades pueden estar registradas a la vez (token -> fuente). Antes había una sola
+    // fuente global y registrar la 2ª calidad invalidaba el link de la 1ª.
+    private val sources = ConcurrentHashMap<String, AbyssSource>()
+    private val lengths = ConcurrentHashMap<String, Long>()
+    private val tokenByKey = LinkedHashMap<String, String>() // solo se toca dentro de register()
+    private val pathRegex = Regex("^/s/([0-9a-f]+)/video\\.mp4$")
     @Volatile private var layoutProbeUrl: String? = null
+    // Cuántos segmentos Sora se descargan por delante de la reproducción (en paralelo).
+    private val SORA_LOOKAHEAD = 3
     @Volatile var lastActivityMs: Long = System.currentTimeMillis()
         private set
     // Keep direct byte-range reads small so seeking into an uncached area does not wait
@@ -55,17 +60,15 @@ internal class AbyssMediaServer {
     )
 
     @Synchronized fun register(next: AbyssSource): String {
-        // A CDN host is reused across episodes; compare the full source metadata, not just the host URL.
-        val sameContent = source == next
-        if (!sameContent) {
-            probedUrl = null
-            probedLength = -1L
-            layoutProbeUrl = null
-            token = ByteArray(24).also(random::nextBytes).joinToString("") { "%02x".format(it) }
-        } else if (token == null) {
-            token = ByteArray(24).also(random::nextBytes).joinToString("") { "%02x".format(it) }
+        val key = "${next.url}|${next.filename}|${next.resId}|${next.expectedSize}"
+        val token = tokenByKey.getOrPut(key) { ByteArray(24).also(random::nextBytes).joinToString("") { "%02x".format(it) } }
+        sources[token] = next
+        while (tokenByKey.size > 12) {
+            val eldest = tokenByKey.entries.first()
+            tokenByKey.remove(eldest.key)
+            sources.remove(eldest.value)
+            lengths.remove(eldest.value)
         }
-        source = next
         if (socket == null || socket?.isClosed != false) {
             val s = ServerSocket(0, 32, InetAddress.getByName("127.0.0.1"))
             socket = s
@@ -75,10 +78,18 @@ internal class AbyssMediaServer {
                 }
             }.apply { name = "abyss-http"; isDaemon = true }.start()
         }
-        return "http://127.0.0.1:${socket!!.localPort}/s/${token}/video.mp4"
+        // Precalentamiento: baja el primer segmento Sora ahora, así cuando el usuario pulsa
+        // reproducir no se espera el primer byte (evita el timeout de arranque del reproductor).
+        if (next.segmented && next.expectedSize > 0L) scheduleSoraPrefetch(next, 0, next.expectedSize)
+        return "http://127.0.0.1:${socket!!.localPort}/s/$token/video.mp4"
     }
 
-    fun stop() { runCatching { socket?.close() }; socket = null; source = null }
+    fun stop() {
+        runCatching { socket?.close() }
+        socket = null
+        sources.clear(); lengths.clear()
+        synchronized(this) { tokenByKey.clear() }
+    }
 
     private fun serve(sock: Socket) = sock.use { client ->
         var headersSent = false
@@ -102,14 +113,15 @@ internal class AbyssMediaServer {
             val headers = request.drop(1).mapNotNull {
                 val i = it.indexOf(':'); if (i <= 0) null else it.substring(0, i).trim().lowercase() to it.substring(i + 1).trim()
             }.toMap()
-            val expected = "/s/${token}/video.mp4"
             if (method == "OPTIONS") {
                 client.getOutputStream().write("HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, HEAD, OPTIONS\r\nAccess-Control-Allow-Headers: Range\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
                 return
             }
-            if (path.substringBefore('?') != expected || (method != "GET" && method != "HEAD")) { reply(client, 404, "not found"); return }
-            val src = source ?: run { reply(client, 503, "stream unavailable"); return }
-            val total = totalLength(src)
+            val tokenMatch = pathRegex.matchEntire(path.substringBefore('?'))
+            if (tokenMatch == null || (method != "GET" && method != "HEAD")) { reply(client, 404, "not found"); return }
+            val reqToken = tokenMatch.groupValues[1]
+            val src = sources[reqToken] ?: run { reply(client, 404, "unknown stream"); return }
+            val total = totalLength(reqToken, src)
             knownTotal = total
             val range = headers["range"]
             requestRange = range ?: "full"
@@ -205,7 +217,7 @@ internal class AbyssMediaServer {
                     // Overlap the next segment download with playback of this one.
                     // Waiting until this segment is fully downloaded leaves a gap at every boundary.
                     if (part.length() >= minOf(128L * 1024L, maxOf(32L * 1024L, segmentSize / 8L))) {
-                        scheduleSoraPrefetch(src, chunk + 1, total)
+                        scheduleSoraWindow(src, chunk, total)
                     }
                     if (available >= minSoraBatch && prefixReady) {
                         try {
@@ -237,7 +249,7 @@ internal class AbyssMediaServer {
             // Keep exactly one segment ahead. Fetching two complete Sora segments
             // concurrently can compete with the segment requested after a seek and
             // wastes bandwidth/cache on segments the player may never reach.
-            scheduleSoraPrefetch(src, chunk + 1, total)
+            scheduleSoraWindow(src, chunk, total)
             return min(len, (file.length() - inChunk).toInt().coerceAtLeast(0)).also { count ->
                 if (count <= 0) throw IllegalStateException("Sora segment cache has no bytes index=$chunk")
                 java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
@@ -365,6 +377,11 @@ internal class AbyssMediaServer {
      * Download one Sora segment ahead in the background. Playback reads are synchronous,
      * so preparing the next 2 MiB while the current one is consumed hides intermittent CDN stalls.
      */
+    /** Mantiene SORA_LOOKAHEAD segmentos descargándose en paralelo por delante del actual. */
+    private fun scheduleSoraWindow(src: AbyssSource, chunk: Int, total: Long) {
+        for (i in 1..SORA_LOOKAHEAD) scheduleSoraPrefetch(src, chunk + i, total)
+    }
+
     private fun scheduleSoraPrefetch(src: AbyssSource, index: Int, total: Long) {
         val segmentSize = soraSegmentSize(src)
         if (index < 0 || index.toLong() * segmentSize >= total) return
@@ -515,6 +532,7 @@ internal class AbyssMediaServer {
         var code = -1
         var received = 0L
         var retryTemp: File? = null
+        var completed = false
         try {
             code = conn.responseCode
             if (code !in 200..299) throw IllegalStateException("Abyss segment HTTP $code index=$index")
@@ -557,13 +575,16 @@ internal class AbyssMediaServer {
             }
             if (!temp.renameTo(target)) throw IllegalStateException("could not commit Abyss segment cache")
             trimCache(target)
+            completed = true
             diagnostic("upstream_segment_ok", "index=$index status=$code received=$received expected=$expected durationMs=${System.currentTimeMillis() - started}")
         } catch (e: Throwable) {
             retryTemp?.delete()
             diagnostic("upstream_segment_error", "index=$index status=$code received=$received durationMs=${System.currentTimeMillis() - started} ${e.javaClass.simpleName}: ${e.message ?: "no message"}")
             throw e
         } finally {
-            conn.disconnect()
+            // Si el cuerpo se leyó completo NO se desconecta: así HttpURLConnection reutiliza el socket
+            // TLS para el siguiente segmento (antes cada segmento pagaba un handshake nuevo).
+            if (!completed) conn.disconnect()
         }
     }
 
@@ -641,10 +662,10 @@ internal class AbyssMediaServer {
         AbyssCrypto.decryptMp4Prefix(bytes, length, filename)
     }
 
-    private fun totalLength(src: AbyssSource): Long {
-        if (probedUrl == src.url && probedLength > 0L) return probedLength
-        synchronized(this) {
-            if (probedUrl == src.url && probedLength > 0L) return probedLength
+    private fun totalLength(token: String, src: AbyssSource): Long {
+        lengths[token]?.takeIf { it > 0L }?.let { return it }
+        synchronized(token.intern()) {
+            lengths[token]?.takeIf { it > 0L }?.let { return it }
             // Split Abyss/Sora URLs expose individual encrypted segments, not the full MP4.
             // Their full content length is already supplied by the decrypted metadata.
             val length = if (src.segmented) {
@@ -653,8 +674,7 @@ internal class AbyssMediaServer {
             } else {
                 probe(src).first
             }
-            probedUrl = src.url
-            probedLength = length
+            lengths[token] = length
             return length
         }
     }

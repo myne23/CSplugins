@@ -533,7 +533,7 @@ class AnimESProvider : MainAPI() {
             }
         }
         return found.map { (slug, card) ->
-            newAnimeSearchResponse("\${card.title} •AnimeAV", "$AV_BASE/media/$slug/", TvType.Anime) {
+            newAnimeSearchResponse("${card.title} •AnimeAV", "$AV_BASE/media/$slug/", TvType.Anime) {
                 posterUrl = card.poster
             }
         }
@@ -1367,68 +1367,7 @@ class AnimESProvider : MainAPI() {
             .find(runCatching { URI(embedUrl).path.orEmpty() }.getOrDefault(""))?.groupValues?.getOrNull(1)
             ?: return
         val okEmbedUrl = "https://ok.ru/videoembed/$id"
-        val collected = ConcurrentLinkedQueue<ExtractorLink>()
-
-        // Primero probar el extractor de CloudStream, conservando sus headers originales.
-        val finished = withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
-            try {
-                loadExtractor(okEmbedUrl, pageUrl.ifBlank { "$mainUrl/" }, subtitleCallback) { link ->
-                    if (link.url.isNotBlank()) collected.add(link)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log("OK.ru loadExtractor ERROR id=${e.javaClass.simpleName}: ${e.message}")
-            }
-            true
-        }
-
-        if (finished == null) log("OK.ru loadExtractor TIMEOUT id=$id")
-
-        val links = collected.distinctBy { it.url }.sortedByDescending { it.quality }
-        if (links.isNotEmpty()) {
-            for (link in links) {
-                val qualityLabel = link.quality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
-                val linkReferer = link.referer.ifBlank { okEmbedUrl }
-                sink.emit(
-                    newExtractorLink(
-                        source = name,
-                        name = "OK.ru$qualityLabel",
-                        url = link.url,
-                        type = link.type
-                    ) {
-                        referer = linkReferer
-                        quality = link.quality
-                        headers = link.headers + mapOf(
-                            "User-Agent" to UA,
-                            "Referer" to linkReferer,
-                            "Origin" to "https://ok.ru"
-                        )
-                        extractorData = link.extractorData
-                    },
-                    TAG_ANIMEYT
-                )
-            }
-            log("OK.ru extractor oficial links=${links.size} id=$id")
-            return
-        }
-
-        // Fallback siguiendo el resolver de AnimeYT: data-options -> flashvars.metadata.
-        val html = try {
-            app.get(
-                okEmbedUrl,
-                headers = mapOf(
-                    "User-Agent" to UA,
-                    "Referer" to pageUrl.ifBlank { "$mainUrl/" },
-                    "Accept" to "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"
-                )
-            ).text
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            log("OK.ru HTML fallback ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
-            return
-        }
+        val okHeaders = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/", "Accept" to "*/*")
 
         fun decodeOkHtml(value: String): String =
             value
@@ -1442,75 +1381,104 @@ class AnimESProvider : MainAPI() {
                 .replace("\\/", "/")
                 .replace("\\u0026", "&", ignoreCase = true)
 
-        val optionsRaw = Regex(
-            """data-options\s*=\s*"([^"]+)"""",
-            RegexOption.IGNORE_CASE
-        ).find(html)?.groupValues?.getOrNull(1)
-            ?: Regex(
-                """data-options\s*=\s*'([^']+)'""",
-                RegexOption.IGNORE_CASE
-            ).find(html)?.groupValues?.getOrNull(1)
-
+        // 1) HLS desde data-options/flashvars.metadata. Los MP4 de metadata.videos están atados a la
+        //    sesión/IP y fallan con HTTP 400 en el reproductor, así que no se usan.
+        val html = try {
+            app.get(
+                okEmbedUrl,
+                headers = mapOf(
+                    "User-Agent" to UA,
+                    "Referer" to pageUrl.ifBlank { "$mainUrl/" },
+                    "Accept" to "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"
+                )
+            ).text
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log("OK.ru HTML ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
+            ""
+        }
+        val optionsRaw = Regex("""data-options\s*=\s*"([^"]+)"""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.getOrNull(1)
+            ?: Regex("""data-options\s*=\s*'([^']+)'""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.getOrNull(1)
         val metadata = try {
-            val options = optionsRaw?.let { JSONObject(decodeOkHtml(it)) }
-            val flashvars = options?.optJSONObject("flashvars")
-            when (val rawMetadata = flashvars?.opt("metadata")) {
-                is JSONObject -> rawMetadata
-                is String -> JSONObject(decodeOkHtml(rawMetadata))
+            val flashvars = optionsRaw?.let { JSONObject(decodeOkHtml(it)) }?.optJSONObject("flashvars")
+            when (val raw = flashvars?.opt("metadata")) {
+                is JSONObject -> raw
+                is String -> JSONObject(decodeOkHtml(raw))
                 else -> null
             }
         } catch (e: Exception) {
             log("OK.ru metadata parse ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
-
-        if (metadata == null) {
-            log("OK.ru sin data-options/metadata válido id=$id html=${html.length}")
+        val hlsUrl = metadata?.let { m ->
+            sequenceOf(m.optString("hlsManifestUrl"), m.optString("hlsMasterPlaylistUrl"), m.optString("ondemandHls"))
+                .firstOrNull { it.startsWith("http", true) }
+        }
+        if (!hlsUrl.isNullOrBlank()) {
+            // generateM3u8 expande el master en una entrada por calidad (360p/480p/720p...).
+            val variants = try {
+                M3u8Helper.generateM3u8(source = name, streamUrl = hlsUrl, referer = "https://ok.ru/", headers = okHeaders)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("OK.ru generateM3u8 ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
+                emptyList()
+            }
+            if (variants.isNotEmpty()) {
+                for (v in variants.sortedByDescending { it.quality }) {
+                    val label = v.quality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
+                    sink.emit(
+                        newExtractorLink(source = name, name = "OK.ru$label", url = v.url, type = ExtractorLinkType.M3U8) {
+                            referer = "https://ok.ru/"
+                            quality = v.quality
+                            headers = okHeaders
+                        },
+                        TAG_ANIMEYT
+                    )
+                }
+            } else {
+                sink.emit(
+                    newExtractorLink(source = name, name = "OK.ru · HLS", url = hlsUrl, type = ExtractorLinkType.M3U8) {
+                        referer = "https://ok.ru/"
+                        quality = Qualities.Unknown.value
+                        headers = okHeaders
+                    },
+                    TAG_ANIMEYT
+                )
+            }
+            log("OK.ru HLS id=$id variantes=${variants.size}")
             return
         }
 
-        // Usar exclusivamente HLS: los MP4 de metadata.videos producen HTTP 400
-        // en este caso y solo agregan opciones que no se pueden reproducir.
-        val okHeaders = mapOf(
-            "User-Agent" to UA,
-            "Referer" to okEmbedUrl,
-            "Origin" to "https://ok.ru",
-            "Accept" to "*/*"
-        )
-        val hlsUrl = sequenceOf(
-            metadata.optString("hlsManifestUrl"),
-            metadata.optString("hlsMasterPlaylistUrl"),
-            metadata.optString("ondemandHls")
-        ).firstOrNull { candidate ->
-            (candidate.startsWith("https://", true) || candidate.startsWith("http://", true)) &&
-                runCatching { URI(candidate).path.orEmpty().contains(".m3u8", true) }.getOrDefault(false)
+        // 2) Respaldo: extractor oficial de CloudStream, sin el header Origin extra.
+        val collected = ConcurrentLinkedQueue<ExtractorLink>()
+        val finished = withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
+            try {
+                loadExtractor(okEmbedUrl, pageUrl.ifBlank { "$mainUrl/" }, subtitleCallback) { link ->
+                    if (link.url.isNotBlank()) collected.add(link)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("OK.ru loadExtractor ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
+            }
+            true
         }
-
-        if (hlsUrl.isNullOrBlank()) {
-            log("OK.ru metadata sin HLS m3u8 válido id=$id")
-            return
+        if (finished == null) log("OK.ru loadExtractor TIMEOUT id=$id")
+        for (link in collected.distinctBy { it.url }.sortedByDescending { it.quality }) {
+            val label = link.quality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
+            sink.emit(
+                newExtractorLink(source = name, name = "OK.ru$label", url = link.url, type = link.type) {
+                    referer = "https://ok.ru/"
+                    quality = link.quality
+                    headers = okHeaders
+                    extractorData = link.extractorData
+                },
+                TAG_ANIMEYT
+            )
         }
-
-        val hlsUri = runCatching { URI(hlsUrl) }.getOrNull()
-        if (hlsUri?.host == null) {
-            log("OK.ru HLS URL inválida id=$id")
-            return
-        }
-
-        sink.emit(
-            newExtractorLink(
-                source = name,
-                name = "OK.ru · HLS",
-                url = hlsUrl,
-                type = ExtractorLinkType.M3U8
-            ) {
-                referer = okEmbedUrl
-                quality = Qualities.Unknown.value
-                headers = okHeaders
-            },
-            TAG_ANIMEYT
-        )
-        log("OK.ru HLS metadata encontrado id=$id host=${hlsUri.host}; UA+Referer+Origin configurados; MP4 omitidos")
+        log("OK.ru extractor respaldo links=${collected.size} id=$id")
     }
 
     private suspend fun loadAnimeYtSources(
@@ -1732,27 +1700,32 @@ class AnimESProvider : MainAPI() {
                         val encodedUrl = URLEncoder.encode(candidate, "UTF-8")
                         val referer = sourcePage.ifBlank { "https://mytsumi.com/" }
                         val encodedReferer = URLEncoder.encode(referer, "UTF-8")
-                        val ref = "abyss:$encodedUrl:720:$encodedReferer"
-                        val parsed = withContext(Dispatchers.IO) {
-                            AbyssSourceResolver.resolve(ref, AtomicBoolean(false)) { progress, message ->
-                                log("Abyss progress=$progress $message")
-                            }
+                        val ref = "abyss:$encodedUrl:best:$encodedReferer"
+                        val qualities = withContext(Dispatchers.IO) {
+                            AbyssSourceResolver.resolveAll(
+                                ref,
+                                AtomicBoolean(false),
+                                { stage, detail -> log("Abyss $stage: $detail") }
+                            ) { progress, message -> log("Abyss progress=$progress $message") }
                         }
-                        if (parsed.hlsUrl.isNotBlank()) {
-                            // Native HLS is used only when the resolver explicitly found a playlist
-                            // for a confirmed split-Sora source. Direct MP4 sources keep the old path.
-                            log("Abyss HLS explícito detectado; usando reproductor nativo playlist=" + parsed.hlsUrl.substringBefore("?").take(180))
-                            sink.emit(newExtractorLink(source = name, name = "AbyssPlayer · HLS", url = parsed.hlsUrl,
+                        // HLS nativo solo si el resolver encontró una playlist explícita (Sora fragmentado).
+                        qualities.firstOrNull { it.source.hlsUrl.isNotBlank() }?.source?.let { hlsSource ->
+                            log("Abyss HLS explícito detectado; playlist=" + hlsSource.hlsUrl.substringBefore("?").take(180))
+                            sink.emit(newExtractorLink(source = name, name = "AbyssPlayer · HLS", url = hlsSource.hlsUrl,
                                 type = ExtractorLinkType.M3U8) {
-                                quality = 720
-                                headers = mapOf("Referer" to parsed.referer, "User-Agent" to UA)
+                                quality = Qualities.Unknown.value
+                                headers = mapOf("Referer" to hlsSource.referer, "User-Agent" to UA)
                             }, TAG_ANIMEYT)
-                        } else {
-                            val localUrl = abyssMediaServer.register(parsed)
-                            log("Abyss resuelto; servidor local listo filename=${parsed.filename}")
-                            sink.emit(newExtractorLink(source = name, name = "AbyssPlayer", url = localUrl,
+                        }
+                        // Un link por resolución (antes se forzaba una sola y quality=720 fijo).
+                        for (q in qualities) {
+                            if (q.source.hlsUrl.isNotBlank()) continue
+                            val localUrl = abyssMediaServer.register(q.source)
+                            log("Abyss resuelto; ${q.height}p servidor local listo filename=${q.source.filename} sora=${q.source.segmented}")
+                            val label = if (q.height > 0) " · ${q.height}p" else ""
+                            sink.emit(newExtractorLink(source = name, name = "AbyssPlayer$label", url = localUrl,
                                 type = ExtractorLinkType.VIDEO) {
-                                quality = 720
+                                quality = if (q.height > 0) q.height else Qualities.Unknown.value
                             }, TAG_ANIMEYT)
                         }
                     }
@@ -1926,19 +1899,31 @@ class AnimESProvider : MainAPI() {
 
         // Antes: media page (HTML pesado + regex) -> episode page.
         // Ahora vamos directo a la página del episodio; si no existe, devuelve 404.
-        val res = app.get(
-            "$AV_BASE/media/$animeSlug/$episodeNumber",
-            headers = mapOf("User-Agent" to UA)
-        )
-
-        if (!res.isSuccessful) {
-            log("AnimeAV: episodio HTTP=${res.code}")
-            return
+        var page: String? = null
+        for (epUrl in listOf("$AV_BASE/media/$animeSlug/$episodeNumber", "$AV_BASE/media/$animeSlug/$episodeNumber/")) {
+            val r = try {
+                app.get(
+                    epUrl,
+                    headers = mapOf(
+                        "User-Agent" to UA,
+                        "Accept-Language" to "es-ES,es;q=0.9",
+                        "Referer" to "$AV_BASE/media/$animeSlug/"
+                    )
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("AnimeAV: episodio $epUrl ERROR ${e.javaClass.simpleName}: ${e.message}")
+                continue
+            }
+            log("AnimeAV: episodio $epUrl HTTP=${r.code}")
+            if (r.isSuccessful) { page = r.text; break }
         }
+        if (page == null) return
 
         // Si cambió el envoltorio JS de "embeds", buscar SUB/DUB en toda la página
         // en vez de descartar el episodio antes de inspeccionar sus servidores.
-        val embeds = AV_EMBEDS.find(res.text)?.groupValues?.get(1) ?: res.text
+        val embeds = AV_EMBEDS.find(page)?.groupValues?.get(1) ?: page
 
         val servers = linkedSetOf<Triple<String, String, String>>()
         fun normalizeServerUrl(value: String): String {
@@ -1999,6 +1984,7 @@ class AnimESProvider : MainAPI() {
                 addServer(server, rawUrl, language)
             }
         }
+        if (servers.isEmpty()) log("AnimeAV: sin servidores en el HTML slug=$animeSlug ep=$episodeNumber len=${page.length} hasEmbeds=${page.contains("embeds")}")
         val uniqueServers = servers.filter { (_, rawUrl, _) -> sink.claimEmbed(rawUrl) }
 
         log("AnimeAV servidores únicos=" + uniqueServers.size)

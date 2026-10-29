@@ -22,13 +22,31 @@ internal data class AbyssSource(
     val resId: Int = 0,
     val hlsUrl: String = ""
 )
+internal data class AbyssQuality(val height: Int, val source: AbyssSource)
 internal class ResolveFailure(val code: String, message: String) : Exception(message)
 
 internal object AbyssSourceResolver {
     private const val UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36"
     private val latin1: Charset = Charsets.ISO_8859_1
 
+    /** Compatibilidad: devuelve una sola fuente según la calidad pedida ("best" = la más alta). */
     fun resolve(ref: String, cancelled: java.util.concurrent.atomic.AtomicBoolean, diagnostic: (String, String) -> Unit = { _, _ -> }, progress: (Int, String) -> Unit): AbyssSource {
+        val all = resolveAll(ref, cancelled, diagnostic, progress)
+        val wanted = when (ref.split(":", limit = 4).getOrNull(2)?.lowercase()) {
+            "3", "480", "480p" -> 480
+            "4", "720", "720p" -> 720
+            "5", "1080", "1080p" -> 1080
+            else -> Int.MAX_VALUE
+        }
+        return (all.filter { it.height <= wanted }.maxByOrNull { it.height } ?: all.minByOrNull { it.height })!!.source
+    }
+
+    /**
+     * Resuelve TODAS las resoluciones disponibles (una fuente por res_id).
+     * Antes se elegía una sola con una regex sobre "quality+label+path" que podía leer dígitos
+     * del path y devolver una resolución baja; ahora se usa res_id/label.
+     */
+    fun resolveAll(ref: String, cancelled: java.util.concurrent.atomic.AtomicBoolean, diagnostic: (String, String) -> Unit = { _, _ -> }, progress: (Int, String) -> Unit): List<AbyssQuality> {
         val parts = ref.split(":", limit = 4)
         if (parts.size != 4 || parts[0] != "abyss") throw ResolveFailure("unsupported", "Referencia Abyss inválida / Invalid Abyss reference")
         val rawSlug = parts[1]
@@ -159,70 +177,18 @@ internal object AbyssSourceResolver {
                 sub = json.optString("sub").takeUnless { it == "null" }.orEmpty()
             )
         }
-        // First preserve the exact v0.2.9 / Actions #40 source selection and URL
-        // construction. Only opt into Sora when that exact legacy candidate is
-        // positively identified as a split first-part URL.
-        val legacyWanted = when (quality.lowercase()) {
-            "3", "480", "480p" -> 480
-            "4", "720", "720p" -> 720
-            "5", "1080", "1080p" -> 1080
-            else -> Int.MAX_VALUE
-        }
-        val legacyCandidates = rawSources.filter {
-            it.optString("url").startsWith("https://") && it.optString("path").isNotBlank()
-        }
-        val legacyJson = legacyCandidates.sortedByDescending { qualityHeight(it) }
-            .firstOrNull { qualityHeight(it) <= legacyWanted }
-            ?: legacyCandidates.maxByOrNull { qualityHeight(it) }
-        if (legacyJson != null) {
-            val legacyBase = legacyJson.getString("url").trimEnd('/')
-            val legacyPath = legacyJson.getString("path").trimStart('/')
-            val legacyUrl = "$legacyBase/$legacyPath"
-            val legacyFilename = URL(legacyUrl).path.substringAfterLast('/').ifBlank { legacyPath.substringAfterLast('/') }
-            val legacyResId = legacyJson.optInt("res_id", 0)
-            val legacySize = legacyJson.optLong("size", 0L)
-            val legacyOption = options.firstOrNull {
-                it.resId == legacyResId && it.path.trimStart('/') == legacyPath && it.url.trimEnd('/') == legacyBase
-            }
-            val legacyPartSize = legacyOption?.partSize ?: 0L
-            val rawDomainLegacy = domains.optString(0).takeUnless { it == "null" }.orEmpty()
-                .removePrefix("https://").removePrefix("http://").trim().trimEnd('/')
-            val suffixLegacy = rawDomainLegacy.substringAfter(".", "")
-            val legacySub = legacyOption?.sub.orEmpty()
-            val legacySoraBase = if (legacySub.isNotBlank() && suffixLegacy.isNotBlank()) "https://$legacySub.$suffixLegacy" else ""
-            val legacyHasSoraMetadata = legacySoraBase.isNotBlank() && legacyPartSize > 0L &&
-                legacySize > legacyPartSize && md5Id.isNotBlank() && legacyResId > 0
-            val legacyProbe = if (legacyHasSoraMetadata) probeDirectCandidate(legacyUrl, referer, legacySize, legacyPartSize, cancelled) else "legacy-direct"
-            val useSoraForLegacySource = legacyHasSoraMetadata &&
-                (legacyProbe == "first-part-only" || legacyProbe == "partial-total-$legacyPartSize")
-            if (!useSoraForLegacySource) {
-                diagnostic("source_transport", "transport=legacy-direct-v029 url=$legacyUrl probe=$legacyProbe")
-                progress(88, "Preparando transmisión segura… / Preparing stream…")
-                if (cancelled.get()) throw ResolveFailure("cancelled", "Resolución cancelada / Resolution cancelled")
-                progress(100, "Fuente encontrada / Source found")
-                return AbyssSource(legacyUrl, legacyFilename, referer)
-            }
-            diagnostic("source_transport", "transport=abyss-sora reason=confirmed-first-part expected=$legacySize partSize=$legacyPartSize resId=$legacyResId")
-            progress(88, "Preparando transmisión segura… / Preparing stream…")
-            if (cancelled.get()) throw ResolveFailure("cancelled", "Resolución cancelada / Resolution cancelled")
-            progress(100, "Fuente encontrada / Source found")
-            val hlsPlaylist = findHlsPlaylist(hls)
-            if (hlsPlaylist.isNotBlank()) {
-                diagnostic("source_transport", "transport=abyss-hls reason=confirmed-split playlist=" + hlsPlaylist.substringBefore("?").take(180))
-            }
-            return AbyssSource(legacySoraBase, "$md5Id-$legacyResId.mp4", referer, legacySize, legacyPartSize, true, md5Id, legacyResId, hlsPlaylist)
-        }
-        val selection = AbyssSourceSelection.select(options, quality)
-        val selected = selection.selected
-        val diagnosticSummary = AbyssSourceSelection.diagnosticSummary(options, selection)
-        diagnostic("source_selection", diagnosticSummary)
-        if (selected == null) {
-            if (selection.failureCode == "unsupported") {
-                throw ResolveFailure("unsupported", selection.failureMessage ?: "Formato fragmentado no compatible aún / Split format not supported yet")
-            }
+        val rawDomain = domains.optString(0).takeUnless { it == "null" }.orEmpty()
+            .removePrefix("https://").removePrefix("http://").trim().trimEnd('/')
+        val domainSuffix = rawDomain.substringAfter(".", "")
+        val hlsPlaylist = findHlsPlaylist(hls)
+
+        val chosen = AbyssSourceSelection.usableResIds(options)
+            .mapNotNull { AbyssSourceSelection.bestForResId(options, it) }
+        diagnostic("source_selection", AbyssSourceSelection.diagnosticSummary(options, AbyssSourceSelection.select(options, quality)))
+        if (chosen.isEmpty()) {
             val mp4Keys = mp4.keys().asSequence().toList().joinToString(",")
-            val domains = describeMetadata(mp4.opt("domains"))
-            val firstDatas = describeMetadata(mp4.opt("fristDatas"))
+            val domainsInfo = describeMetadata(mp4.opt("domains"))
+            val firstDatasInfo = describeMetadata(mp4.opt("fristDatas"))
             if (hls != null) {
                 val hlsKeys = hls.keys().asSequence().take(12).toList().joinToString(",")
                 val hlsSources = hls.optJSONArray("sources")
@@ -236,49 +202,77 @@ internal object AbyssSourceResolver {
             }
             throw ResolveFailure(
                 "unavailable",
-                "No hay fuentes MP4 válidas / No valid MP4 sources; sourceCountBefore=${options.size} sourceCountAfter=0 domains=$domains fristDatas=$firstDatas"
+                "No hay fuentes MP4 válidas / No valid MP4 sources; sourceCountBefore=${options.size} sourceCountAfter=0 domains=$domainsInfo fristDatas=$firstDatasInfo"
             )
         }
-        // Match the reference client exactly: buildSegmentUrl(domains.firstOrNull(), source.sub)
-        // returns https://<sub>.<domain suffix>, where suffix is everything after the first dot.
+
+        // Las pruebas de red (probe) de cada resolución se hacen en paralelo.
+        val built = parallelMap(chosen) { option ->
+            AbyssQuality(
+                heightOf(option),
+                buildSource(option, md5Id, referer, domainSuffix, rawDomain, hlsPlaylist, cancelled, diagnostic)
+            )
+        }
+        if (cancelled.get()) throw ResolveFailure("cancelled", "Resolución cancelada / Resolution cancelled")
+        progress(100, "Fuente encontrada / Source found")
+        return built.sortedByDescending { it.height }
+    }
+
+    private fun buildSource(
+        selected: AbyssSourceOption,
+        md5Id: String,
+        referer: String,
+        domainSuffix: String,
+        rawDomain: String,
+        hlsPlaylist: String,
+        cancelled: java.util.concurrent.atomic.AtomicBoolean,
+        diagnostic: (String, String) -> Unit
+    ): AbyssSource {
         val path = selected.path.trimStart('/')
         val directCandidate = selected.directUrl.ifBlank { "${selected.url.trimEnd('/')}/$path" }
-        val rawDomain = domains.optString(0).takeUnless { it == "null" }.orEmpty()
-            .removePrefix("https://").removePrefix("http://").trim().trimEnd('/')
-        val domainSuffix = rawDomain.substringAfter(".", "")
-        val soraBase = if (selected.sub.isNotBlank() && domainSuffix.isNotBlank()) {
-            "https://${selected.sub}.$domainSuffix"
-        } else ""
-        // Preserve direct transport only when a tiny Range probe confirms the full MP4.
-        // Some apparently valid file paths expose only the first partSize bytes.
+        val soraBase = if (selected.sub.isNotBlank() && domainSuffix.isNotBlank()) "https://${selected.sub}.$domainSuffix" else ""
+        // Se mantiene el transporte directo por defecto; Sora solo si un probe de 1 byte confirma
+        // que la URL directa expone únicamente la primera parte.
         val metadataSaysSplit = soraBase.isNotBlank() &&
             selected.partSize > 0L && selected.size > selected.partSize &&
             md5Id.isNotBlank() && selected.resId > 0
         val directProbe = if (metadataSaysSplit) {
             probeDirectCandidate(directCandidate, referer, selected.size, selected.partSize, cancelled)
         } else "not-needed"
-        // Keep the commit-40 direct transport as the safe default. Switch to Sora
-        // only when the probe positively identifies a first-part-only URL; transient
-        // probe failures must not silently change a previously working series to Sora.
-        val directIsFirstPartOnly = directProbe == "first-part-only" ||
-            directProbe == "partial-total-${selected.partSize}"
-        val segmented = metadataSaysSplit && directIsFirstPartOnly
-        diagnostic("direct_transport_probe", "result=$directProbe expectedSize=${selected.size} partSize=${selected.partSize} useSora=$segmented decision=${if (segmented) "confirmed-split" else "legacy-direct"}")
-        val segmentBase = if (segmented) soraBase else ""
-        val finalUrl = if (segmented) segmentBase else directCandidate
-        val filename = if (segmented) "$md5Id-${selected.resId}.mp4" else URL(finalUrl).path.substringAfterLast('/').ifBlank { path.substringAfterLast('/') }
+        val segmented = metadataSaysSplit &&
+            (directProbe == "first-part-only" || directProbe == "partial-total-${selected.partSize}")
+        diagnostic("direct_transport_probe", "resId=${selected.resId} result=$directProbe expectedSize=${selected.size} partSize=${selected.partSize} useSora=$segmented")
+        val finalUrl = if (segmented) soraBase else directCandidate
         if (!finalUrl.startsWith("https://")) throw ResolveFailure("unsupported", "La fuente no usa HTTPS / Source is not HTTPS")
-        progress(88, "Preparando transmisión segura… / Preparing stream…")
-        if (cancelled.get()) throw ResolveFailure("cancelled", "Resolución cancelada / Resolution cancelled")
-        progress(100, "Fuente encontrada / Source found")
-        diagnostic("source_transport", if (segmented) "transport=abyss-sora size=${selected.size} resId=${selected.resId} md5Id=$md5Id domain=${rawDomain.take(100)} sub=${selected.sub} domainSuffix=${domainSuffix.take(100)} base=$segmentBase" else "transport=direct url=$finalUrl")
-        // Only use HLS when MP4 metadata positively identified this source as split Sora.
-        // Fully working direct MP4 sources above remain on their original path.
-        val hlsPlaylist = if (segmented) findHlsPlaylist(hls) else ""
-        if (hlsPlaylist.isNotBlank()) {
-            diagnostic("source_transport", "transport=abyss-hls reason=confirmed-split playlist=" + hlsPlaylist.substringBefore("?").take(180))
+        val filename = if (segmented) "$md5Id-${selected.resId}.mp4"
+        else URL(finalUrl).path.substringAfterLast('/').ifBlank { path.substringAfterLast('/') }
+        diagnostic("source_transport", if (segmented) "transport=abyss-sora size=${selected.size} resId=${selected.resId} sub=${selected.sub} base=$soraBase domain=${rawDomain.take(100)}" else "transport=direct resId=${selected.resId} url=$finalUrl")
+        return AbyssSource(
+            finalUrl, filename, referer, selected.size, selected.partSize, segmented, md5Id, selected.resId,
+            if (segmented) hlsPlaylist else ""
+        )
+    }
+
+    /** res_id -> altura. 3/4/5 son los mismos ids que ya usaba AbyssSourceSelection. */
+    private fun heightOf(option: AbyssSourceOption): Int {
+        when (option.resId) { 2 -> return 360; 3 -> return 480; 4 -> return 720; 5 -> return 1080 }
+        return Regex("(\\d{3,4})", RegexOption.IGNORE_CASE).find(option.label)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+    }
+
+    private fun <T, R> parallelMap(items: List<T>, f: (T) -> R): List<R> {
+        if (items.size <= 1) return items.map(f)
+        val results = arrayOfNulls<Any>(items.size)
+        val errors = arrayOfNulls<Throwable>(items.size)
+        val threads = items.mapIndexed { i, item ->
+            Thread {
+                try { results[i] = f(item) } catch (t: Throwable) { errors[i] = t }
+            }.also { it.isDaemon = true; it.start() }
         }
-        return AbyssSource(finalUrl, filename, referer, selected.size, selected.partSize, segmented, md5Id, selected.resId, hlsPlaylist)
+        threads.forEach { it.join() }
+        val ok = items.indices.filter { errors[it] == null && results[it] != null }
+        if (ok.isEmpty()) throw (errors.firstOrNull { it != null } ?: IllegalStateException("sin resultados"))
+        @Suppress("UNCHECKED_CAST")
+        return ok.map { results[it] as R }
     }
 
     /**
@@ -379,11 +373,6 @@ internal object AbyssSourceResolver {
             is String -> "string(" + value.take(80).replace(" ", "_") + ")"
             else -> value.javaClass.simpleName
         }
-    }
-
-    private fun qualityHeight(o: JSONObject): Int {
-        val s = listOf(o.optString("quality"), o.optString("label"), o.optString("path")).joinToString(" ")
-        return Regex("(\\d{3,4})\\s*p?", RegexOption.IGNORE_CASE).find(s)?.groupValues?.get(1)?.toIntOrNull() ?: 0
     }
 
     private fun getText(url: String, referer: String, cancelled: java.util.concurrent.atomic.AtomicBoolean): String {

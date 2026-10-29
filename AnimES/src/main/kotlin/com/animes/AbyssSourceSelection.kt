@@ -67,6 +67,19 @@ internal object AbyssSourceSelection {
         return AbyssSourceSelectionResult(selected, valid.size)
     }
 
+    /** Mejor opción reproducible para una resolución concreta (prefiere MP4 completo sobre fragmentado). */
+    fun bestForResId(options: List<AbyssSourceOption>, resId: Int): AbyssSourceOption? =
+        options.filter { it.resId == resId && hasUsableLocation(it) }
+            .sortedWith(
+                compareBy<AbyssSourceOption> { isFragmented(it) }
+                    .thenByDescending { it.status }
+                    .thenByDescending { it.size }
+            )
+            .firstOrNull()
+
+    fun usableResIds(options: List<AbyssSourceOption>): List<Int> =
+        options.filter(::hasUsableLocation).map { it.resId }.distinct().sortedDescending()
+
     fun diagnosticSummary(options: List<AbyssSourceOption>, result: AbyssSourceSelectionResult): String {
         val perSource = options.mapIndexed { index, option ->
             val reason = when {
