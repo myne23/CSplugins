@@ -35,13 +35,13 @@ private const val HOME_CACHE_MS = 180_000L
 private const val BRIDGE_TIMEOUT_MS = 10_000L
 private const val EXTRACTOR_TIMEOUT_MS = 9_000L
 private const val VOE_TIMEOUT_NS = 25_000_000_000L
-private const val VOE_VOE_BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
-private val VOE_REDIRECT = Regex("""window\\.location\\.href\\s*=\\s*['"]([^'"]+/e/[^'"]+)['"]""")
-private val VOE_CONFIG = Regex("""<script[^>]+type=["']application/json["'][^>]*>\\s*(?:\\[\\s*)?["']([^"']+)["']""")
-private val VOE_CONFIG_STRICT = Regex("""<script[^>]+type=["']application/json["'][^>]*>\\s*\\[\\s*["']([^"']+)["']\\s*\\]\\s*</script>""")
+private const val VOE_BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+private val VOE_REDIRECT = Regex("""window\.location\.href\s*=\s*['"]([^'"]+/e/[^'"]+)['"]""")
+private val VOE_CONFIG = Regex("""<script[^>]+type=["']application/json["'][^>]*>\s*(?:\[\s*)?["']([^"']+)["']""")
+private val VOE_CONFIG_STRICT = Regex("""<script[^>]+type=["']application/json["'][^>]*>\s*\[\s*["']([^"']+)["']\s*\]\s*</script>""")
 private val VOE_TOKEN = Regex("""name=["']_token["'][^>]+value=["']([^"']+)["']""")
 private val VOE_CHALLENGE = Regex("""<altcha-widget[^>]+challenge=["']([^"']+)["']""")
-private val VOE_SOURCE = Regex(""""source"\\s*:\\s*"([^"]+)"""")
+private val VOE_SOURCE = Regex(""""source"\s*:\s*"([^"]+)"""")
 private val VOE_HEX_CHARS = "0123456789abcdef".toCharArray()
 
 private val LULU_HOSTS = listOf("luluvdoo.com", "luluvdo.com", "lulustream.com", "lulu.st")
