@@ -255,7 +255,7 @@ internal class AbyssMediaServer {
                     val count = min(len.toLong(), available).toInt()
                     if (count > 0) {
                         java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
-                        scheduleDirectPrefetch(src, chunk + 1, total)
+                        for (ahead in 1..4) scheduleDirectPrefetch(src, chunk + ahead, total)
                         return count
                     }
                 }
@@ -266,8 +266,8 @@ internal class AbyssMediaServer {
                             val count = min(len.toLong(), available).toInt()
                             java.io.RandomAccessFile(part, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
                             // Start the next chunk as soon as the current one is almost ready.
-                            if (part.length() >= segmentSize * 9L / 10L) {
-                                scheduleDirectPrefetch(src, chunk + 1, total)
+                            if (part.length() >= segmentSize / 4L) {
+                                for (ahead in 1..4) scheduleDirectPrefetch(src, chunk + ahead, total)
                             }
                             return count
                         } catch (_: java.io.FileNotFoundException) {
