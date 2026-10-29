@@ -1036,7 +1036,7 @@ class AnimESProvider : MainAPI() {
             val embedPath = Regex("""(?:embed|/e/|/v/|player|video|iframe|/d/|/file/)""", RegexOption.IGNORE_CASE)
                 .containsMatchIn(path)
             val adHost = Regex("""(?:doubleclick|googlesyndication|googleadservices|adservice)""", RegexOption.IGNORE_CASE).containsMatchIn(host)
-            if (adHost || asset) return
+            if (adHost || (asset && !mytsumiContainer)) return
             when {
                 media -> found += resolved
                 mytsumiContainer -> found += resolved
