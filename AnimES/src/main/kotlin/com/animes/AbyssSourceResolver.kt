@@ -70,11 +70,26 @@ internal object AbyssSourceResolver {
         val payload = try { JSONObject(plaintext) } catch (_: Exception) {
             throw ResolveFailure("bad_response", "No se pudieron descifrar los metadatos MP4 / Could not decrypt MP4 metadata")
         }
-        val mp4 = payload.optJSONObject("mp4") ?: throw ResolveFailure("unavailable", "Abyss no ofrece fuentes MP4 / Abyss has no MP4 sources")
-        val sources = mp4.optJSONArray("sources") ?: JSONArray()
-        val candidates = (0 until sources.length()).mapNotNull { sources.optJSONObject(it) }
-            .filter { it.optString("url").startsWith("https://") && it.optString("path").isNotBlank() }
-        if (candidates.isEmpty()) throw ResolveFailure("unavailable", "No se encontraron fuentes MP4 / No MP4 sources were found")
+        val mp4 = payload.optJSONObject("mp4")
+        val sources = mp4?.optJSONArray("sources") ?: JSONArray()
+        val rawObjects = (0 until sources.length()).mapNotNull { sources.optJSONObject(it) }
+        val candidates = rawObjects.filter {
+            val sourceUrl = it.optString("url").trim()
+            val sourcePath = it.optString("path").trim()
+            (sourceUrl.startsWith("https://", true) || sourceUrl.startsWith("http://", true)) &&
+                sourcePath.isNotBlank()
+        }
+        if (candidates.isEmpty()) {
+            val payloadKeys = payload.keys().asSequence().toList().sorted().joinToString(",")
+            val mp4Keys = mp4?.keys()?.asSequence()?.toList()?.sorted()?.joinToString(",") ?: "missing"
+            val sourceKeys = rawObjects.take(4).map { obj ->
+                obj.keys().asSequence().toList().sorted().joinToString("+").ifBlank { "empty-object" }
+            }.joinToString(";").ifBlank { "none" }
+            throw ResolveFailure(
+                "unavailable",
+                "Abyss metadata has no usable MP4 source (payloadKeys=$payloadKeys, mp4Keys=$mp4Keys, sourceCount=${sources.length()}, sourceKeys=$sourceKeys)"
+            )
+        }
         val wanted = when (quality.lowercase()) { "3", "480", "480p" -> 480; "4", "720", "720p" -> 720; "5", "1080", "1080p" -> 1080; else -> Int.MAX_VALUE }
         val source = candidates.sortedByDescending { qualityHeight(it) }.firstOrNull { qualityHeight(it) <= wanted }
             ?: candidates.maxByOrNull { qualityHeight(it) }!!
