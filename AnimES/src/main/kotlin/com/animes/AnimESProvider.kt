@@ -1352,117 +1352,64 @@ class AnimESProvider : MainAPI() {
         }
     }
 
-    private suspend fun resolveOkRu(embedUrl: String, pageUrl: String, sink: LinkSink) {
-        val id = Regex("""/(?:videoembed|video)/(\d+)""", RegexOption.IGNORE_CASE)
+    private suspend fun resolveOkRu(
+        embedUrl: String,
+        pageUrl: String,
+        sink: LinkSink,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ) {
+        val id = Regex("""/(?:videoembed|video)/(\\d+)""", RegexOption.IGNORE_CASE)
             .find(runCatching { URI(embedUrl).path.orEmpty() }.getOrDefault(""))?.groupValues?.getOrNull(1)
             ?: return
         val okEmbedUrl = "https://ok.ru/videoembed/$id"
-        val referers = listOf(pageUrl, "$mainUrl/", "https://ok.ru/").distinct()
-        val videoEntry = Regex("""["']name["']\s*:\s*["']([a-z]+)["']\s*,\s*["']url["']\s*:\s*["'](https?://[^"'\\]+)""", RegexOption.IGNORE_CASE)
-        val hlsEntry = Regex("""["'](?:hlsManifestUrl|ondemandHls|hlsMasterPlaylistUrl)["']\s*:\s*["'](https?://[^"'\\]+)""", RegexOption.IGNORE_CASE)
-        fun quality(name: String): Int = when (name.lowercase()) {
-            "mobile" -> 144
-            "lowest" -> 240
-            "low" -> 360
-            "sd" -> 480
-            "hd" -> 720
-            "full" -> 1080
-            "quad" -> 1440
-            "ultra" -> 2160
-            else -> 0
-        }
-        for (ref in referers) {
-            val response = try {
-                app.get(okEmbedUrl, headers = apiHeaders + mapOf("Referer" to ref))
+        val collected = ConcurrentLinkedQueue<ExtractorLink>()
+
+        // Usar el extractor oficial de CloudStream: analiza el array "videos"
+        // de OK.ru y aplica sus cabeceras propias. El parser anterior capturaba
+        // URLs internas type=5 que el CDN rechaza con HTTP 400.
+        val finished = withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
+            try {
+                loadExtractor(okEmbedUrl, pageUrl.ifBlank { "$mainUrl/" }, subtitleCallback) { link ->
+                    if (link.url.isNotBlank()) collected.add(link)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                log("OK.ru fetch failed: " + e.message)
-                continue
+                log("OK.ru loadExtractor ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
             }
-            if (!response.isSuccessful) continue
-            val page = response.text
-                .replace("&quot;", "\"", ignoreCase = true)
-                .replace("&amp;", "&", ignoreCase = true)
-                .replace(Regex("""\\+u0026""", RegexOption.IGNORE_CASE), "&")
-                .replace(Regex("""\\+(?:/|u002f)""", RegexOption.IGNORE_CASE), "/")
-                .replace(Regex("""\\+u003d""", RegexOption.IGNORE_CASE), "=")
-            // Preferir la playlist HLS de OK.ru: contiene las calidades adaptativas
-            // y evita mostrar cada representación como una fuente separada.
-            val hls = hlsEntry.find(page)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
-            if (!hls.isNullOrBlank()) {
-                // Mismas cabeceras que el resolver OK.ru funcional de AnimeYT para Kino.
-                val streamHeaders = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
-                    "Referer" to "https://ok.ru/"
-                )
-                val link = newExtractorLink(
-                    source = name,
-                    name = "OK.ru",
-                    url = hls,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    referer = "https://ok.ru/"
-                    quality = Qualities.Unknown.value
-                }
-                link.headers = streamHeaders
-                sink.emit(link, TAG_ANIMEYT)
-
-                // Mantener el HLS adaptativo y añadir solo un MP4 como respaldo
-                // si ExoPlayer no puede abrir la playlist. No listar todas las calidades.
-                val fallbackVideo = videoEntry.findAll(page).mapNotNull { match ->
-                    val q = quality(match.groupValues[1])
-                    val url = match.groupValues[2].replace("\\/", "/").trim()
-                    if (q <= 0 || url.isBlank()) null else Triple(q, match.groupValues[1], url)
-                }.distinctBy { it.third }.maxByOrNull { it.first }
-                if (fallbackVideo != null) {
-                    val fallback = newExtractorLink(
-                        source = name,
-                        name = "OK.ru · ${fallbackVideo.first}p · AnimeYT",
-                        url = fallbackVideo.third,
-                        type = ExtractorLinkType.VIDEO
-                    ) {
-                        referer = "https://ok.ru/"
-                        quality = fallbackVideo.first
-                    }
-                    fallback.headers = streamHeaders
-                    sink.emit(fallback, TAG_ANIMEYT)
-                    log("OK.ru HLS + respaldo directo ${fallbackVideo.first}p id=$id")
-                } else {
-                    log("OK.ru playlist HLS encontrada id=$id; sin MP4 de respaldo")
-                }
-                return
-            }
-
-            // Si el HTML no expone HLS, emitir una sola representación directa:
-            // la de mayor calidad, en vez de inundar la lista con todas.
-            val directVideos = videoEntry.findAll(page).mapNotNull { match ->
-                val q = quality(match.groupValues[1])
-                val url = match.groupValues[2].replace("\\/", "/").trim()
-                if (q <= 0 || url.isBlank()) null else Triple(q, match.groupValues[1], url)
-            }.distinctBy { it.third }.sortedByDescending { it.first }.toList()
-            val bestVideo = directVideos.firstOrNull()
-            if (bestVideo != null) {
-                val streamHeaders = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
-                    "Referer" to "https://ok.ru/"
-                )
-                val link = newExtractorLink(
-                    source = name,
-                    name = "OK.ru · " + bestVideo.first + "p",
-                    url = bestVideo.third,
-                    type = ExtractorLinkType.VIDEO
-                ) {
-                    referer = "https://ok.ru/"
-                    quality = bestVideo.first
-                }
-                link.headers = streamHeaders
-                sink.emit(link, TAG_ANIMEYT)
-                log("OK.ru sin HLS; única fuente directa=${bestVideo.first}p id=$id")
-                return
-            }
+            true
         }
-        log("OK.ru sin fuentes reproducibles id=$id")
+
+        if (finished == null) {
+            log("OK.ru loadExtractor TIMEOUT id=$id")
+        }
+
+        val links = collected
+            .distinctBy { it.url }
+            .sortedByDescending { it.quality }
+
+        if (links.isEmpty()) {
+            log("OK.ru loadExtractor sin fuentes válidas id=$id")
+            return
+        }
+
+        for (link in links) {
+            val qualityLabel = link.quality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
+            val normalized = newExtractorLink(
+                source = name,
+                name = "OK.ru$qualityLabel",
+                url = link.url,
+                type = link.type
+            ) {
+                referer = link.referer
+                quality = link.quality
+                headers = link.headers
+                extractorData = link.extractorData
+            }
+            sink.emit(normalized, TAG_ANIMEYT)
+        }
+
+        log("OK.ru extractor oficial links=${links.size} id=$id")
     }
 
     private suspend fun loadAnimeYtSources(
@@ -1681,7 +1628,7 @@ class AnimESProvider : MainAPI() {
                 when {
                     runCatching { URI(candidate).host.orEmpty().lowercase().removePrefix("www.") }.getOrDefault("")
                         .let { it == "ok.ru" || it.endsWith(".ok.ru") } -> {
-                        resolveOkRu(candidate, sourcePage, sink)
+                        resolveOkRu(candidate, sourcePage, sink, subtitleCallback)
                     }
                     runCatching { URI(candidate).host.orEmpty().lowercase().removePrefix("www.") }.getOrDefault("")
                         .let { it.contains("bysekoze.com") || it.contains("bysesukior.com") || it == "n1mwq.org" || it.endsWith(".n1mwq.org") } -> {
