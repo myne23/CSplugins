@@ -1364,9 +1364,7 @@ class AnimESProvider : MainAPI() {
         val okEmbedUrl = "https://ok.ru/videoembed/$id"
         val collected = ConcurrentLinkedQueue<ExtractorLink>()
 
-        // Usar el extractor oficial de CloudStream: analiza el array "videos"
-        // de OK.ru y aplica sus cabeceras propias. El parser anterior capturaba
-        // URLs internas type=5 que el CDN rechaza con HTTP 400.
+        // Primero intentar el extractor oficial de CloudStream.
         val finished = withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
             try {
                 loadExtractor(okEmbedUrl, pageUrl.ifBlank { "$mainUrl/" }, subtitleCallback) { link ->
@@ -1388,28 +1386,84 @@ class AnimESProvider : MainAPI() {
             .distinctBy { it.url }
             .sortedByDescending { it.quality }
 
-        if (links.isEmpty()) {
-            log("OK.ru loadExtractor sin fuentes válidas id=$id")
+        if (links.isNotEmpty()) {
+            for (link in links) {
+                val qualityLabel = link.quality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
+                val normalized = newExtractorLink(
+                    source = name,
+                    name = "OK.ru$qualityLabel",
+                    url = link.url,
+                    type = link.type
+                ) {
+                    referer = link.referer
+                    quality = link.quality
+                    headers = link.headers
+                    extractorData = link.extractorData
+                }
+                sink.emit(normalized, TAG_ANIMEYT)
+            }
+
+            log("OK.ru extractor oficial links=${links.size} id=$id")
             return
         }
 
-        for (link in links) {
-            val qualityLabel = link.quality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
-            val normalized = newExtractorLink(
-                source = name,
-                name = "OK.ru$qualityLabel",
-                url = link.url,
-                type = link.type
-            ) {
-                referer = link.referer
-                quality = link.quality
-                headers = link.headers
-                extractorData = link.extractorData
-            }
-            sink.emit(normalized, TAG_ANIMEYT)
+        // Fallback: algunas versiones de OK.ru sí incluyen el manifiesto HLS
+        // en el HTML aunque el extractor integrado responda "Video not found".
+        val html = try {
+            app.get(
+                okEmbedUrl,
+                headers = mapOf(
+                    "User-Agent" to UA,
+                    "Referer" to pageUrl.ifBlank { "$mainUrl/" },
+                    "Accept" to "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"
+                )
+            ).text
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log("OK.ru HTML fallback ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
+            return
         }
 
-        log("OK.ru extractor oficial links=${links.size} id=$id")
+        val rawHls = Regex(
+            """["']?hlsManifestUrl["']?\s*:\s*["']([^"']+)["']""",
+            RegexOption.IGNORE_CASE
+        ).find(html)?.groupValues?.getOrNull(1)
+
+        val hlsUrl = rawHls
+            ?.replace("\\/", "/")
+            ?.replace("\\u0026", "&", ignoreCase = true)
+            ?.replace("&amp;", "&")
+            ?.trim()
+            ?.takeIf { it.startsWith("https://", true) || it.startsWith("http://", true) }
+
+        val hlsUri = hlsUrl?.let { runCatching { URI(it) }.getOrNull() }
+        val hlsHost = hlsUri?.host.orEmpty().lowercase()
+        if (hlsUrl.isNullOrBlank() || hlsUri == null ||
+            (hlsHost != "okcdn.ru" && !hlsHost.endsWith(".okcdn.ru")) ||
+            !hlsUri.path.orEmpty().endsWith(".m3u8", true)
+        ) {
+            log("OK.ru HTML fallback sin hlsManifestUrl válido id=$id")
+            return
+        }
+
+        sink.emit(
+            newExtractorLink(
+                source = name,
+                name = "OK.ru · HLS",
+                url = hlsUrl,
+                type = ExtractorLinkType.M3U8
+            ) {
+                referer = okEmbedUrl
+                quality = Qualities.Unknown.value
+                headers = mapOf(
+                    "User-Agent" to UA,
+                    "Referer" to okEmbedUrl
+                )
+            },
+            TAG_ANIMEYT
+        )
+        log("OK.ru HLS fallback encontrado id=$id host=$hlsHost")
     }
 
     private suspend fun loadAnimeYtSources(
