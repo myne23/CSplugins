@@ -1391,7 +1391,10 @@ class AnimESProvider : MainAPI() {
             // y evita mostrar cada representación como una fuente separada.
             val hls = hlsEntry.find(page)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
             if (!hls.isNullOrBlank()) {
-                val streamHeaders = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
+                val streamHeaders = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Referer" to okEmbedUrl
+                )
                 val link = newExtractorLink(
                     source = name,
                     name = "OK.ru",
