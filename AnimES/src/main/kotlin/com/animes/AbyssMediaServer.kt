@@ -190,14 +190,12 @@ internal class AbyssMediaServer {
                     }
                 }
                 if (part.exists()) {
-                    // Start the next segment near the end of the current download to
-                    // preserve the established Sora rolling buffer. If the player seeks,
-                    // the requested segment is still scheduled independently above.
-                    if (part.length() >= (segmentSize * 9L / 10L)) {
+                    // Start fetching the following Sora segment as soon as the current
+                    // one begins arriving. Waiting until 90% means the next 8 MiB part
+                    // often starts too late to protect playback from a CDN stall.
+                    if (part.length() > 0L) {
                         scheduleSoraPrefetch(src, chunk + 1, total)
-                        // Small Sora parts often arrive quickly, but a single slow CDN part
-                        // can empty Kino's buffer. For 4 MiB parts, keep one extra part ready;
-                        // larger parts retain the conservative one-part window.
+                        // Smaller parts are cheap enough to keep a second segment ready.
                         if (segmentSize <= 4L * 1024L * 1024L) {
                             scheduleSoraPrefetch(src, chunk + 2, total)
                         }
@@ -309,7 +307,10 @@ internal class AbyssMediaServer {
         val count = min(len, (file.length() - inChunk).toInt().coerceAtLeast(0))
         if (count <= 0) return -1
         java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
-        scheduleDirectPrefetch(src, chunk + 1, total)
+        // Keep roughly 1 MiB ready ahead instead of only one 256 KiB chunk.
+        // Separate workers download independent byte ranges, so the player is less
+        // likely to drain its buffer while the next request is opening or retrying.
+        for (ahead in 1..4) scheduleDirectPrefetch(src, chunk + ahead, total)
         return count
     }
 
