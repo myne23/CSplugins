@@ -450,9 +450,17 @@ class AnimeLHDProvider : MainAPI() {
         val flat = flattenRsc(html)
         log("WATCH RSC | chars=" + flat.length + " | players_marker=" + flat.contains("\"players\":"))
 
-        val players = jsonAfter(flat, "\"players\":")
-            ?.let { JSONArray(it).objs() }
-            ?: return false
+        val playersJson = jsonAfter(flat, "\"players\":")
+        if (playersJson == null) {
+            log("LOADLINKS ABORT | no se encontró el bloque players")
+            return false
+        }
+        val players = try {
+            JSONArray(playersJson).objs()
+        } catch (e: Exception) {
+            log("LOADLINKS ABORT | JSON players inválido: " + e.javaClass.simpleName + ": " + e.message)
+            return false
+        }
 
         log("PLAYERS FOUND | count=" + players.size)
         players.forEachIndexed { index, p -> log("PLAYER[" + index + "] | lang=" + p.optString("language") + " | server=" + p.optString("server_name") + " | bridge=" + safeUrl(p.optString("bridge_url"))) }
