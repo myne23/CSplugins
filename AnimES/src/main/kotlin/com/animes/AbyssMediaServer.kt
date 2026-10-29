@@ -202,10 +202,9 @@ internal class AbyssMediaServer {
                     val available = part.length() - inChunk
                     // Never expose the MP4 header until enough bytes exist to validate it.
                     val prefixReady = chunk != 0 || part.length() >= 65536L
-                    // Avoid feeding the local player tiny fragments while the segment is growing.
-                    // Waiting for a modest batch reduces repeated file opens/writes without delaying seeks much.
-                    val minBatch = min(16L * 1024L, segmentSize - inChunk)
-                    if (available >= minBatch && prefixReady) {
+                    // Sora seeks can land deep inside a segment; return any available bytes
+                    // immediately so the player does not wait for an artificial batch threshold.
+                    if (available > 0L && prefixReady) {
                         try {
                             if (chunk == 0) {
                                 val prefix = ByteArray(8)
