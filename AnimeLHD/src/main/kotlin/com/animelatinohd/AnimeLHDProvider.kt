@@ -46,7 +46,7 @@ private val VOE_HEX_CHARS = "0123456789abcdef".toCharArray()
 
 private val LULU_HOSTS = listOf("luluvdoo.com", "luluvdo.com", "lulustream.com", "lulu.st")
 private const val BYSE_FALLBACK_HOST = "https://byse.sx"
-private val BYSE_EMBED = Regex("""^https?://(?:www\\.)?byse[a-z0-9-]*\\.[a-z]+/(.*)$""", RegexOption.IGNORE_CASE)
+private val BYSE_EMBED = Regex("""^https?://(?:www\.)?byse[a-z0-9-]*\.[a-z]+/(.*)$""", RegexOption.IGNORE_CASE)
 private val IFRAME_SRC = Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
 private val M3U8_FILE = Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']""")
 private val M3U8_ANY = Regex("""https?://[^"'\s\\]+\.m3u8[^"'\s\\]*""")
@@ -524,6 +524,11 @@ class AnimeLHDProvider : MainAPI() {
                                     log("VOE ROUTE | $prefix | embed=" + safeUrl(embed))
                                     loadVoe(embed, prefix, emit)
                                 }
+                                BYSE_EMBED.containsMatchIn(embed) ||
+                                    embed.contains("byseraguci.com", ignoreCase = true) -> {
+                                    log("BYSE ROUTE | $prefix | embed=" + safeUrl(embed))
+                                    loadByse(embed, prefix, "$WEB/ver/$slug/$episode", emit)
+                                }
                                 LULU_HOSTS.any { embed.contains(it, ignoreCase = true) } ->
                                     loadLulu(embed, prefix, emit)
                                 else -> loadGeneric(embed, prefix, subtitleCallback, emit)
@@ -625,6 +630,74 @@ class AnimeLHDProvider : MainAPI() {
         }
     }
 
+
+    /** Resuelve Delta/Byse con el extractor de CloudStream y varios Referer.
+     * Conserva headers y extractorData del enlace original.
+     */
+    private suspend fun loadByse(
+        embedUrl: String,
+        prefix: String,
+        episodeUrl: String,
+        emit: suspend (ExtractorLink) -> Unit
+    ) {
+        val path = BYSE_EMBED.find(embedUrl)?.groupValues?.getOrNull(1).orEmpty()
+        val candidates = listOfNotNull(
+            embedUrl,
+            "$BYSE_FALLBACK_HOST/$path".takeIf {
+                path.isNotBlank() && !embedUrl.startsWith(BYSE_FALLBACK_HOST, ignoreCase = true)
+            }
+        )
+        val origin = "https://" + embedUrl.substringAfter("://").substringBefore("/")
+        val referers = listOf("$WEB/", episodeUrl, "$origin/").distinct()
+
+        log("BYSE START | $prefix | embed=" + safeUrl(embedUrl))
+
+        for (candidate in candidates) {
+            val collected = ConcurrentLinkedQueue<ExtractorLink>()
+
+            for (ref in referers) {
+                try {
+                    log("BYSE ATTEMPT | $prefix | candidate=" + safeUrl(candidate) +
+                        " | referer=" + safeUrl(ref))
+                    loadExtractor(
+                        url = candidate,
+                        referer = ref,
+                        subtitleCallback = { },
+                        callback = { link ->
+                            log("BYSE LINK RAW | $prefix | source=" + link.source +
+                                " | name=" + link.name + " | type=" + link.type +
+                                " | quality=" + link.quality +
+                                " | url=" + safeUrl(link.url))
+                            collected.add(link)
+                        }
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log("BYSE ATTEMPT ERROR | $prefix | " +
+                        e.javaClass.simpleName + ": " + e.message)
+                }
+                if (collected.isNotEmpty()) break
+            }
+
+            val links = collected.toList()
+            val best = links.firstOrNull {
+                it.type == ExtractorLinkType.M3U8 &&
+                    it.url.contains("master", ignoreCase = true)
+            } ?: links.sortedByDescending { it.quality }.firstOrNull()
+
+            if (best != null) {
+                val tagged = retag(best, prefix)
+                log("BYSE EMIT | $prefix | " + tagged.name +
+                    " | type=" + tagged.type +
+                    " | quality=" + tagged.quality +
+                    " | url=" + safeUrl(tagged.url))
+                emit(tagged)
+                return
+            }
+        }
+        log("BYSE FAIL | $prefix | no se pudo extraer ningún enlace")
+    }
 
     /** Resuelve Gamma/VOE manualmente, sin depender de loadExtractor. */
     private suspend fun loadVoe(
