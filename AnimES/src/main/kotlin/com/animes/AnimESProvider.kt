@@ -1391,9 +1391,10 @@ class AnimESProvider : MainAPI() {
             // y evita mostrar cada representación como una fuente separada.
             val hls = hlsEntry.find(page)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
             if (!hls.isNullOrBlank()) {
+                // Mismas cabeceras que el resolver OK.ru funcional de AnimeYT para Kino.
                 val streamHeaders = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    "Referer" to okEmbedUrl
+                    "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
+                    "Referer" to "https://ok.ru/"
                 )
                 val link = newExtractorLink(
                     source = name,
@@ -1401,12 +1402,12 @@ class AnimESProvider : MainAPI() {
                     url = hls,
                     type = ExtractorLinkType.M3U8
                 ) {
-                    referer = okEmbedUrl
+                    referer = "https://ok.ru/"
                     quality = Qualities.Unknown.value
                 }
                 link.headers = streamHeaders
                 sink.emit(link, TAG_ANIMEYT)
-                log("OK.ru playlist HLS encontrada id=$id")
+                log("OK.ru playlist HLS encontrada id=$id; headers compatibles con Kino")
                 return
             }
 
@@ -1419,14 +1420,17 @@ class AnimESProvider : MainAPI() {
             }.distinctBy { it.third }.sortedByDescending { it.first }.toList()
             val bestVideo = directVideos.firstOrNull()
             if (bestVideo != null) {
-                val streamHeaders = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
+                val streamHeaders = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
+                    "Referer" to "https://ok.ru/"
+                )
                 val link = newExtractorLink(
                     source = name,
                     name = "OK.ru · " + bestVideo.first + "p",
                     url = bestVideo.third,
                     type = ExtractorLinkType.VIDEO
                 ) {
-                    referer = okEmbedUrl
+                    referer = "https://ok.ru/"
                     quality = bestVideo.first
                 }
                 link.headers = streamHeaders
