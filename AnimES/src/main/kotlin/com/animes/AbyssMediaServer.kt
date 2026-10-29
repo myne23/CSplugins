@@ -514,6 +514,7 @@ internal class AbyssMediaServer {
         diagnostic("upstream_segment_start", "index=$index expected=$expected total=$total tokenSlash=${token.count { it == '/' }} tokenPlus=${token.count { it == '+' }} endpoint=${endpoint.substringBefore("/sora/")}/sora/…")
         var code = -1
         var received = 0L
+        var retryTemp: File? = null
         try {
             code = conn.responseCode
             if (code !in 200..299) throw IllegalStateException("Abyss segment HTTP $code index=$index")
@@ -522,7 +523,7 @@ internal class AbyssMediaServer {
             // catch up to the new download from byte zero and causes repeated stalls.
             val livePart = File(target.parentFile, target.name + ".part")
             val temp = if (livePart.exists() && livePart.length() > 0L) {
-                File(target.parentFile, target.name + ".retry.part")
+                File(target.parentFile, target.name + ".retry.part").also { retryTemp = it }
             } else {
                 livePart
             }
@@ -558,10 +559,8 @@ internal class AbyssMediaServer {
             trimCache(target)
             diagnostic("upstream_segment_ok", "index=$index status=$code received=$received expected=$expected durationMs=${System.currentTimeMillis() - started}")
         } catch (e: Throwable) {
+            retryTemp?.delete()
             diagnostic("upstream_segment_error", "index=$index status=$code received=$received durationMs=${System.currentTimeMillis() - started} ${e.javaClass.simpleName}: ${e.message ?: "no message"}")
-            throw e
-        } catch (e: Throwable) {
-            if (temp.name.endsWith(".retry.part")) temp.delete()
             throw e
         } finally {
             conn.disconnect()
