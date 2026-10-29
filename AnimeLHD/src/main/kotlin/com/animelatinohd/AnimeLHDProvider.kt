@@ -35,7 +35,7 @@ private const val HOME_CACHE_MS = 180_000L
 private const val BRIDGE_TIMEOUT_MS = 10_000L
 private const val EXTRACTOR_TIMEOUT_MS = 9_000L
 private const val VOE_TIMEOUT_NS = 25_000_000_000L
-private const val VOE_BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+private const val VOE_VOE_BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
 private val VOE_REDIRECT = Regex("""window\\.location\\.href\\s*=\\s*['"]([^'"]+/e/[^'"]+)['"]""")
 private val VOE_CONFIG = Regex("""<script[^>]+type=["']application/json["'][^>]*>\\s*(?:\\[\\s*)?["']([^"']+)["']""")
 private val VOE_CONFIG_STRICT = Regex("""<script[^>]+type=["']application/json["'][^>]*>\\s*\\[\\s*["']([^"']+)["']\\s*\\]\\s*</script>""")
@@ -660,7 +660,7 @@ class AnimeLHDProvider : MainAPI() {
     }
 
     private suspend fun resolveVoe(embedUrl: String): String? {
-        val headers = mapOf("User-Agent" to BROWSER_UA)
+        val headers = mapOf("User-Agent" to VOE_BROWSER_UA)
 
         val firstResponse = app.get(embedUrl, headers = headers)
         if (!firstResponse.isSuccessful) return null
@@ -710,7 +710,7 @@ class AnimeLHDProvider : MainAPI() {
         val challengeResponse = app.get(
             challengeUrl,
             headers = mapOf(
-                "User-Agent" to BROWSER_UA,
+                "User-Agent" to VOE_BROWSER_UA,
                 "Referer" to realUrl
             )
         )
@@ -784,7 +784,7 @@ class AnimeLHDProvider : MainAPI() {
         val postResponse = app.post(
             realUrl,
             headers = mapOf(
-                "User-Agent" to BROWSER_UA,
+                "User-Agent" to VOE_BROWSER_UA,
                 "Referer" to realUrl,
                 "Origin" to origin,
                 "Cookie" to voeCookies,
@@ -844,100 +844,7 @@ class AnimeLHDProvider : MainAPI() {
 
             String(decoded, Charsets.UTF_8)
         } catch (e: Exception) {
-            debug { "VOE decode ERROR -> ${e.message}" }
-            null
-        }
-    }
-
-    /**
-     * PBKDF2-HMAC-SHA256. El Mac se inicializa una sola vez por llamada (doFinal
-     * lo deja listo con la misma clave), en vez de re-inicializarlo en cada
-     * iteración: es lo que más pesaba al resolver el ALTCHA.
-     */
-    private fun pbkdf2Sha256(
-        mac: Mac,
-        password: ByteArray,
-        salt: ByteArray,
-        iterations: Int,
-        keyLength: Int
-    ): ByteArray {
-        mac.init(SecretKeySpec(password, "HmacSHA256"))
-
-        val hashLength = mac.macLength
-        val blockCount = (keyLength + hashLength - 1) / hashLength
-        val output = ByteArray(blockCount * hashLength)
-
-        for (block in 1..blockCount) {
-            mac.update(salt)
-            mac.update(
-                byteArrayOf(
-                    ((block ushr 24) and 0xff).toByte(),
-                    ((block ushr 16) and 0xff).toByte(),
-                    ((block ushr 8) and 0xff).toByte(),
-                    (block and 0xff).toByte()
-                )
-            )
-
-            var u = mac.doFinal()
-            val t = u.copyOf()
-
-            for (i in 1 until iterations) {
-                u = mac.doFinal(u)
-                for (j in t.indices) {
-                    t[j] = (t[j].toInt() xor u[j].toInt()).toByte()
-                }
-            }
-
-            System.arraycopy(t, 0, output, (block - 1) * hashLength, hashLength)
-        }
-
-        return output.copyOf(keyLength)
-    }
-
-    private fun jsonString(json: String, key: String): String? =
-        Regex("\"" + key + "\"\\s*:\\s*\"([^\"]+)\"")
-            .find(json)?.groupValues?.getOrNull(1)
-
-    private fun jsonInt(json: String, key: String): Int? =
-        Regex("\"" + key + "\"\\s*:\\s*(\\d+)")
-            .find(json)?.groupValues?.getOrNull(1)?.toIntOrNull()
-
-    private fun decodeVoeConfig(encoded: String): String? {
-        return try {
-            var value = buildString {
-                for (char in encoded) {
-                    append(
-                        when (char) {
-                            in 'A'..'Z' ->
-                                ((char.code - 'A'.code + 13) % 26 + 'A'.code).toChar()
-
-                            in 'a'..'z' ->
-                                ((char.code - 'a'.code + 13) % 26 + 'a'.code).toChar()
-
-                            else -> char
-                        }
-                    )
-                }
-            }
-
-            val separators = listOf("@$", "^^", "~@", "%?", "*~", "!!", "#&")
-
-            for (separator in separators) {
-                value = value.replace(separator, "_")
-            }
-
-            value = value.replace("_", "")
-
-            var bytes = Base64.getDecoder().decode(value)
-
-            bytes = bytes.map { (it.toInt() - 3).toByte() }.toByteArray()
-            bytes.reverse()
-
-            val decoded = Base64.getDecoder().decode(String(bytes, Charsets.UTF_8))
-
-            String(decoded, Charsets.UTF_8)
-        } catch (e: Exception) {
-            debug { "VOE decode ERROR -> ${e.message}" }
+            log("VOE decode ERROR -> ${e.message}")
             null
         }
     }
