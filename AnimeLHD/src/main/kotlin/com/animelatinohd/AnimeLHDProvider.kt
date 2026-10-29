@@ -728,7 +728,7 @@ class AnimeLHDProvider : MainAPI() {
                 .getOrDefault(input.scheme + "://" + input.authority)
             val pagePath = runCatching { URI(pageUrl).path.orEmpty() }.getOrDefault(input.path.orEmpty())
             val embedMode = Regex("""/(?:e|embed|sovm9|boh)/""", RegexOption.IGNORE_CASE).containsMatchIn(pagePath)
-            val prefix = origin + "/api/videos/" + code + if (embedMode) "/embed" else ""
+            val apiPrefix = origin + "/api/videos/" + code + if (embedMode) "/embed" else ""
             val headers = initialHeaders + mapOf(
                 "Origin" to origin,
                 "Referer" to pageUrl,
@@ -736,7 +736,7 @@ class AnimeLHDProvider : MainAPI() {
                 "X-Embed-Referer" to "https://mytsumi.com/",
                 "X-Embed-Parent" to embed
             )
-            val settingsResponse = app.get(prefix + "/settings", headers = headers, timeout = 12)
+            val settingsResponse = app.get(apiPrefix + "/settings", headers = headers, timeout = 12)
             if (settingsResponse.code !in 200..299) error("settings HTTP " + settingsResponse.code)
             val settings = JSONObject(settingsResponse.text)
             var fingerprint: JSONObject? = null
@@ -749,7 +749,7 @@ class AnimeLHDProvider : MainAPI() {
                 val generator = java.security.KeyPairGenerator.getInstance("EC")
                 generator.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
                 val pair = generator.generateKeyPair()
-                val public = pair.public as java.security.interfaces.ECPublicKey
+                val publicKey = pair.public as java.security.interfaces.ECPublicKey
                 val signer = java.security.Signature.getInstance("SHA256withECDSA")
                 signer.initSign(pair.private)
                 signer.update(nonce.toByteArray(Charsets.UTF_8))
@@ -769,8 +769,8 @@ class AnimeLHDProvider : MainAPI() {
                     .put("media_devices", "ai1ao1vi3").put("pointer_type", "coarse")
                     .put("extra", JSONObject().put("vendor", "Samsung").put("appVersion", "7.2"))
                 val jwk = JSONObject().put("kty", "EC").put("crv", "P-256")
-                    .put("x", byseB64Encode(byseFixedUnsigned(public.w.affineX)))
-                    .put("y", byseB64Encode(byseFixedUnsigned(public.w.affineY)))
+                    .put("x", byseB64Encode(byseFixedUnsigned(publicKey.w.affineX)))
+                    .put("y", byseB64Encode(byseFixedUnsigned(publicKey.w.affineY)))
                     .put("ext", true).put("key_ops", JSONArray().put("verify"))
                 val attest = bysePostJson(origin + "/api/videos/access/attest", headers,
                     JSONObject().put("viewer_id", "").put("device_id", "").put("challenge_id", challengeId)
@@ -783,18 +783,18 @@ class AnimeLHDProvider : MainAPI() {
                 fingerprint = JSONObject().put("token", attest.optString("token"))
                     .put("viewer_id", attest.optString("viewer_id")).put("device_id", attest.optString("device_id"))
                 if (attest.has("confidence")) fingerprint.put("confidence", attest.opt("confidence"))
-                val captcha = bysePostJson(prefix + "/captcha", headers, JSONObject().put("fingerprint", fingerprint), 15)
+                val captcha = bysePostJson(apiPrefix + "/captcha", headers, JSONObject().put("fingerprint", fingerprint), 15)
                 val powNonce = captcha.optString("pow_nonce")
                 val powToken = captcha.optString("pow_token")
                 if (powNonce.isBlank() || powToken.isBlank()) error("desafío PoW incompleto")
                 val solution = solveBysePow(powNonce, captcha.optInt("pow_difficulty", -1)) ?: error("PoW agotó el tiempo")
-                val verified = bysePostJson(prefix + "/captcha/verify", headers,
+                val verified = bysePostJson(apiPrefix + "/captcha/verify", headers,
                     JSONObject().put("pow_token", powToken).put("solution", solution).put("fingerprint", fingerprint), 15)
                 captchaToken = verified.optString("token")
                 if (captchaToken.isBlank()) error("verificación CAPTCHA sin token")
             }
             val playbackHeaders = headers + if (captchaToken.isBlank()) emptyMap() else mapOf("X-Captcha-Token" to captchaToken)
-            val playback = bysePostJson(prefix + "/playback", playbackHeaders,
+            val playback = bysePostJson(apiPrefix + "/playback", playbackHeaders,
                 if (settings.optBoolean("captcha_required", false)) JSONObject().put("fingerprint", fingerprint) else JSONObject(), 20)
             var sources = playback.optJSONArray("sources")
             if (sources == null) {
@@ -827,7 +827,7 @@ class AnimeLHDProvider : MainAPI() {
             )
             val isHls = Regex("""\.m3u8(?:$|[?#])""", RegexOption.IGNORE_CASE).containsMatchIn(streamUrl)
             val isDash = Regex("""\.mpd(?:$|[?#])""", RegexOption.IGNORE_CASE).containsMatchIn(streamUrl)
-            var actualQuality = getQualityFromName(chosen.first)
+            var actualQuality = Regex("""(\\d{3,4})\\s*[pP]?""").find(chosen.first)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: Qualities.Unknown.value
             if (isHls) {
                 try {
                     val manifest = app.get(streamUrl, headers = streamHeaders, timeout = 8)
