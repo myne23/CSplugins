@@ -46,11 +46,22 @@ internal class AbyssMediaServer {
     )
     // Prevent a permanently failing CDN segment from triggering a tight retry loop.
     private val soraPrefetchRetryAfter = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    // The newest player seek takes priority over downloads left behind by the previous position.
+    @Volatile private var soraRequestedSegmentIndex: Int = -1
+    private class SoraSegmentSupersededException(message: String) : Exception(message)
+
+    private fun ensureSoraSegmentRelevant(index: Int) {
+        val requested = soraRequestedSegmentIndex
+        if (requested >= 0 && (index < requested - 1 || index > requested + 2)) {
+            throw SoraSegmentSupersededException("segment=$index requested=$requested")
+        }
+    }
 
     @Synchronized fun register(next: AbyssSource): String {
         // A CDN host is reused across episodes; compare the full source metadata, not just the host URL.
         val sameContent = source == next
         if (!sameContent) {
+            soraRequestedSegmentIndex = -1
             probedUrl = null
             probedLength = -1L
             layoutProbeUrl = null
@@ -159,6 +170,7 @@ internal class AbyssMediaServer {
         // Sora segment boundaries come from Abyss metadata (partSize), not our local read buffer size.
         val segmentSize = if (src.segmented) soraSegmentSize(src) else chunkSize.toLong()
         val chunk = (offset / segmentSize).toInt()
+        if (src.segmented) soraRequestedSegmentIndex = chunk
         // Include the actual upstream segment size in the cache key.
         val file = File(cache, md5(src.url + "|" + src.filename) + "-${segmentSize}-$chunk.bin")
         if (src.segmented) {
@@ -282,8 +294,12 @@ internal class AbyssMediaServer {
                     var failure: Throwable? = null
                     for (attempt in 0..2) {
                         try {
+                            ensureSoraSegmentRelevant(index)
                             fetchSoraSegment(src, index, target, total)
                             failure = null
+                            break
+                        } catch (e: SoraSegmentSupersededException) {
+                            failure = e
                             break
                         } catch (e: Exception) {
                             failure = e
@@ -291,7 +307,10 @@ internal class AbyssMediaServer {
                             if (attempt < 2) Thread.sleep(300L * (attempt + 1))
                         }
                     }
-                    if (failure != null) {
+                    if (failure is SoraSegmentSupersededException) {
+                        diagnostic("upstream_segment_superseded", "index=$index ${failure.message ?: "seek moved"}")
+                        File(target.parentFile, target.name + ".part").delete()
+                    } else if (failure != null) {
                         diagnostic("upstream_prefetch_failed", "index=$index ${failure.javaClass.simpleName}: ${failure.message ?: "no message"}")
                         // Do not leave a partial segment looking like usable buffered data.
                         File(target.parentFile, target.name + ".part").delete()
@@ -303,7 +322,7 @@ internal class AbyssMediaServer {
                 diagnostic("upstream_prefetch_error", "index=$index ${e.javaClass.simpleName}: ${e.message ?: "no message"}")
             } finally {
                 // Retry after a short cooldown, not on every polling iteration.
-                if (target.exists()) soraPrefetchRetryAfter.remove(target.absolutePath)
+                if (target.exists() || failure is SoraSegmentSupersededException) soraPrefetchRetryAfter.remove(target.absolutePath)
                 else soraPrefetchRetryAfter[target.absolutePath] = System.currentTimeMillis() + 1500L
                 soraPrefetchScheduled.remove(target.absolutePath)
             }
@@ -416,6 +435,7 @@ internal class AbyssMediaServer {
         var code = -1
         var received = 0L
         try {
+            ensureSoraSegmentRelevant(index)
             code = conn.responseCode
             if (code !in 200..299) throw IllegalStateException("Abyss segment HTTP $code index=$index")
             val temp = File(target.parentFile, target.name + ".part")
@@ -423,8 +443,10 @@ internal class AbyssMediaServer {
                 temp.outputStream().use { output ->
                     val buf = ByteArray(16384)
                     while (true) {
+                        ensureSoraSegmentRelevant(index)
                         val n = input.read(buf)
                         if (n < 0) break
+                        ensureSoraSegmentRelevant(index)
                         output.write(buf, 0, n)
                         received += n
                         if (received > segmentBytes + 65536L) throw IllegalStateException("Abyss segment too large index=$index bytes=$received")
