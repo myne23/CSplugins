@@ -980,6 +980,18 @@ class AnimESProvider : MainAPI() {
         return output.toString()
     }
 
+    private fun String.countSubstring(needle: String): Int {
+        if (needle.isEmpty()) return 0
+        var count = 0
+        var from = 0
+        while (true) {
+            val at = indexOf(needle, from, ignoreCase = true)
+            if (at < 0) return count
+            count++
+            from = at + needle.length
+        }
+    }
+
     private fun collectSourceUrls(html: String, baseUrl: String): LinkedHashSet<String> {
         val found = linkedSetOf<String>()
         val percentDecodedHtml = runCatching { URLDecoder.decode(html, "UTF-8") }.getOrDefault(html)
@@ -1381,16 +1393,30 @@ class AnimESProvider : MainAPI() {
         var playbackFetched = 0
         for (playbackUrl in playbackPaths.take(5)) {
             if (playbackUrl.trimEnd('/') == requestedUrl.trimEnd('/')) continue
-            val playbackHtml = try {
-                app.get(playbackUrl, headers = apiHeaders + mapOf("Referer" to sourcePage)).text
+            val playbackResponse = try {
+                app.get(playbackUrl, headers = apiHeaders + mapOf("Referer" to sourcePage))
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 log("AnimeYT playback page failed " + playbackUrl + ": " + e.message)
                 continue
             }
+            val playbackHtml = playbackResponse.text
             playbackFetched++
             val found = collectSourceUrls(playbackHtml, playbackUrl)
-            log("AnimeYT playback scan " + playbackUrl + " html=" + playbackHtml.length + " candidates=" + found.size)
+            log("AnimeYT playback scan " + playbackUrl + " http=" + playbackResponse.code +
+                " final=" + playbackResponse.url + " html=" + playbackHtml.length +
+                " iframe=" + Regex("""<iframe\\b""", RegexOption.IGNORE_CASE).findAll(playbackHtml).count() +
+                " mytsumi=" + playbackHtml.countSubstring("mytsumi") +
+                " options=" + playbackHtml.countSubstring("options.php") +
+                " candidates=" + found.size)
+            if (found.isEmpty()) {
+                for (marker in listOf("mytsumi", "iframe", "options.php", "player")) {
+                    val at = playbackHtml.indexOf(marker, ignoreCase = true)
+                    if (at >= 0) log("AnimeYT playback marker " + marker + " snippet=" +
+                        playbackHtml.substring((at - 100).coerceAtLeast(0), (at + 220).coerceAtMost(playbackHtml.length))
+                            .replace(Regex("\\s+"), " "))
+                }
+            }
             if (found.isNotEmpty()) {
                 val usefulFound = found.filterNot { candidate ->
                     val host = runCatching { URI(candidate).host.orEmpty().lowercase().removePrefix("www.") }.getOrDefault("")
