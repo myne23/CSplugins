@@ -193,19 +193,16 @@ internal class AbyssMediaServer {
                     }
                 }
                 if (part.exists()) {
-                    // Start the next segment near the end of the current download to
-                    // preserve the established Sora rolling buffer. If the player seeks,
-                    // the requested segment is still scheduled independently above.
-                    if (part.length() >= (segmentSize * 50L / 100L)) {
-                        scheduleSoraPrefetch(src, chunk + 1, total)
-                    }
+                    // Do not download a speculative segment while the requested segment
+                    // is still arriving; after a seek, that extra request can compete for bandwidth.
+                    // The next segment is scheduled once this segment has completed below.
                     val available = part.length() - inChunk
-                    // Never expose the MP4 header until enough bytes exist to validate it.
-                    val prefixReady = chunk != 0 || part.length() >= 65536L
-                    // Batch modest Sora reads to avoid feeding the local player a stream of tiny
-                    // fragments when the CDN is slower than playback. Keep the threshold small
-                    // enough that a seek can resume without waiting for a large portion of a segment.
-                    val minSoraBatch = min(256L * 1024L, segmentSize - inChunk)
+                    // The MP4 check below reads only 8 bytes (the ftyp marker), so do not
+                    // impose a larger startup delay before streaming the first segment.
+                    val prefixReady = chunk != 0 || part.length() >= 8L
+                    // Use only a tiny 4 KiB minimum before serving growing Sora data.
+                    // This minimizes added wait; it cannot make the upstream download itself faster.
+                    val minSoraBatch = min(4L * 1024L, segmentSize - inChunk)
                     if (available >= minSoraBatch && prefixReady) {
                         try {
                             if (chunk == 0) {
