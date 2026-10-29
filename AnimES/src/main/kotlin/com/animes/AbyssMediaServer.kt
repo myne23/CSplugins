@@ -243,6 +243,52 @@ internal class AbyssMediaServer {
             }
         }
 
+        val inChunk = (offset % segmentSize).toInt()
+        if (!file.exists() && chunk > 0) {
+            // For direct URLs, do not make the player wait for the complete 256 KiB
+            // upstream request after a seek. Fetch in the background and stream from
+            // the growing .part file at the requested offset, as the Sora path does.
+            scheduleDirectPrefetch(src, chunk, total)
+            val part = File(file.parentFile, file.name + ".part")
+            val deadline = System.currentTimeMillis() + 90_000L
+            while (true) {
+                if (file.exists()) {
+                    val available = file.length() - inChunk
+                    val count = min(len.toLong(), available).toInt()
+                    if (count > 0) {
+                        java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
+                        scheduleDirectPrefetch(src, chunk + 1, total)
+                        return count
+                    }
+                }
+                if (part.exists()) {
+                    val available = part.length() - inChunk
+                    if (available > 0L) {
+                        try {
+                            val count = min(len.toLong(), available).toInt()
+                            java.io.RandomAccessFile(part, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
+                            // Start the next chunk as soon as the current one is almost ready.
+                            if (part.length() >= segmentSize * 9L / 10L) {
+                                scheduleDirectPrefetch(src, chunk + 1, total)
+                            }
+                            return count
+                        } catch (_: java.io.FileNotFoundException) {
+                            // The downloader may have committed .part as .bin between checks.
+                            continue
+                        } catch (_: java.io.EOFException) {
+                            // The upstream writer may still be extending the temporary file.
+                            continue
+                        }
+                    }
+                }
+                if (System.currentTimeMillis() >= deadline) {
+                    throw IllegalStateException("Timed out waiting for direct chunk bytes index=$chunk offset=$inChunk")
+                }
+                Thread.sleep(20L)
+            }
+        }
+        // Keep the first direct chunk synchronous: its encrypted prefix must be decrypted
+        // and validated before any bytes are exposed to ExoPlayer.
         if (!file.exists()) synchronized(file.absolutePath.intern()) {
             if (!file.exists()) {
                 var failure: Throwable? = null
@@ -260,11 +306,9 @@ internal class AbyssMediaServer {
                 if (failure != null) throw failure
             }
         }
-        val inChunk = (offset % segmentSize).toInt()
         val count = min(len, (file.length() - inChunk).toInt().coerceAtLeast(0))
         if (count <= 0) return -1
         java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
-        // Keep the following direct chunk downloading while the player consumes this one.
         scheduleDirectPrefetch(src, chunk + 1, total)
         return count
     }
