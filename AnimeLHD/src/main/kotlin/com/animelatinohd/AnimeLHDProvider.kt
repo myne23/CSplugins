@@ -746,7 +746,7 @@ class AnimeLHDProvider : MainAPI() {
 
         for (counter in 0 until 1_000_000) {
             // Corte de seguridad para no colgar la carga de links.
-            if ((counter and 0xff) == 0 && System.nanoTime() - powStart > ALTCHA_TIMEOUT_NS) break
+            if ((counter and 0xff) == 0 && System.nanoTime() - powStart > VOE_TIMEOUT_NS) break
 
             val counterBytes = byteArrayOf(
                 ((counter ushr 24) and 0xff).toByte(),
@@ -898,8 +898,8 @@ class AnimeLHDProvider : MainAPI() {
         val chars = CharArray(bytes.size * 2)
         for (i in bytes.indices) {
             val v = bytes[i].toInt() and 0xff
-            chars[i * 2] = HEX_CHARS[v ushr 4]
-            chars[i * 2 + 1] = HEX_CHARS[v and 0x0f]
+            chars[i * 2] = VOE_HEX_CHARS[v ushr 4]
+            chars[i * 2 + 1] = VOE_HEX_CHARS[v and 0x0f]
         }
         return String(chars)
     }
