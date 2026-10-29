@@ -517,7 +517,16 @@ internal class AbyssMediaServer {
         try {
             code = conn.responseCode
             if (code !in 200..299) throw IllegalStateException("Abyss segment HTTP $code index=$index")
-            val temp = File(target.parentFile, target.name + ".part")
+            // Keep the live .part file intact if a retry is needed. The player may
+            // already be reading bytes from it; truncating it on retry makes playback
+            // catch up to the new download from byte zero and causes repeated stalls.
+            val livePart = File(target.parentFile, target.name + ".part")
+            val temp = if (livePart.exists() && livePart.length() > 0L) {
+                File(target.parentFile, target.name + ".retry.part")
+            } else {
+                livePart
+            }
+            temp.delete()
             conn.inputStream.use { input ->
                 temp.outputStream().use { output ->
                     val buf = ByteArray(64 * 1024)
@@ -550,6 +559,9 @@ internal class AbyssMediaServer {
             diagnostic("upstream_segment_ok", "index=$index status=$code received=$received expected=$expected durationMs=${System.currentTimeMillis() - started}")
         } catch (e: Throwable) {
             diagnostic("upstream_segment_error", "index=$index status=$code received=$received durationMs=${System.currentTimeMillis() - started} ${e.javaClass.simpleName}: ${e.message ?: "no message"}")
+            throw e
+        } catch (e: Throwable) {
+            if (temp.name.endsWith(".retry.part")) temp.delete()
             throw e
         } finally {
             conn.disconnect()
