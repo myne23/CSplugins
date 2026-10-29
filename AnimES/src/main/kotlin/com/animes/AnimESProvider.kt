@@ -1358,7 +1358,7 @@ class AnimESProvider : MainAPI() {
         sink: LinkSink,
         subtitleCallback: (SubtitleFile) -> Unit
     ) {
-        val id = Regex("""/(?:videoembed|video)/(\\d+)""", RegexOption.IGNORE_CASE)
+        val id = Regex("""/(?:videoembed|video)/(\d+)""", RegexOption.IGNORE_CASE)
             .find(runCatching { URI(embedUrl).path.orEmpty() }.getOrDefault(""))?.groupValues?.getOrNull(1)
             ?: return
         val okEmbedUrl = "https://ok.ru/videoembed/$id"
@@ -1373,7 +1373,7 @@ class AnimESProvider : MainAPI() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                log("OK.ru loadExtractor ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
+                log("OK.ru loadExtractor ERROR id=§{e.javaClass.simpleName}: §{e.message}")
             }
             true
         }
@@ -1383,7 +1383,8 @@ class AnimESProvider : MainAPI() {
         val links = collected.distinctBy { it.url }.sortedByDescending { it.quality }
         if (links.isNotEmpty()) {
             for (link in links) {
-                val qualityLabel = link.quality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
+                val qualityLabel = link.quality.takeIf { it > 0 }?.let { " · §{it}p" }.orEmpty()
+                val linkReferer = link.referer.ifBlank { okEmbedUrl }
                 sink.emit(
                     newExtractorLink(
                         source = name,
@@ -1391,11 +1392,11 @@ class AnimESProvider : MainAPI() {
                         url = link.url,
                         type = link.type
                     ) {
-                        referer = link.referer.ifBlank { okEmbedUrl }
+                        referer = linkReferer
                         quality = link.quality
                         headers = link.headers + mapOf(
                             "User-Agent" to UA,
-                            "Referer" to link.referer.ifBlank { okEmbedUrl },
+                            "Referer" to linkReferer,
                             "Origin" to "https://ok.ru"
                         )
                         extractorData = link.extractorData
@@ -1403,7 +1404,7 @@ class AnimESProvider : MainAPI() {
                     TAG_ANIMEYT
                 )
             }
-            log("OK.ru extractor oficial links=${links.size} id=$id")
+            log("OK.ru extractor oficial links=§{links.size} id=$id")
             return
         }
 
@@ -1420,15 +1421,15 @@ class AnimESProvider : MainAPI() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            log("OK.ru HTML fallback ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
+            log("OK.ru HTML fallback ERROR id=$id: §{e.javaClass.simpleName}: §{e.message}")
             return
         }
 
         fun decodeOkHtml(value: String): String =
             value
-                .replace("&quot;", "\" ", ignoreCase = true).replace("\" ", "\"")
-                .replace("&#34;", "\" ", ignoreCase = true).replace("\" ", "\"")
-                .replace("&#x22;", "\" ", ignoreCase = true).replace("\" ", "\"")
+                .replace("&quot;", "\"", ignoreCase = true)
+                .replace("&#34;", "\"", ignoreCase = true)
+                .replace("&#x22;", "\"", ignoreCase = true)
                 .replace("&apos;", "'", ignoreCase = true)
                 .replace("&#39;", "'", ignoreCase = true)
                 .replace("&#x27;", "'", ignoreCase = true)
@@ -1437,11 +1438,11 @@ class AnimESProvider : MainAPI() {
                 .replace("\\u0026", "&", ignoreCase = true)
 
         val optionsRaw = Regex(
-            """data-options\\s*=\\s*"([^"]+)"""",
+            """data-options\s*=\s*"([^"]+)"""",
             RegexOption.IGNORE_CASE
         ).find(html)?.groupValues?.getOrNull(1)
             ?: Regex(
-                """data-options\\s*=\\s*'([^']+)'""",
+                """data-options\s*=\s*'([^']+)'""",
                 RegexOption.IGNORE_CASE
             ).find(html)?.groupValues?.getOrNull(1)
 
@@ -1454,12 +1455,12 @@ class AnimESProvider : MainAPI() {
                 else -> null
             }
         } catch (e: Exception) {
-            log("OK.ru metadata parse ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
+            log("OK.ru metadata parse ERROR id=$id: §{e.javaClass.simpleName}: §{e.message}")
             null
         }
 
         if (metadata == null) {
-            log("OK.ru sin data-options/metadata válido id=$id html=${html.length}")
+            log("OK.ru sin data-options/metadata válido id=$id html=§{html.length}")
             return
         }
 
@@ -1504,7 +1505,7 @@ class AnimESProvider : MainAPI() {
             },
             TAG_ANIMEYT
         )
-        log("OK.ru HLS metadata encontrado id=$id host=${hlsUri.host}; UA+Referer+Origin configurados; MP4 omitidos")
+        log("OK.ru HLS metadata encontrado id=$id host=§{hlsUri.host}; UA+Referer+Origin configurados; MP4 omitidos")
     }
 
     private suspend fun loadAnimeYtSources(
