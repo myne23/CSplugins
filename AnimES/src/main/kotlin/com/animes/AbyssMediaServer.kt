@@ -132,7 +132,7 @@ internal class AbyssMediaServer {
                 return
             }
             var pos = start
-            val buf = ByteArray(64 * 1024)
+            val buf = ByteArray(256 * 1024)
             while (pos <= end) {
                 val n = min(buf.size.toLong(), end - pos + 1).toInt()
                 failureStage = "upstream_read"
@@ -193,14 +193,8 @@ internal class AbyssMediaServer {
                     // Start the next segment near the end of the current download to
                     // preserve the established Sora rolling buffer. If the player seeks,
                     // the requested segment is still scheduled independently above.
-                    if (part.length() >= (segmentSize * 9L / 10L)) {
+                    if (part.length() >= (segmentSize * 3L / 4L)) {
                         scheduleSoraPrefetch(src, chunk + 1, total)
-                        // Small Sora parts often arrive quickly, but a single slow CDN part
-                        // can empty Kino's buffer. For 4 MiB parts, keep one extra part ready;
-                        // larger parts retain the conservative one-part window.
-                        if (segmentSize <= 4L * 1024L * 1024L) {
-                            scheduleSoraPrefetch(src, chunk + 2, total)
-                        }
                     }
                     val available = part.length() - inChunk
                     // Never expose the MP4 header until enough bytes exist to validate it.
@@ -268,7 +262,7 @@ internal class AbyssMediaServer {
                             val count = min(len.toLong(), available).toInt()
                             java.io.RandomAccessFile(part, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
                             // Start the next chunk as soon as the current one is almost ready.
-                            if (part.length() >= segmentSize * 9L / 10L) {
+                            if (part.length() >= segmentSize * 3L / 4L) {
                                 scheduleDirectPrefetch(src, chunk + 1, total)
                             }
                             return count
