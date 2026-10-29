@@ -370,12 +370,19 @@ internal class AbyssMediaServer {
         val now = System.currentTimeMillis()
         if (now < (soraPrefetchRetryAfter[target.absolutePath] ?: 0L)) return
         if (!soraPrefetchScheduled.add(target.absolutePath)) return
+        val requestedAtSchedule = soraWantedTarget
         Thread({
             try {
                 synchronized(target.absolutePath.intern()) {
                     if (target.exists()) return@synchronized
                     var failure: Throwable? = null
                     for (attempt in 0..2) {
+                        val stillRelevant = if (lookahead) {
+                            soraWantedTarget == requestedAtSchedule || soraWantedTarget == target.absolutePath
+                        } else {
+                            soraWantedTarget == target.absolutePath
+                        }
+                        if (!stillRelevant) break
                         try {
                             fetchSoraSegment(src, index, target, total)
                             failure = null
