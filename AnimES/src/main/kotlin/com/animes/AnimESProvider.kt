@@ -1388,13 +1388,13 @@ class AnimESProvider : MainAPI() {
                 if (q <= 0 || url.isBlank()) null else Triple(q, match.groupValues[1], url)
             }.maxByOrNull { it.first }
             if (best != null) {
-                sink.emit(newExtractorLink(source = name, name = "OK.ru · \${best.first}p", url = best.third,
+                sink.emit(newExtractorLink(source = name, name = "OK.ru · ${best.first}p", url = best.third,
                     type = ExtractorLinkType.VIDEO) {
                     referer = okEmbedUrl
                     quality = best.first
                     headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
                 }, TAG_ANIMEYT)
-                log("OK.ru resuelto calidad=\${best.first} id=$id")
+                log("OK.ru resuelto calidad=${best.first} id=$id")
                 return
             }
         }
