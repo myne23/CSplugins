@@ -34,6 +34,8 @@ internal class AbyssMediaServer {
     // for a full MiB download. Sora uses its own metadata-sized segments below.
     private val chunkSize = 256 * 1024
     private val DEFAULT_SORA_SEGMENT_SIZE = 2L * 1024L * 1024L
+    // Bound persistent disk usage; old cache blocks are disposable and can be fetched again.
+    private val maxCacheBytes = 128L * 1024L * 1024L
 
     // Abyss's token path embeds the segment size advertised by fristDatas.partSize.
     // It can differ between videos; hardcoding 2 MiB produces valid-looking tokens for
@@ -186,6 +188,7 @@ internal class AbyssMediaServer {
                     val count = min(len.toLong(), available).toInt()
                     if (count > 0) {
                         java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
+                        markCacheAccess(file)
                         break
                     }
                 }
@@ -234,6 +237,7 @@ internal class AbyssMediaServer {
             return min(len, (file.length() - inChunk).toInt().coerceAtLeast(0)).also { count ->
                 if (count <= 0) throw IllegalStateException("Sora segment cache has no bytes index=$chunk")
                 java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
+                markCacheAccess(file)
             }
         }
 
@@ -251,6 +255,7 @@ internal class AbyssMediaServer {
                     val count = min(len.toLong(), available).toInt()
                     if (count > 0) {
                         java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
+                        markCacheAccess(file)
                         scheduleDirectPrefetch(src, chunk + 1, total)
                         return count
                     }
@@ -303,6 +308,7 @@ internal class AbyssMediaServer {
         val count = min(len, (file.length() - inChunk).toInt().coerceAtLeast(0))
         if (count <= 0) return -1
         java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
+        markCacheAccess(file)
         scheduleDirectPrefetch(src, chunk + 1, total)
         return count
     }
@@ -457,6 +463,7 @@ internal class AbyssMediaServer {
                 } else throw IllegalStateException("upstream first chunk too short bytes=${bytes.size}")
             }
             if (!temp.renameTo(target)) throw IllegalStateException("could not commit cache chunk")
+            trimCache(target)
             diagnostic("upstream_chunk_ok", "chunk=$index status=$code received=$received contentRange=${contentRange ?: "none"} durationMs=${System.currentTimeMillis() - started}")
         } catch (e: Throwable) {
             diagnostic("upstream_chunk_error", "chunk=$index status=$code range=$start-$end received=$received durationMs=${System.currentTimeMillis() - started} ${e.javaClass.simpleName}: ${e.message ?: "no message"}")
@@ -532,6 +539,7 @@ internal class AbyssMediaServer {
                 if (marker != "ftyp") throw IllegalStateException("MP4 prefix check failed rawMarker=$marker")
             }
             if (!temp.renameTo(target)) throw IllegalStateException("could not commit Abyss segment cache")
+            trimCache(target)
             diagnostic("upstream_segment_ok", "index=$index status=$code received=$received expected=$expected durationMs=${System.currentTimeMillis() - started}")
         } catch (e: Throwable) {
             diagnostic("upstream_segment_error", "index=$index status=$code received=$received durationMs=${System.currentTimeMillis() - started} ${e.javaClass.simpleName}: ${e.message ?: "no message"}")
@@ -571,6 +579,38 @@ internal class AbyssMediaServer {
         }, "abyss-mp4-layout").apply { isDaemon = true; start() }
     }
 
+
+    private fun markCacheAccess(file: File) {
+        // Use lastModified as a lightweight LRU timestamp for recently read blocks.
+        runCatching { file.setLastModified(System.currentTimeMillis()) }
+    }
+
+    /**
+     * Keep Abyss's on-disk cache bounded. Completed blocks are disposable; .part files
+     * currently being downloaded are left alone, while abandoned partials expire after
+     * ten minutes. Recently read blocks and the block just committed are protected.
+     */
+    private fun trimCache(protectedFile: File? = null) {
+        synchronized(cache.absolutePath.intern()) {
+            val now = System.currentTimeMillis()
+            val files = cache.listFiles() ?: return
+            files.filter { it.isFile && it.name.endsWith(".part") && now - it.lastModified() > 10L * 60L * 1000L }
+                .forEach { runCatching { it.delete() } }
+            val completed = files.filter { it.isFile && it.name.endsWith(".bin") }
+            var totalBytes = completed.sumOf { it.length() }
+            if (totalBytes <= maxCacheBytes) return
+            val recentCutoff = now - 45_000L
+            for (candidate in completed.sortedBy { it.lastModified() }) {
+                if (totalBytes <= maxCacheBytes) break
+                if (protectedFile != null && candidate.absolutePath == protectedFile.absolutePath) continue
+                if (candidate.lastModified() >= recentCutoff) continue
+                val size = candidate.length()
+                if (runCatching { candidate.delete() }.getOrDefault(false)) totalBytes -= size
+            }
+            val remaining = cache.listFiles()?.count { it.isFile && it.name.endsWith(".bin") } ?: 0
+            diagnostic("cache_trim", "limitBytes=" + maxCacheBytes + " remainingBytes=" + totalBytes + " filesRemaining=" + remaining)
+        }
+    }
     private fun readUInt32(bytes: ByteArray, offset: Int): Long {
         if (offset < 0 || offset + 4 > bytes.size) return -1L
         return ((bytes[offset].toLong() and 0xff) shl 24) or
