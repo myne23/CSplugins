@@ -1728,7 +1728,7 @@ class AnimESProvider : MainAPI() {
             safely("AnimeYT candidate") {
                 when {
                     runCatching { URI(candidate).host.orEmpty().lowercase().removePrefix("www.") }.getOrDefault("")
-                        .let { it == "player.abyssplayer.com" || it.endsWith(".abyssplayer.com") } -> {
+                        .let { it == "abyssplayer.com" || it == "www.abyssplayer.com" || it == "player.abyssplayer.com" || it.endsWith(".abyssplayer.com") } -> {
                         val encodedUrl = URLEncoder.encode(candidate, "UTF-8")
                         val referer = sourcePage.ifBlank { "https://mytsumi.com/" }
                         val encodedReferer = URLEncoder.encode(referer, "UTF-8")
