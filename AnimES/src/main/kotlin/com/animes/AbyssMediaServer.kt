@@ -202,7 +202,10 @@ internal class AbyssMediaServer {
                     val available = part.length() - inChunk
                     // Never expose the MP4 header until enough bytes exist to validate it.
                     val prefixReady = chunk != 0 || part.length() >= 65536L
-                    if (available > 0L && prefixReady) {
+                    // Avoid feeding the local player tiny fragments while the segment is growing.
+                    // Waiting for a modest batch reduces repeated file opens/writes without delaying seeks much.
+                    val minBatch = min(16L * 1024L, segmentSize - inChunk)
+                    if (available >= minBatch && prefixReady) {
                         try {
                             if (chunk == 0) {
                                 val prefix = ByteArray(8)
@@ -261,7 +264,10 @@ internal class AbyssMediaServer {
                 }
                 if (part.exists()) {
                     val available = part.length() - inChunk
-                    if (available > 0L) {
+                    // Batch small increments from the growing file instead of returning a few bytes
+                    // on every poll; the player still starts as soon as a small block is available.
+                    val minBatch = min(16L * 1024L, segmentSize - inChunk)
+                    if (available >= minBatch) {
                         try {
                             val count = min(len.toLong(), available).toInt()
                             java.io.RandomAccessFile(part, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
