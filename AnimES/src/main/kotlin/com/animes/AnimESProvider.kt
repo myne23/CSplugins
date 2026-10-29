@@ -1405,7 +1405,7 @@ class AnimESProvider : MainAPI() {
             val found = collectSourceUrls(playbackHtml, playbackUrl)
             log("AnimeYT playback scan " + playbackUrl + " http=" + playbackResponse.code +
                 " final=" + playbackResponse.url + " html=" + playbackHtml.length +
-                " iframe=" + Regex("""<iframe\\b""", RegexOption.IGNORE_CASE).findAll(playbackHtml).count() +
+                " iframe=" + Regex("""<iframe\b""", RegexOption.IGNORE_CASE).findAll(playbackHtml).count() +
                 " mytsumi=" + playbackHtml.countSubstring("mytsumi") +
                 " options=" + playbackHtml.countSubstring("options.php") +
                 " candidates=" + found.size)
