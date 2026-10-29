@@ -196,7 +196,7 @@ internal class AbyssMediaServer {
                     // Start the next segment near the end of the current download to
                     // preserve the established Sora rolling buffer. If the player seeks,
                     // the requested segment is still scheduled independently above.
-                    if (part.length() >= (segmentSize * 3L / 4L)) {
+                    if (part.length() >= (segmentSize * 2L / 3L)) {
                         scheduleSoraPrefetch(src, chunk + 1, total)
                     }
                     val available = part.length() - inChunk
@@ -229,11 +229,10 @@ internal class AbyssMediaServer {
                 }
                 Thread.sleep(25L)
             }
-            // Keep a rolling buffer ahead of playback. Small 4 MiB Sora parts get
-            // a two-part lookahead to mask occasional slow CDN responses; larger parts
-            // stay at one ahead to avoid unnecessary concurrent bandwidth use.
-            val prefetchDepth = if (segmentSize <= 4L * 1024L * 1024L) 2 else 1
-            for (ahead in 1..prefetchDepth) scheduleSoraPrefetch(src, chunk + ahead, total)
+            // Keep exactly one segment ahead. Fetching two complete Sora segments
+            // concurrently can compete with the segment requested after a seek and
+            // wastes bandwidth/cache on segments the player may never reach.
+            scheduleSoraPrefetch(src, chunk + 1, total)
             return min(len, (file.length() - inChunk).toInt().coerceAtLeast(0)).also { count ->
                 if (count <= 0) throw IllegalStateException("Sora segment cache has no bytes index=$chunk")
                 java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
