@@ -200,9 +200,13 @@ internal class AbyssMediaServer {
                     // The MP4 check below reads only 8 bytes (the ftyp marker), so do not
                     // impose a larger startup delay before streaming the first segment.
                     val prefixReady = chunk != 0 || part.length() >= 8L
-                    // Use only a tiny 4 KiB minimum before serving growing Sora data.
-                    // This minimizes added wait; it cannot make the upstream download itself faster.
-                    val minSoraBatch = min(4L * 1024L, segmentSize - inChunk)
+                    // Use a useful 12 KiB batch while still starting before the full segment arrives.
+                    val minSoraBatch = min(12L * 1024L, segmentSize - inChunk)
+                    // Overlap the next segment download with playback of this one.
+                    // Waiting until this segment is fully downloaded leaves a gap at every boundary.
+                    if (part.length() >= maxOf(256L * 1024L, segmentSize / 4L)) {
+                        scheduleSoraPrefetch(src, chunk + 1, total)
+                    }
                     if (available >= minSoraBatch && prefixReady) {
                         try {
                             if (chunk == 0) {
