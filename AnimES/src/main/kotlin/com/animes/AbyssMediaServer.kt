@@ -196,7 +196,7 @@ internal class AbyssMediaServer {
                     // Start the next segment near the end of the current download to
                     // preserve the established Sora rolling buffer. If the player seeks,
                     // the requested segment is still scheduled independently above.
-                    if (part.length() >= (segmentSize * 25L / 100L)) {
+                    if (part.length() >= (segmentSize * 60L / 100L)) {
                         scheduleSoraPrefetch(src, chunk + 1, total)
                     }
                     val available = part.length() - inChunk
@@ -205,7 +205,7 @@ internal class AbyssMediaServer {
                     // Batch modest Sora reads to avoid feeding the local player a stream of tiny
                     // fragments when the CDN is slower than playback. Keep the threshold small
                     // enough that a seek can resume without waiting for a large portion of a segment.
-                    val minSoraBatch = min(32L * 1024L, segmentSize - inChunk)
+                    val minSoraBatch = min(64L * 1024L, segmentSize - inChunk)
                     if (available >= minSoraBatch && prefixReady) {
                         try {
                             if (chunk == 0) {
