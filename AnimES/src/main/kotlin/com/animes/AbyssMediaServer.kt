@@ -204,7 +204,7 @@ internal class AbyssMediaServer {
                     val minSoraBatch = min(12L * 1024L, segmentSize - inChunk)
                     // Overlap the next segment download with playback of this one.
                     // Waiting until this segment is fully downloaded leaves a gap at every boundary.
-                    if (part.length() >= maxOf(256L * 1024L, segmentSize / 4L)) {
+                    if (part.length() >= minOf(128L * 1024L, maxOf(32L * 1024L, segmentSize / 8L))) {
                         scheduleSoraPrefetch(src, chunk + 1, total)
                     }
                     if (available >= minSoraBatch && prefixReady) {
@@ -520,7 +520,7 @@ internal class AbyssMediaServer {
             val temp = File(target.parentFile, target.name + ".part")
             conn.inputStream.use { input ->
                 temp.outputStream().use { output ->
-                    val buf = ByteArray(16384)
+                    val buf = ByteArray(64 * 1024)
                     while (true) {
                         val n = input.read(buf)
                         if (n < 0) break
