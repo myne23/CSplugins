@@ -190,12 +190,14 @@ internal class AbyssMediaServer {
                     }
                 }
                 if (part.exists()) {
-                    // Start fetching the following Sora segment as soon as the current
-                    // one begins arriving. Waiting until 90% means the next 8 MiB part
-                    // often starts too late to protect playback from a CDN stall.
-                    if (part.length() > 0L) {
+                    // Start the next segment near the end of the current download to
+                    // preserve the established Sora rolling buffer. If the player seeks,
+                    // the requested segment is still scheduled independently above.
+                    if (part.length() >= (segmentSize * 9L / 10L)) {
                         scheduleSoraPrefetch(src, chunk + 1, total)
-                        // Smaller parts are cheap enough to keep a second segment ready.
+                        // Small Sora parts often arrive quickly, but a single slow CDN part
+                        // can empty Kino's buffer. For 4 MiB parts, keep one extra part ready;
+                        // larger parts retain the conservative one-part window.
                         if (segmentSize <= 4L * 1024L * 1024L) {
                             scheduleSoraPrefetch(src, chunk + 2, total)
                         }
@@ -255,7 +257,7 @@ internal class AbyssMediaServer {
                     val count = min(len.toLong(), available).toInt()
                     if (count > 0) {
                         java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
-                        for (ahead in 1..4) scheduleDirectPrefetch(src, chunk + ahead, total)
+                        scheduleDirectPrefetch(src, chunk + 1, total)
                         return count
                     }
                 }
@@ -266,8 +268,8 @@ internal class AbyssMediaServer {
                             val count = min(len.toLong(), available).toInt()
                             java.io.RandomAccessFile(part, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
                             // Start the next chunk as soon as the current one is almost ready.
-                            if (part.length() >= segmentSize / 4L) {
-                                for (ahead in 1..4) scheduleDirectPrefetch(src, chunk + ahead, total)
+                            if (part.length() >= segmentSize * 9L / 10L) {
+                                scheduleDirectPrefetch(src, chunk + 1, total)
                             }
                             return count
                         } catch (_: java.io.FileNotFoundException) {
@@ -307,10 +309,7 @@ internal class AbyssMediaServer {
         val count = min(len, (file.length() - inChunk).toInt().coerceAtLeast(0))
         if (count <= 0) return -1
         java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
-        // Keep roughly 1 MiB ready ahead instead of only one 256 KiB chunk.
-        // Separate workers download independent byte ranges, so the player is less
-        // likely to drain its buffer while the next request is opening or retrying.
-        for (ahead in 1..4) scheduleDirectPrefetch(src, chunk + ahead, total)
+        scheduleDirectPrefetch(src, chunk + 1, total)
         return count
     }
 
