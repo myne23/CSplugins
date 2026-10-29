@@ -1738,12 +1738,23 @@ class AnimESProvider : MainAPI() {
                                 log("Abyss progress=$progress $message")
                             }
                         }
-                        val localUrl = abyssMediaServer.register(parsed)
-                        log("Abyss resuelto; servidor local listo filename=${parsed.filename}")
-                        sink.emit(newExtractorLink(source = name, name = "AbyssPlayer", url = localUrl,
-                            type = ExtractorLinkType.VIDEO) {
-                            quality = 720
-                        }, TAG_ANIMEYT)
+                        if (parsed.hlsUrl.isNotBlank()) {
+                            // Native HLS is used only when the resolver explicitly found a playlist
+                            // for a confirmed split-Sora source. Direct MP4 sources keep the old path.
+                            log("Abyss HLS explícito detectado; usando reproductor nativo playlist=" + parsed.hlsUrl.substringBefore("?").take(180))
+                            sink.emit(newExtractorLink(source = name, name = "AbyssPlayer · HLS", url = parsed.hlsUrl,
+                                type = ExtractorLinkType.M3U8) {
+                                quality = 720
+                                headers = mapOf("Referer" to parsed.referer, "User-Agent" to UA)
+                            }, TAG_ANIMEYT)
+                        } else {
+                            val localUrl = abyssMediaServer.register(parsed)
+                            log("Abyss resuelto; servidor local listo filename=${parsed.filename}")
+                            sink.emit(newExtractorLink(source = name, name = "AbyssPlayer", url = localUrl,
+                                type = ExtractorLinkType.VIDEO) {
+                                quality = 720
+                            }, TAG_ANIMEYT)
+                        }
                     }
                     runCatching { URI(candidate).host.orEmpty().lowercase().removePrefix("www.") }.getOrDefault("")
                         .let { it == "ok.ru" || it.endsWith(".ok.ru") } -> {
