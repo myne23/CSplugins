@@ -1742,7 +1742,6 @@ class AnimESProvider : MainAPI() {
                         log("Abyss resuelto; servidor local listo filename=${parsed.filename}")
                         sink.emit(newExtractorLink(source = name, name = "AbyssPlayer", url = localUrl,
                             type = ExtractorLinkType.VIDEO) {
-                            referer = ""
                             quality = 720
                         }, TAG_ANIMEYT)
                     }
