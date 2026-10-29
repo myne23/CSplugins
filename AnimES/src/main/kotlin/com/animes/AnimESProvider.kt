@@ -982,12 +982,19 @@ class AnimESProvider : MainAPI() {
 
     private fun collectSourceUrls(html: String, baseUrl: String): LinkedHashSet<String> {
         val found = linkedSetOf<String>()
-        val source = (html + "\n" + unpackPackedScripts(html))
+        val percentDecodedHtml = runCatching { URLDecoder.decode(html, "UTF-8") }.getOrDefault(html)
+        val source = (html + "\n" + percentDecodedHtml + "\n" + unpackPackedScripts(html))
             .replace("\\/", "/")
             .replace("\\u002F", "/", ignoreCase = true)
             .replace("\\u0026", "&", ignoreCase = true)
-            .replace("&amp;", "&")
+            .replace("&#x2f;", "/", ignoreCase = true)
+            .replace("&#47;", "/", ignoreCase = true)
+            .replace("&#x3a;", ":", ignoreCase = true)
+            .replace("&#58;", ":", ignoreCase = true)
+            .replace("&quot;", "\"", ignoreCase = true)
+            .replace("&#039;", "'", ignoreCase = true)
             .replace("&#038;", "&")
+            .replace("&amp;", "&")
 
         fun add(value: String?) {
             val raw = value.orEmpty().trim().trimEnd(',', ';', ')', ']', '\\')
@@ -1383,6 +1390,7 @@ class AnimESProvider : MainAPI() {
             }
             playbackFetched++
             val found = collectSourceUrls(playbackHtml, playbackUrl)
+            log("AnimeYT playback scan " + playbackUrl + " html=" + playbackHtml.length + " candidates=" + found.size)
             if (found.isNotEmpty()) {
                 val usefulFound = found.filterNot { candidate ->
                     val host = runCatching { URI(candidate).host.orEmpty().lowercase().removePrefix("www.") }.getOrDefault("")
