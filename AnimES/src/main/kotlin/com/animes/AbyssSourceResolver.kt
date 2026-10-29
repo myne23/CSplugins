@@ -26,13 +26,20 @@ internal object AbyssSourceResolver {
         val referer = decode(parts[3]).ifBlank { "https://mytsumi.com/" }
         val embed = if (rawSlug.startsWith("https%3A", true) || rawSlug.startsWith("https://")) decode(rawSlug) else
             "https://player.abyssplayer.com/$rawSlug"
-        val embedUrl = try { URL(embed) } catch (_: Exception) {
+        val parsedEmbed = try { URL(embed) } catch (_: Exception) {
             throw ResolveFailure("unsupported", "URL de Abyss inválida / Invalid Abyss URL")
         }
+        // AnimeYT/MyTsumi entrega el enlace público abyssplayer.com/<slug>, pero
+        // la página con los metadatos cifrados vive en player.abyssplayer.com.
+        val embedUrl = if (parsedEmbed.protocol == "https" &&
+            (parsedEmbed.host.equals("abyssplayer.com", true) || parsedEmbed.host.equals("www.abyssplayer.com", true))) {
+            URL("https", "player.abyssplayer.com", parsedEmbed.port, parsedEmbed.file)
+        } else parsedEmbed
         if (embedUrl.protocol != "https" || embedUrl.host != "player.abyssplayer.com") throw ResolveFailure("unsupported", "El enlace no pertenece a AbyssPlayer / Link is not from AbyssPlayer")
+        val normalizedEmbed = embedUrl.toExternalForm()
 
         progress(8, "Abriendo reproductor Abyss… / Opening Abyss player…")
-        val html = getText(embed, referer, cancelled)
+        val html = getText(normalizedEmbed, referer, cancelled)
         val marker = "const datas = \""
         val at = html.indexOf(marker)
         if (at < 0) throw ResolveFailure("bad_response", "No se encontró el paquete de datos de Abyss / Abyss data payload was not found")
