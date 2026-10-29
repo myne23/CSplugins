@@ -4,6 +4,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.nicehttp.JsonAsString
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -48,6 +50,9 @@ private const val HOME_CACHE_MS = 180_000L
 
 private const val TAG_ANIMEYT = "AnimeYT"
 private const val TAG_ANIMEAV = "AnimeAV"
+
+// Servidor local que adapta el MP4 cifrado de Abyss al reproductor de CloudStream.
+private val abyssMediaServer = AbyssMediaServer()
 
 private const val SECTION_RECENT = "Últimos episodios"
 private const val SECTION_RESUB = "Resubidos"
@@ -1722,6 +1727,25 @@ class AnimESProvider : MainAPI() {
         for (candidate in usableCandidates) {
             safely("AnimeYT candidate") {
                 when {
+                    runCatching { URI(candidate).host.orEmpty().lowercase().removePrefix("www.") }.getOrDefault("")
+                        .let { it == "player.abyssplayer.com" || it.endsWith(".abyssplayer.com") } -> {
+                        val encodedUrl = URLEncoder.encode(candidate, "UTF-8")
+                        val referer = sourcePage.ifBlank { "https://mytsumi.com/" }
+                        val encodedReferer = URLEncoder.encode(referer, "UTF-8")
+                        val ref = "abyss:$encodedUrl:720:$encodedReferer"
+                        val parsed = withContext(Dispatchers.IO) {
+                            AbyssSourceResolver.resolve(ref, AtomicBoolean(false)) { progress, message ->
+                                log("Abyss progress=$progress $message")
+                            }
+                        }
+                        val localUrl = abyssMediaServer.register(parsed)
+                        log("Abyss resuelto; servidor local listo filename=${parsed.filename}")
+                        sink.emit(newExtractorLink(source = name, name = "AbyssPlayer", url = localUrl,
+                            type = ExtractorLinkType.VIDEO) {
+                            referer = ""
+                            quality = 720
+                        }, TAG_ANIMEYT)
+                    }
                     runCatching { URI(candidate).host.orEmpty().lowercase().removePrefix("www.") }.getOrDefault("")
                         .let { it == "ok.ru" || it.endsWith(".ok.ru") } -> {
                         resolveOkRu(candidate, sourcePage, sink, subtitleCallback)
