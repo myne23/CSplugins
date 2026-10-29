@@ -15,6 +15,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import java.net.URLEncoder
+import java.util.Base64
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -31,6 +34,15 @@ private const val TMDB = "https://image.tmdb.org/t/p"
 private const val HOME_CACHE_MS = 180_000L
 private const val BRIDGE_TIMEOUT_MS = 10_000L
 private const val EXTRACTOR_TIMEOUT_MS = 9_000L
+private const val VOE_TIMEOUT_NS = 25_000_000_000L
+private const val VOE_BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+private val VOE_REDIRECT = Regex("""window\\.location\\.href\\s*=\\s*['"]([^'"]+/e/[^'"]+)['"]""")
+private val VOE_CONFIG = Regex("""<script[^>]+type=["']application/json["'][^>]*>\\s*(?:\\[\\s*)?["']([^"']+)["']""")
+private val VOE_CONFIG_STRICT = Regex("""<script[^>]+type=["']application/json["'][^>]*>\\s*\\[\\s*["']([^"']+)["']\\s*\\]\\s*</script>""")
+private val VOE_TOKEN = Regex("""name=["']_token["'][^>]+value=["']([^"']+)["']""")
+private val VOE_CHALLENGE = Regex("""<altcha-widget[^>]+challenge=["']([^"']+)["']""")
+private val VOE_SOURCE = Regex(""""source"\\s*:\\s*"([^"]+)"""")
+private val VOE_HEX_CHARS = "0123456789abcdef".toCharArray()
 
 private val LULU_HOSTS = listOf("luluvdoo.com", "luluvdo.com", "lulustream.com", "lulu.st")
 private const val BYSE_FALLBACK_HOST = "https://byse.sx"
@@ -505,10 +517,16 @@ class AnimeLHDProvider : MainAPI() {
 
                         log("EXTRACTOR ROUTE START | [" + lang + "] " + server + " | " + safeUrl(embed))
                         withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
-                            if (LULU_HOSTS.any { embed.contains(it, ignoreCase = true) }) {
-                                loadLulu(embed, "[$lang] $server", emit)
-                            } else {
-                                loadGeneric(embed, "[$lang] $server", subtitleCallback, emit)
+                            val prefix = "[$lang] $server"
+                            when {
+                                server.equals("Gamma", ignoreCase = true) ||
+                                    embed.contains("ashleyhardat.com", ignoreCase = true) -> {
+                                    log("VOE ROUTE | $prefix | embed=" + safeUrl(embed))
+                                    loadVoe(embed, prefix, emit)
+                                }
+                                LULU_HOSTS.any { embed.contains(it, ignoreCase = true) } ->
+                                    loadLulu(embed, prefix, emit)
+                                else -> loadGeneric(embed, prefix, subtitleCallback, emit)
                             }
                         }
                     } catch (e: CancellationException) {
@@ -607,6 +625,389 @@ class AnimeLHDProvider : MainAPI() {
         }
     }
 
+
+    /** Resuelve Gamma/VOE manualmente, sin depender de loadExtractor. */
+    private suspend fun loadVoe(
+        embedUrl: String,
+        prefix: String,
+        emit: suspend (ExtractorLink) -> Unit
+    ) {
+        try {
+            log("VOE START | $prefix | embed=" + safeUrl(embedUrl))
+            val sourceUrl = withTimeoutOrNull(VOE_TIMEOUT_NS / 1_000_000L) {
+                resolveVoe(embedUrl)
+            }
+            if (sourceUrl.isNullOrBlank()) {
+                log("VOE FAIL | $prefix | no se pudo extraer source")
+                return
+            }
+            log("VOE SOURCE | $prefix | " + safeUrl(sourceUrl))
+            emit(newExtractorLink(
+                source = "VOE",
+                name = "$prefix · VOE",
+                url = sourceUrl,
+                type = ExtractorLinkType.M3U8
+            ) {
+                referer = embedUrl
+                quality = Qualities.Unknown.value
+            })
+            log("VOE EMIT | $prefix")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log("VOE ERROR | $prefix | ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    private suspend fun resolveVoe(embedUrl: String): String? {
+        val headers = mapOf("User-Agent" to BROWSER_UA)
+
+        val firstResponse = app.get(embedUrl, headers = headers)
+        if (!firstResponse.isSuccessful) return null
+
+        val redirectUrl = VOE_REDIRECT.find(firstResponse.text)?.groupValues?.getOrNull(1)
+        val realUrl = redirectUrl ?: embedUrl
+
+        val pageResponse = if (realUrl != embedUrl) {
+            app.get(realUrl, headers = headers)
+        } else {
+            firstResponse
+        }
+
+        var html = pageResponse.text
+        var encodedConfig = VOE_CONFIG.find(html)?.groupValues?.getOrNull(1)
+
+        if (encodedConfig.isNullOrBlank()) {
+            html = solveVoeAltcha(realUrl, html, pageResponse.cookies) ?: return null
+            encodedConfig = VOE_CONFIG_STRICT.find(html)?.groupValues?.getOrNull(1)
+        }
+
+        if (encodedConfig.isNullOrBlank()) return null
+
+        val decodedConfig = decodeVoeConfig(encodedConfig)
+        if (decodedConfig.isNullOrBlank()) return null
+
+        val source = VOE_SOURCE.find(decodedConfig)?.groupValues?.getOrNull(1)
+        if (source.isNullOrBlank()) return null
+
+        return source
+            .replace("\\\\/", "/")
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+    }
+
+    /** Resuelve el desafío ALTCHA de VOE y devuelve el HTML de la página resultante. */
+    private suspend fun solveVoeAltcha(
+        realUrl: String,
+        html: String,
+        pageCookies: Map<String, String>
+    ): String? {
+        val csrf = VOE_TOKEN.find(html)?.groupValues?.getOrNull(1)
+        val challengeUrl = VOE_CHALLENGE.find(html)?.groupValues?.getOrNull(1)
+
+        if (csrf.isNullOrBlank() || challengeUrl.isNullOrBlank()) return null
+
+        val challengeResponse = app.get(
+            challengeUrl,
+            headers = mapOf(
+                "User-Agent" to BROWSER_UA,
+                "Referer" to realUrl
+            )
+        )
+        if (!challengeResponse.isSuccessful) return null
+
+        val challengeJson = challengeResponse.text
+
+        val algorithm = jsonString(challengeJson, "algorithm")
+        val cost = jsonInt(challengeJson, "cost")
+        val keyLength = jsonInt(challengeJson, "keyLength")
+        val keyPrefix = jsonString(challengeJson, "keyPrefix")
+        val nonce = jsonString(challengeJson, "nonce")
+        val salt = jsonString(challengeJson, "salt")
+
+        if (
+            algorithm.isNullOrBlank() ||
+            cost == null ||
+            keyLength == null ||
+            keyPrefix.isNullOrBlank() ||
+            nonce.isNullOrBlank() ||
+            salt.isNullOrBlank()
+        ) {
+            return null
+        }
+
+        val saltBytes = hexToBytes(salt)
+        val nonceBytes = hexToBytes(nonce)
+        val mac = Mac.getInstance("HmacSHA256")
+
+        var solvedCounter = -1
+        var solvedKey = ""
+        val powStart = System.nanoTime()
+
+        for (counter in 0 until 1_000_000) {
+            // Corte de seguridad para no colgar la carga de links.
+            if ((counter and 0xff) == 0 && System.nanoTime() - powStart > ALTCHA_TIMEOUT_NS) break
+
+            val counterBytes = byteArrayOf(
+                ((counter ushr 24) and 0xff).toByte(),
+                ((counter ushr 16) and 0xff).toByte(),
+                ((counter ushr 8) and 0xff).toByte(),
+                (counter and 0xff).toByte()
+            )
+
+            val derived = pbkdf2Sha256(mac, nonceBytes + counterBytes, saltBytes, cost, keyLength)
+            val hex = bytesToHex(derived)
+
+            if (hex.startsWith(keyPrefix)) {
+                solvedCounter = counter
+                solvedKey = hex
+                break
+            }
+        }
+
+        if (solvedCounter < 0) return null
+
+        val powElapsedMs = (System.nanoTime() - powStart) / 1_000_000.0
+
+        val altchaPayload =
+            """{"challenge":$challengeJson,"solution":{"counter":$solvedCounter,"derivedKey":"$solvedKey","time":$powElapsedMs}}"""
+
+        val payloadB64 = Base64.getEncoder()
+            .encodeToString(altchaPayload.toByteArray(Charsets.UTF_8))
+
+        val voeCookies = pageCookies.entries
+            .joinToString("; ") { (cookieName, cookieValue) -> "$cookieName=$cookieValue" }
+
+        // Antes el Origin estaba fijo a un dominio; ahora sale de la URL real.
+        val origin = "https://" + realUrl.substringAfter("://").substringBefore("/")
+
+        val postResponse = app.post(
+            realUrl,
+            headers = mapOf(
+                "User-Agent" to BROWSER_UA,
+                "Referer" to realUrl,
+                "Origin" to origin,
+                "Cookie" to voeCookies,
+                "Content-Type" to "application/x-www-form-urlencoded"
+            ),
+            data = mapOf(
+                "_token" to csrf,
+                "access" to "0",
+                "altcha" to payloadB64
+            )
+        )
+
+        if (!postResponse.isSuccessful) return null
+        return postResponse.text
+    }
+
+    private fun jsonString(json: String, key: String): String? =
+        Regex("\"" + key + "\"\\s*:\\s*\"([^\"]+)\"")
+            .find(json)?.groupValues?.getOrNull(1)
+
+    private fun jsonInt(json: String, key: String): Int? =
+        Regex("\"" + key + "\"\\s*:\\s*(\\d+)")
+            .find(json)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+    private fun decodeVoeConfig(encoded: String): String? {
+        return try {
+            var value = buildString {
+                for (char in encoded) {
+                    append(
+                        when (char) {
+                            in 'A'..'Z' ->
+                                ((char.code - 'A'.code + 13) % 26 + 'A'.code).toChar()
+
+                            in 'a'..'z' ->
+                                ((char.code - 'a'.code + 13) % 26 + 'a'.code).toChar()
+
+                            else -> char
+                        }
+                    )
+                }
+            }
+
+            val separators = listOf("@$", "^^", "~@", "%?", "*~", "!!", "#&")
+
+            for (separator in separators) {
+                value = value.replace(separator, "_")
+            }
+
+            value = value.replace("_", "")
+
+            var bytes = Base64.getDecoder().decode(value)
+
+            bytes = bytes.map { (it.toInt() - 3).toByte() }.toByteArray()
+            bytes.reverse()
+
+            val decoded = Base64.getDecoder().decode(String(bytes, Charsets.UTF_8))
+
+            String(decoded, Charsets.UTF_8)
+        } catch (e: Exception) {
+            debug { "VOE decode ERROR -> ${e.message}" }
+            null
+        }
+    }
+
+    /**
+     * PBKDF2-HMAC-SHA256. El Mac se inicializa una sola vez por llamada (doFinal
+     * lo deja listo con la misma clave), en vez de re-inicializarlo en cada
+     * iteración: es lo que más pesaba al resolver el ALTCHA.
+     */
+    private fun pbkdf2Sha256(
+        mac: Mac,
+        password: ByteArray,
+        salt: ByteArray,
+        iterations: Int,
+        keyLength: Int
+    ): ByteArray {
+        mac.init(SecretKeySpec(password, "HmacSHA256"))
+
+        val hashLength = mac.macLength
+        val blockCount = (keyLength + hashLength - 1) / hashLength
+        val output = ByteArray(blockCount * hashLength)
+
+        for (block in 1..blockCount) {
+            mac.update(salt)
+            mac.update(
+                byteArrayOf(
+                    ((block ushr 24) and 0xff).toByte(),
+                    ((block ushr 16) and 0xff).toByte(),
+                    ((block ushr 8) and 0xff).toByte(),
+                    (block and 0xff).toByte()
+                )
+            )
+
+            var u = mac.doFinal()
+            val t = u.copyOf()
+
+            for (i in 1 until iterations) {
+                u = mac.doFinal(u)
+                for (j in t.indices) {
+                    t[j] = (t[j].toInt() xor u[j].toInt()).toByte()
+                }
+            }
+
+            System.arraycopy(t, 0, output, (block - 1) * hashLength, hashLength)
+        }
+
+        return output.copyOf(keyLength)
+    }
+
+    private fun jsonString(json: String, key: String): String? =
+        Regex("\"" + key + "\"\\s*:\\s*\"([^\"]+)\"")
+            .find(json)?.groupValues?.getOrNull(1)
+
+    private fun jsonInt(json: String, key: String): Int? =
+        Regex("\"" + key + "\"\\s*:\\s*(\\d+)")
+            .find(json)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+    private fun decodeVoeConfig(encoded: String): String? {
+        return try {
+            var value = buildString {
+                for (char in encoded) {
+                    append(
+                        when (char) {
+                            in 'A'..'Z' ->
+                                ((char.code - 'A'.code + 13) % 26 + 'A'.code).toChar()
+
+                            in 'a'..'z' ->
+                                ((char.code - 'a'.code + 13) % 26 + 'a'.code).toChar()
+
+                            else -> char
+                        }
+                    )
+                }
+            }
+
+            val separators = listOf("@$", "^^", "~@", "%?", "*~", "!!", "#&")
+
+            for (separator in separators) {
+                value = value.replace(separator, "_")
+            }
+
+            value = value.replace("_", "")
+
+            var bytes = Base64.getDecoder().decode(value)
+
+            bytes = bytes.map { (it.toInt() - 3).toByte() }.toByteArray()
+            bytes.reverse()
+
+            val decoded = Base64.getDecoder().decode(String(bytes, Charsets.UTF_8))
+
+            String(decoded, Charsets.UTF_8)
+        } catch (e: Exception) {
+            debug { "VOE decode ERROR -> ${e.message}" }
+            null
+        }
+    }
+
+    /**
+     * PBKDF2-HMAC-SHA256. El Mac se inicializa una sola vez por llamada (doFinal
+     * lo deja listo con la misma clave), en vez de re-inicializarlo en cada
+     * iteración: es lo que más pesaba al resolver el ALTCHA.
+     */
+    private fun pbkdf2Sha256(
+        mac: Mac,
+        password: ByteArray,
+        salt: ByteArray,
+        iterations: Int,
+        keyLength: Int
+    ): ByteArray {
+        mac.init(SecretKeySpec(password, "HmacSHA256"))
+
+        val hashLength = mac.macLength
+        val blockCount = (keyLength + hashLength - 1) / hashLength
+        val output = ByteArray(blockCount * hashLength)
+
+        for (block in 1..blockCount) {
+            mac.update(salt)
+            mac.update(
+                byteArrayOf(
+                    ((block ushr 24) and 0xff).toByte(),
+                    ((block ushr 16) and 0xff).toByte(),
+                    ((block ushr 8) and 0xff).toByte(),
+                    (block and 0xff).toByte()
+                )
+            )
+
+            var u = mac.doFinal()
+            val t = u.copyOf()
+
+            for (i in 1 until iterations) {
+                u = mac.doFinal(u)
+                for (j in t.indices) {
+                    t[j] = (t[j].toInt() xor u[j].toInt()).toByte()
+                }
+            }
+
+            System.arraycopy(t, 0, output, (block - 1) * hashLength, hashLength)
+        }
+
+        return output.copyOf(keyLength)
+    }
+
+    private fun bytesToHex(bytes: ByteArray): String {
+        val chars = CharArray(bytes.size * 2)
+        for (i in bytes.indices) {
+            val v = bytes[i].toInt() and 0xff
+            chars[i * 2] = HEX_CHARS[v ushr 4]
+            chars[i * 2 + 1] = HEX_CHARS[v and 0x0f]
+        }
+        return String(chars)
+    }
+
+    private fun hexToBytes(value: String): ByteArray {
+        val clean = value.trim()
+
+        if (clean.length % 2 != 0) {
+            throw IllegalArgumentException("Hex inválido: longitud impar")
+        }
+
+        return ByteArray(clean.length / 2) { index ->
+            clean.substring(index * 2, index * 2 + 2).toInt(16).toByte()
+        }
+    }
     /**
      * LuluStream: la página /e/<código> trae un JS "packed" (eval(function(p,a,c,k,e,d)...)
      * que al desempaquetarse deja jwplayer.setup({sources:[{file:"...master.m3u8?t=..."}]}).
