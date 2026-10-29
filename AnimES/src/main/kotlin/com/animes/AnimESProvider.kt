@@ -1391,7 +1391,7 @@ class AnimESProvider : MainAPI() {
                 val q = quality(match.groupValues[1])
                 val url = match.groupValues[2].replace("\\/", "/").trim()
                 if (q <= 0 || url.isBlank()) null else Triple(q, match.groupValues[1], url)
-            }.distinctBy { it.third }.sortedByDescending { it.first }
+            }.distinctBy { it.third }.sortedByDescending { it.first }.toList()
             if (directVideos.isNotEmpty()) {
                 for (video in directVideos) {
                     val streamHeaders = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
