@@ -1398,7 +1398,7 @@ class AnimESProvider : MainAPI() {
                         type = ExtractorLinkType.VIDEO) {
                         referer = okEmbedUrl
                         quality = video.first
-                        headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
+                        this.headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
                     }, TAG_ANIMEYT)
                 }
                 log("OK.ru resueltos videos=${directVideos.size} max=${directVideos.first().first}p id=$id")
@@ -1410,7 +1410,7 @@ class AnimESProvider : MainAPI() {
                     type = ExtractorLinkType.M3U8) {
                     referer = okEmbedUrl
                     quality = Qualities.Unknown.value
-                    headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
+                    this.headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
                 }, TAG_ANIMEYT)
                 log("OK.ru resuelto HLS fallback id=$id")
                 return
