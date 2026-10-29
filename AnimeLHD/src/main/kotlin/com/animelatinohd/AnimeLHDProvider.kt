@@ -843,7 +843,7 @@ class AnimeLHDProvider : MainAPI() {
             val qualityLabel = if (actualQuality >= 2160) "2160p" else if (actualQuality >= 1440) "1440p"
                 else if (actualQuality >= 1080) "1080p" else if (actualQuality >= 720) "720p"
                 else if (actualQuality >= 480) "480p" else if (actualQuality >= 360) "360p" else "Auto"
-            sink.emit(newExtractorLink(
+            val link = newExtractorLink(
                 source = name,
                 name = "$prefix · Bysekoze · " + qualityLabel,
                 url = streamUrl,
@@ -852,7 +852,8 @@ class AnimeLHDProvider : MainAPI() {
                 referer = pageUrl
                 quality = actualQuality
                 this.headers = streamHeaders
-            }) { link -> emit(link) }
+            }
+            emit(link)
             log("Byse resuelto host=" + URI(streamUrl).host)
         } catch (e: CancellationException) {
             throw e
