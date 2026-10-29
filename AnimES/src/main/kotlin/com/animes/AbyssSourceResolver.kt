@@ -35,20 +35,13 @@ internal object AbyssSourceResolver {
         val referer = decode(parts[3]).ifBlank { "https://mytsumi.com/" }
         val embed = if (rawSlug.startsWith("https%3A", true) || rawSlug.startsWith("https://")) decode(rawSlug) else
             "https://player.abyssplayer.com/$rawSlug"
-        val parsedEmbed = try { URL(embed) } catch (_: Exception) {
+        val embedUrl = try { URL(embed) } catch (_: Exception) {
             throw ResolveFailure("unsupported", "URL de Abyss inválida / Invalid Abyss URL")
         }
-        val embedUrl = if (parsedEmbed.protocol == "https" &&
-            (parsedEmbed.host.equals("abyssplayer.com", true) || parsedEmbed.host.equals("www.abyssplayer.com", true))) {
-            URL("https", "player.abyssplayer.com", parsedEmbed.port, parsedEmbed.file)
-        } else parsedEmbed
-        if (embedUrl.protocol != "https" || !embedUrl.host.equals("player.abyssplayer.com", true)) {
-            throw ResolveFailure("unsupported", "El enlace no pertenece a AbyssPlayer / Link is not from AbyssPlayer")
-        }
-        val normalizedEmbed = embedUrl.toExternalForm()
+        if (embedUrl.protocol != "https" || (!embedUrl.host.equals("player.abyssplayer.com", true) && !embedUrl.host.equals("abyssplayer.com", true))) throw ResolveFailure("unsupported", "El enlace no pertenece a AbyssPlayer / Link is not from AbyssPlayer")
 
         progress(8, "Abriendo reproductor Abyss… / Opening Abyss player…")
-        val html = getText(normalizedEmbed, referer, cancelled)
+        val html = getText(embed, referer, cancelled)
         val marker = "const datas = \""
         val at = html.indexOf(marker)
         if (at < 0) throw ResolveFailure("bad_response", "No se encontró el paquete de datos de Abyss / Abyss data payload was not found")
@@ -79,9 +72,16 @@ internal object AbyssSourceResolver {
         val payload = try { JSONObject(plaintext) } catch (_: Exception) {
             throw ResolveFailure("bad_response", "No se pudieron descifrar los metadatos MP4 / Could not decrypt MP4 metadata")
         }
-        // Abyss variants may wrap provider metadata inside a "media" object.
-        // Normalize both shapes before selecting a source.
-        val media = payload.optJSONObject("media") ?: payload
+        // Abyss variants may wrap provider metadata inside a "media" object, while
+        // others keep mp4/hls at the payload root and use "media" for unrelated metadata.
+        // Prefer whichever object actually contains the MP4 source manifest; otherwise
+        // keep the previous nested-object fallback for useful HLS/unavailable diagnostics.
+        val nestedMedia = payload.optJSONObject("media")
+        val media = when {
+            payload.optJSONObject("mp4") != null -> payload
+            nestedMedia?.optJSONObject("mp4") != null -> nestedMedia
+            else -> nestedMedia ?: payload
+        }
         val mp4 = media.optJSONObject("mp4")
         val hls = media.optJSONObject("hls")
         if (mp4 == null) {
