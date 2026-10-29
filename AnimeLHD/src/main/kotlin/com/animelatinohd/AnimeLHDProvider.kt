@@ -33,6 +33,8 @@ private const val BRIDGE_TIMEOUT_MS = 10_000L
 private const val EXTRACTOR_TIMEOUT_MS = 9_000L
 
 private val LULU_HOSTS = listOf("luluvdoo.com", "luluvdo.com", "lulustream.com", "lulu.st")
+private const val BYSE_FALLBACK_HOST = "https://byse.sx"
+private val BYSE_EMBED = Regex("""^https?://(?:www\\.)?byse[a-z0-9-]*\\.[a-z]+/(.*)$""", RegexOption.IGNORE_CASE)
 private val IFRAME_SRC = Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
 private val M3U8_FILE = Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']""")
 private val M3U8_ANY = Regex("""https?://[^"'\s\\]+\.m3u8[^"'\s\\]*""")
@@ -551,21 +553,54 @@ class AnimeLHDProvider : MainAPI() {
             this.extractorData = link.extractorData
         }
 
-    /** Extractores que ya trae CloudStream (Byse, etc.). */
+    /** Byse y otros extractores de CloudStream. Byse necesita probar sus mirrors
+     * y varios Referer, igual que el resolver ya probado en SeriesDonghua. */
     private suspend fun loadGeneric(
         embed: String,
         prefix: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         emit: suspend (ExtractorLink) -> Unit
     ) {
-        val collected = ConcurrentLinkedQueue<ExtractorLink>()
-        log("LOAD EXTRACTOR START | " + prefix + " | embed=" + safeUrl(embed))
-        loadExtractor(embed, "$API/", subtitleCallback) { link ->
-            log("EXTRACTOR LINK RAW | " + prefix + " | source=" + link.source + " | name=" + link.name + " | type=" + link.type + " | quality=" + link.quality + " | url=" + safeUrl(link.url) + " | referer=" + safeUrl(link.referer))
-            collected.add(link)
+        val isByse = BYSE_EMBED.containsMatchIn(embed)
+        val path = BYSE_EMBED.find(embed)?.groupValues?.getOrNull(1).orEmpty()
+        val candidates = if (isByse) {
+            listOfNotNull(
+                embed,
+                "$BYSE_FALLBACK_HOST/$path".takeIf {
+                    path.isNotBlank() && !embed.startsWith(BYSE_FALLBACK_HOST, ignoreCase = true)
+                }
+            )
+        } else {
+            listOf(embed)
         }
+
+        val origin = "https://" + embed.substringAfter("://").substringBefore("/")
+        val referers = listOf("$API/", "$WEB/", "$origin/").distinct()
+        val collected = ConcurrentLinkedQueue<ExtractorLink>()
+
+        log("LOAD EXTRACTOR START | " + prefix + " | byse=" + isByse + " | embed=" + safeUrl(embed))
+
+        for (candidate in candidates) {
+            for (ref in referers) {
+                val before = collected.size
+                try {
+                    log("EXTRACTOR ATTEMPT | " + prefix + " | candidate=" + safeUrl(candidate) + " | referer=" + safeUrl(ref))
+                    loadExtractor(candidate, ref, subtitleCallback) { link ->
+                        log("EXTRACTOR LINK RAW | " + prefix + " | source=" + link.source + " | name=" + link.name + " | type=" + link.type + " | quality=" + link.quality + " | url=" + safeUrl(link.url) + " | referer=" + safeUrl(link.referer))
+                        collected.add(link)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log("EXTRACTOR ATTEMPT ERROR | " + prefix + " | " + e.javaClass.simpleName + ": " + e.message)
+                }
+                if (collected.size > before) break
+            }
+            if (collected.isNotEmpty()) break
+        }
+
         log("LOAD EXTRACTOR END | " + prefix + " | links=" + collected.size)
-        for (link in collected) {
+        for (link in collected.distinctBy { it.url }) {
             val tagged = retag(link, prefix)
             log("EXTRACTOR LINK EMIT | " + prefix + " | " + tagged.name + " | type=" + tagged.type + " | quality=" + tagged.quality + " | url=" + safeUrl(tagged.url))
             emit(tagged)
