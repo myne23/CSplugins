@@ -1318,14 +1318,30 @@ class AnimESProvider : MainAPI() {
             )
             val isHls = Regex("""\.m3u8(?:$|[?#])""", RegexOption.IGNORE_CASE).containsMatchIn(streamUrl)
             val isDash = Regex("""\.mpd(?:$|[?#])""", RegexOption.IGNORE_CASE).containsMatchIn(streamUrl)
+            var actualQuality = getQualityFromName(chosen.first)
+            if (isHls) {
+                try {
+                    val manifest = app.get(streamUrl, headers = streamHeaders, timeout = 8)
+                    val heights = Regex("""RESOLUTION=\d+x(\d+)""", RegexOption.IGNORE_CASE)
+                        .findAll(manifest.text).mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }.toList()
+                    if (heights.isNotEmpty()) actualQuality = heights.maxOrNull() ?: actualQuality
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    if (actualQuality > 720) actualQuality = Qualities.Unknown.value
+                }
+            }
+            val qualityLabel = if (actualQuality >= 2160) "2160p" else if (actualQuality >= 1440) "1440p"
+                else if (actualQuality >= 1080) "1080p" else if (actualQuality >= 720) "720p"
+                else if (actualQuality >= 480) "480p" else if (actualQuality >= 360) "360p" else "Auto"
             sink.emit(newExtractorLink(
                 source = name,
-                name = ("Bysekoze · " + chosen.first).take(48),
+                name = "Bysekoze · " + qualityLabel,
                 url = streamUrl,
                 type = if (isHls || isDash) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
             ) {
                 referer = pageUrl
-                quality = getQualityFromName(chosen.first)
+                quality = actualQuality
                 this.headers = streamHeaders
             }, TAG_ANIMEYT)
             log("Byse resuelto host=" + URI(streamUrl).host)
@@ -1371,6 +1387,23 @@ class AnimESProvider : MainAPI() {
                 .replace(Regex("""\\+u0026""", RegexOption.IGNORE_CASE), "&")
                 .replace(Regex("""\\+(?:/|u002f)""", RegexOption.IGNORE_CASE), "/")
                 .replace(Regex("""\\+u003d""", RegexOption.IGNORE_CASE), "=")
+            val directVideos = videoEntry.findAll(page).mapNotNull { match ->
+                val q = quality(match.groupValues[1])
+                val url = match.groupValues[2].replace("\\/", "/").trim()
+                if (q <= 0 || url.isBlank()) null else Triple(q, match.groupValues[1], url)
+            }.distinctBy { it.third }.sortedByDescending { it.first }
+            if (directVideos.isNotEmpty()) {
+                directVideos.forEach { video ->
+                    sink.emit(newExtractorLink(source = name, name = "OK.ru · \${video.first}p", url = video.third,
+                        type = ExtractorLinkType.VIDEO) {
+                        referer = okEmbedUrl
+                        quality = video.first
+                        headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
+                    }, TAG_ANIMEYT)
+                }
+                log("OK.ru resueltos videos=\${directVideos.size} max=\${directVideos.first().first}p id=$id")
+                return
+            }
             val hls = hlsEntry.find(page)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
             if (!hls.isNullOrBlank()) {
                 sink.emit(newExtractorLink(source = name, name = "OK.ru · HLS", url = hls,
@@ -1379,22 +1412,7 @@ class AnimESProvider : MainAPI() {
                     quality = Qualities.Unknown.value
                     headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
                 }, TAG_ANIMEYT)
-                log("OK.ru resuelto HLS id=$id")
-                return
-            }
-            val best = videoEntry.findAll(page).mapNotNull { match ->
-                val q = quality(match.groupValues[1])
-                val url = match.groupValues[2].replace("\\/", "/").trim()
-                if (q <= 0 || url.isBlank()) null else Triple(q, match.groupValues[1], url)
-            }.maxByOrNull { it.first }
-            if (best != null) {
-                sink.emit(newExtractorLink(source = name, name = "OK.ru · ${best.first}p", url = best.third,
-                    type = ExtractorLinkType.VIDEO) {
-                    referer = okEmbedUrl
-                    quality = best.first
-                    headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
-                }, TAG_ANIMEYT)
-                log("OK.ru resuelto calidad=${best.first} id=$id")
+                log("OK.ru resuelto HLS fallback id=$id")
                 return
             }
         }
