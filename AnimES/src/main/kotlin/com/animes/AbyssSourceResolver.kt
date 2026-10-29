@@ -19,7 +19,8 @@ internal data class AbyssSource(
     val partSize: Long = 0L,
     val segmented: Boolean = false,
     val md5Id: String = "",
-    val resId: Int = 0
+    val resId: Int = 0,
+    val hlsUrl: String = ""
 )
 internal class ResolveFailure(val code: String, message: String) : Exception(message)
 
@@ -205,7 +206,11 @@ internal object AbyssSourceResolver {
             progress(88, "Preparando transmisión segura… / Preparing stream…")
             if (cancelled.get()) throw ResolveFailure("cancelled", "Resolución cancelada / Resolution cancelled")
             progress(100, "Fuente encontrada / Source found")
-            return AbyssSource(legacySoraBase, "$md5Id-$legacyResId.mp4", referer, legacySize, legacyPartSize, true, md5Id, legacyResId)
+            val hlsPlaylist = findHlsPlaylist(hls)
+            if (hlsPlaylist.isNotBlank()) {
+                diagnostic("source_transport", "transport=abyss-hls reason=confirmed-split playlist=" + hlsPlaylist.substringBefore("?").take(180))
+            }
+            return AbyssSource(legacySoraBase, "$md5Id-$legacyResId.mp4", referer, legacySize, legacyPartSize, true, md5Id, legacyResId, hlsPlaylist)
         }
         val selection = AbyssSourceSelection.select(options, quality)
         val selected = selection.selected
@@ -267,7 +272,13 @@ internal object AbyssSourceResolver {
         if (cancelled.get()) throw ResolveFailure("cancelled", "Resolución cancelada / Resolution cancelled")
         progress(100, "Fuente encontrada / Source found")
         diagnostic("source_transport", if (segmented) "transport=abyss-sora size=${selected.size} resId=${selected.resId} md5Id=$md5Id domain=${rawDomain.take(100)} sub=${selected.sub} domainSuffix=${domainSuffix.take(100)} base=$segmentBase" else "transport=direct url=$finalUrl")
-        return AbyssSource(finalUrl, filename, referer, selected.size, selected.partSize, segmented, md5Id, selected.resId)
+        // Only use HLS when MP4 metadata positively identified this source as split Sora.
+        // Fully working direct MP4 sources above remain on their original path.
+        val hlsPlaylist = if (segmented) findHlsPlaylist(hls) else ""
+        if (hlsPlaylist.isNotBlank()) {
+            diagnostic("source_transport", "transport=abyss-hls reason=confirmed-split playlist=" + hlsPlaylist.substringBefore("?").take(180))
+        }
+        return AbyssSource(finalUrl, filename, referer, selected.size, selected.partSize, segmented, md5Id, selected.resId, hlsPlaylist)
     }
 
     /**
@@ -311,6 +322,43 @@ internal object AbyssSourceResolver {
         } finally {
             conn.disconnect()
         }
+    }
+
+    /**
+     * Use only an explicit HTTPS HLS playlist exposed in Abyss's decrypted metadata.
+     * Do not synthesize playlist URLs: if the schema does not expose one, keep Sora MP4.
+     */
+    private fun findHlsPlaylist(value: Any?): String {
+        fun visit(node: Any?): String {
+            when (node) {
+                is JSONObject -> {
+                    val keys = node.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        val found = visit(node.opt(key))
+                        if (found.isNotBlank()) return found
+                    }
+                }
+                is JSONArray -> {
+                    for (i in 0 until node.length()) {
+                        val found = visit(node.opt(i))
+                        if (found.isNotBlank()) return found
+                    }
+                }
+                is String -> {
+                    val candidate = node.trim()
+                    if (candidate.startsWith("https://", true)) {
+                        val parsed = runCatching { URL(candidate) }.getOrNull()
+                        if (parsed != null && parsed.protocol.equals("https", true) &&
+                            parsed.path.endsWith(".m3u8", true) && parsed.host.isNotBlank()) {
+                            return candidate
+                        }
+                    }
+                }
+            }
+            return ""
+        }
+        return visit(value)
     }
 
     private fun describeMetadata(value: Any?): String {
