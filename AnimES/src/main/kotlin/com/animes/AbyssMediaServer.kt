@@ -391,8 +391,8 @@ internal class AbyssMediaServer {
                     }
                     if (failure != null) {
                         diagnostic("upstream_prefetch_failed", "index=$index ${failure.javaClass.simpleName}: ${failure.message ?: "no message"}")
-                        // Do not leave a partial segment looking like usable buffered data.
-                        File(target.parentFile, target.name + ".part").delete()
+                        // Keep the live partial file: readDecrypted may be streaming from it.
+                        // fetchSoraSegment cleans only the retry temp, never the live .part.
                     } else {
                         diagnostic("upstream_prefetch_ok", "index=$index")
                     }
