@@ -1,5 +1,6 @@
 package com.animelatinohd
 
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.*
@@ -21,7 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * Config
  * ==================================================================== */
 
-private const val DEBUG = false
+private const val DEBUG = true
 
 private const val WEB = "https://www.animelatinohd.com"
 private const val API = "https://website.animelatinohd.com"
@@ -37,7 +38,12 @@ private val M3U8_FILE = Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']""")
 private val M3U8_ANY = Regex("""https?://[^"'\s\\]+\.m3u8[^"'\s\\]*""")
 
 private fun log(msg: String) {
-    if (DEBUG) println("AnimeLHD: $msg")
+    if (DEBUG) Log.d("AnimeLHD", msg)
+}
+
+private fun safeUrl(url: String?): String {
+    if (url.isNullOrBlank()) return "<vacío>"
+    return url.substringBefore("#").substringBefore("?")
 }
 
 /* ====================================================================
@@ -207,7 +213,7 @@ class AnimeLHDProvider : MainAPI() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            log("fetch ERROR $url -> ${e.javaClass.simpleName}: ${e.message}")
+            log("FETCH EXCEPTION " + safeUrl(url) + " -> " + e.javaClass.simpleName + ": " + e.message)
             null
         }
     }
@@ -432,14 +438,21 @@ class AnimeLHDProvider : MainAPI() {
         val slug = parts[0].trim()
         val episode = parts[1].trim().toIntOrNull() ?: return false
 
-        val html = fetch("$WEB/ver/$slug/$episode") ?: return false
+        log("LOADLINKS START | slug=" + slug + " | episodio=" + episode + " | casting=" + isCasting)
+        val html = fetch("$WEB/ver/$slug/$episode") ?: run {
+            log("LOADLINKS ABORT | no se pudo descargar la página")
+            return false
+        }
+        log("WATCH HTML | chars=" + html.length + " | next_f_push=" + html.contains("self.__next_f.push"))
         val flat = flattenRsc(html)
+        log("WATCH RSC | chars=" + flat.length + " | players_marker=" + flat.contains("\"players\":"))
 
         val players = jsonAfter(flat, "\"players\":")
             ?.let { JSONArray(it).objs() }
             ?: return false
 
-        log("players=${players.size}")
+        log("PLAYERS FOUND | count=" + players.size)
+        players.forEachIndexed { index, p -> log("PLAYER[" + index + "] | lang=" + p.optString("language") + " | server=" + p.optString("server_name") + " | bridge=" + safeUrl(p.optString("bridge_url"))) }
 
         val count = AtomicInteger(0)
         val lock = Any()
@@ -461,13 +474,15 @@ class AnimeLHDProvider : MainAPI() {
                         val bridge = p.optString("bridge_url")
                         if (bridge.isBlank()) return@async
 
+                        log("PLAYER START | [" + lang + "] " + server + " | bridge=" + safeUrl(bridge))
                         val embed = withTimeoutOrNull(BRIDGE_TIMEOUT_MS) { resolveBridge(bridge) }
                         if (embed == null) {
                             log("bridge sin iframe: $lang $server")
                             return@async
                         }
-                        log("$lang $server -> $embed")
+                        log("EMBED RESOLVED | [" + lang + "] " + server + " | " + safeUrl(embed))
 
+                        log("EXTRACTOR ROUTE START | [" + lang + "] " + server + " | " + safeUrl(embed))
                         withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
                             if (LULU_HOSTS.any { embed.contains(it, ignoreCase = true) }) {
                                 loadLulu(embed, "[$lang] $server", emit)
@@ -484,13 +499,21 @@ class AnimeLHDProvider : MainAPI() {
             }.awaitAll()
         }
 
+        log("LOADLINKS END | enlaces_emitidos=" + count.get() + " | players=" + players.size)
         return count.get() > 0
     }
 
     /** bridge_url -> URL del embed real (el iframe que devuelve el bridge). */
     private suspend fun resolveBridge(bridgeUrl: String): String? {
-        val body = fetch(bridgeUrl) ?: return null
-        val src = IFRAME_SRC.find(body)?.groupValues?.get(1) ?: return null
+        log("BRIDGE REQUEST | " + safeUrl(bridgeUrl))
+        val body = fetch(bridgeUrl) ?: run {
+            log("BRIDGE FAIL | fetch devolvió null")
+            return null
+        }
+        val src = IFRAME_SRC.find(body)?.groupValues?.get(1) ?: run {
+            log("BRIDGE FAIL | no se encontró iframe src | chars=" + body.length + " | preview=" + body.take(180).replace("\n", " "))
+            return null
+        }
         return src.replace("&amp;", "&").let {
             if (it.startsWith("//")) "https:$it" else it
         }
@@ -517,8 +540,17 @@ class AnimeLHDProvider : MainAPI() {
         emit: suspend (ExtractorLink) -> Unit
     ) {
         val collected = ConcurrentLinkedQueue<ExtractorLink>()
-        loadExtractor(embed, "$API/", subtitleCallback) { collected.add(it) }
-        for (link in collected) emit(retag(link, prefix))
+        log("LOAD EXTRACTOR START | " + prefix + " | embed=" + safeUrl(embed))
+        loadExtractor(embed, "$API/", subtitleCallback) { link ->
+            log("EXTRACTOR LINK RAW | " + prefix + " | source=" + link.source + " | name=" + link.name + " | type=" + link.type + " | quality=" + link.quality + " | url=" + safeUrl(link.url) + " | referer=" + safeUrl(link.referer))
+            collected.add(link)
+        }
+        log("LOAD EXTRACTOR END | " + prefix + " | links=" + collected.size)
+        for (link in collected) {
+            val tagged = retag(link, prefix)
+            log("EXTRACTOR LINK EMIT | " + prefix + " | " + tagged.name + " | type=" + tagged.type + " | quality=" + tagged.quality + " | url=" + safeUrl(tagged.url))
+            emit(tagged)
+        }
     }
 
     /**
