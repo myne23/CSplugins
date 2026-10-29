@@ -266,7 +266,7 @@ internal class AbyssMediaServer {
                             val count = min(len.toLong(), available).toInt()
                             java.io.RandomAccessFile(part, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
                             // Start the next chunk as soon as the current one is almost ready.
-                            if (part.length() >= segmentSize / 2L) {
+                            if (part.length() >= segmentSize * 3L / 4L) {
                                 scheduleDirectPrefetch(src, chunk + 1, total)
                             }
                             return count
