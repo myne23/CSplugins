@@ -1358,7 +1358,7 @@ class AnimESProvider : MainAPI() {
         sink: LinkSink,
         subtitleCallback: (SubtitleFile) -> Unit
     ) {
-        val id = Regex("""/(?:videoembed|video)/(\\d+)""", RegexOption.IGNORE_CASE)
+        val id = Regex("""/(?:videoembed|video)/(\d+)""", RegexOption.IGNORE_CASE)
             .find(runCatching { URI(embedUrl).path.orEmpty() }.getOrDefault(""))?.groupValues?.getOrNull(1)
             ?: return
         val okEmbedUrl = "https://ok.ru/videoembed/$id"
