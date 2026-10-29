@@ -48,9 +48,6 @@ internal class AbyssMediaServer {
     )
     // Prevent a permanently failing CDN segment from triggering a tight retry loop.
     private val soraPrefetchRetryAfter = java.util.concurrent.ConcurrentHashMap<String, Long>()
-    // Track the segment currently requested by the player and cancel obsolete Sora downloads on seeks.
-    @Volatile private var soraWantedTarget: String? = null
-    private val soraActiveConnections = java.util.concurrent.ConcurrentHashMap<String, HttpURLConnection>()
     // Direct byte-range chunks are fetched ahead of playback to avoid a synchronous
     // network wait every 256 KiB. The set prevents duplicate workers for the same chunk.
     private val directPrefetchScheduled = java.util.Collections.newSetFromMap(
@@ -172,8 +169,6 @@ internal class AbyssMediaServer {
         // Include the actual upstream segment size in the cache key.
         val file = File(cache, md5(src.url + "|" + src.filename) + "-${segmentSize}-$chunk.bin")
         if (src.segmented) {
-            // Prioritize the newly requested segment and stop downloads for obsolete positions.
-            prioritizeSoraTarget(file)
             // Do not make the player wait for an entire 4–10 MiB Sora segment.
             // Start/continue the segment download in the background and serve bytes
             // from its growing .part file as soon as they arrive.
@@ -201,8 +196,8 @@ internal class AbyssMediaServer {
                     // Start the next segment near the end of the current download to
                     // preserve the established Sora rolling buffer. If the player seeks,
                     // the requested segment is still scheduled independently above.
-                    if (part.length() >= (segmentSize * 3L / 4L)) {
-                        scheduleSoraPrefetch(src, chunk + 1, total, lookahead = true)
+                    if (part.length() >= (segmentSize / 3L)) {
+                        scheduleSoraPrefetch(src, chunk + 1, total)
                     }
                     val available = part.length() - inChunk
                     // Never expose the MP4 header until enough bytes exist to validate it.
@@ -239,7 +234,7 @@ internal class AbyssMediaServer {
             // Keep exactly one segment ahead. Fetching two complete Sora segments
             // concurrently can compete with the segment requested after a seek and
             // wastes bandwidth/cache on segments the player may never reach.
-            scheduleSoraPrefetch(src, chunk + 1, total, lookahead = true)
+            scheduleSoraPrefetch(src, chunk + 1, total)
             return min(len, (file.length() - inChunk).toInt().coerceAtLeast(0)).also { count ->
                 if (count <= 0) throw IllegalStateException("Sora segment cache has no bytes index=$chunk")
                 java.io.RandomAccessFile(file, "r").use { it.seek(inChunk.toLong()); it.readFully(out, 0, count) }
@@ -367,16 +362,7 @@ internal class AbyssMediaServer {
      * Download one Sora segment ahead in the background. Playback reads are synchronous,
      * so preparing the next 2 MiB while the current one is consumed hides intermittent CDN stalls.
      */
-    private fun prioritizeSoraTarget(target: File) {
-        val wanted = target.absolutePath
-        if (soraWantedTarget == wanted) return
-        soraWantedTarget = wanted
-        soraActiveConnections.entries.toList().forEach { (path, connection) ->
-            if (path != wanted) runCatching { connection.disconnect() }
-        }
-    }
-
-    private fun scheduleSoraPrefetch(src: AbyssSource, index: Int, total: Long, lookahead: Boolean = false) {
+    private fun scheduleSoraPrefetch(src: AbyssSource, index: Int, total: Long) {
         val segmentSize = soraSegmentSize(src)
         if (index < 0 || index.toLong() * segmentSize >= total) return
         val target = File(cache, md5(src.url + "|" + src.filename) + "-${segmentSize}-${index}.bin")
@@ -384,19 +370,12 @@ internal class AbyssMediaServer {
         val now = System.currentTimeMillis()
         if (now < (soraPrefetchRetryAfter[target.absolutePath] ?: 0L)) return
         if (!soraPrefetchScheduled.add(target.absolutePath)) return
-        val requestedAtSchedule = soraWantedTarget
         Thread({
             try {
                 synchronized(target.absolutePath.intern()) {
                     if (target.exists()) return@synchronized
                     var failure: Throwable? = null
                     for (attempt in 0..2) {
-                        val stillRelevant = if (lookahead) {
-                            soraWantedTarget == requestedAtSchedule || soraWantedTarget == target.absolutePath
-                        } else {
-                            soraWantedTarget == target.absolutePath
-                        }
-                        if (!stillRelevant) break
                         try {
                             fetchSoraSegment(src, index, target, total)
                             failure = null
@@ -519,7 +498,6 @@ internal class AbyssMediaServer {
         val pathToken = token.replace("+", "%2B").replace("/", "%2F")
         val endpoint = "${src.url.trimEnd('/')}/sora/${src.expectedSize}/$pathToken"
         val conn = URL(endpoint).openConnection() as HttpURLConnection
-        soraActiveConnections[target.absolutePath] = conn
         // Fail a stalled segment sooner so the existing retry loop can try again
         // before Kino's playback buffer is exhausted.
         conn.connectTimeout = 10000
@@ -571,7 +549,6 @@ internal class AbyssMediaServer {
             diagnostic("upstream_segment_error", "index=$index status=$code received=$received durationMs=${System.currentTimeMillis() - started} ${e.javaClass.simpleName}: ${e.message ?: "no message"}")
             throw e
         } finally {
-            soraActiveConnections.remove(target.absolutePath, conn)
             conn.disconnect()
         }
     }
