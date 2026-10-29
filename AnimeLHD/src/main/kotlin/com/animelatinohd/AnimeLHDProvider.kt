@@ -703,6 +703,21 @@ class AnimeLHDProvider : MainAPI() {
         return fit(r) + fit(ss)
     }
 
+    private suspend fun loadGeneric(
+        embed: String,
+        prefix: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        emit: suspend (ExtractorLink) -> Unit
+    ) {
+        val isByse = BYSE_EMBED.containsMatchIn(embed)
+        val path = BYSE_EMBED.find(embed)?.groupValues?.getOrNull(1).orEmpty()
+        val candidates = if (isByse) {
+            listOfNotNull(
+                embed,
+                "$BYSE_FALLBACK_HOST/$path".takeIf {
+                    path.isNotBlank() && !embed.startsWith(BYSE_FALLBACK_HOST, ignoreCase = true)
+                }
+
     private suspend fun bysePostJson(url: String, headers: Map<String, String>, payload: JSONObject, timeoutSeconds: Long = 15L): JSONObject {
         val response = app.post(
             url,
