@@ -1394,14 +1394,14 @@ class AnimESProvider : MainAPI() {
             }.distinctBy { it.third }.sortedByDescending { it.first }
             if (directVideos.isNotEmpty()) {
                 directVideos.forEach { video ->
-                    sink.emit(newExtractorLink(source = name, name = "OK.ru · \${video.first}p", url = video.third,
+                    sink.emit(newExtractorLink(source = name, name = "OK.ru · ${video.first}p", url = video.third,
                         type = ExtractorLinkType.VIDEO) {
                         referer = okEmbedUrl
                         quality = video.first
                         headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
                     }, TAG_ANIMEYT)
                 }
-                log("OK.ru resueltos videos=\${directVideos.size} max=\${directVideos.first().first}p id=$id")
+                log("OK.ru resueltos videos=${directVideos.size} max=${directVideos.first().first}p id=$id")
                 return
             }
             val hls = hlsEntry.find(page)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
