@@ -204,10 +204,13 @@ class AnimeLHDProvider : MainAPI() {
                     "Origin" to WEB
                 ) else mapOf("Referer" to "$WEB/")
 
+            log("HTTP GET | " + safeUrl(url))
             val res = app.get(url, headers = headers, interceptor = cfInterceptor)
-            if (res.isSuccessful) res.text
+            val body = res.text
+            log("HTTP RESULT | code=" + res.code + " | ok=" + res.isSuccessful + " | chars=" + body.length + " | url=" + safeUrl(url))
+            if (res.isSuccessful) body
             else {
-                log("HTTP ${res.code} en $url")
+                log("HTTP ERROR BODY | " + body.take(180).replace("\n", " "))
                 null
             }
         } catch (e: CancellationException) {
