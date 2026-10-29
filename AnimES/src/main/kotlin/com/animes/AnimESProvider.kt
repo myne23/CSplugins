@@ -1393,25 +1393,37 @@ class AnimESProvider : MainAPI() {
                 if (q <= 0 || url.isBlank()) null else Triple(q, match.groupValues[1], url)
             }.distinctBy { it.third }.sortedByDescending { it.first }
             if (directVideos.isNotEmpty()) {
-                directVideos.forEach { video ->
-                    sink.emit(newExtractorLink(source = name, name = "OK.ru · ${video.first}p", url = video.third,
-                        type = ExtractorLinkType.VIDEO) {
+                for (video in directVideos) {
+                    val streamHeaders = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
+                    val link = newExtractorLink(
+                        source = name,
+                        name = "OK.ru · " + video.first + "p",
+                        url = video.third,
+                        type = ExtractorLinkType.VIDEO
+                    ) {
                         referer = okEmbedUrl
                         quality = video.first
-                        this.headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
-                    }, TAG_ANIMEYT)
+                    }
+                    link.headers = streamHeaders
+                    sink.emit(link, TAG_ANIMEYT)
                 }
                 log("OK.ru resueltos videos=${directVideos.size} max=${directVideos.first().first}p id=$id")
                 return
             }
             val hls = hlsEntry.find(page)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
             if (!hls.isNullOrBlank()) {
-                sink.emit(newExtractorLink(source = name, name = "OK.ru · HLS", url = hls,
-                    type = ExtractorLinkType.M3U8) {
+                val streamHeaders = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
+                val link = newExtractorLink(
+                    source = name,
+                    name = "OK.ru · HLS",
+                    url = hls,
+                    type = ExtractorLinkType.M3U8
+                ) {
                     referer = okEmbedUrl
                     quality = Qualities.Unknown.value
-                    this.headers = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
-                }, TAG_ANIMEYT)
+                }
+                link.headers = streamHeaders
+                sink.emit(link, TAG_ANIMEYT)
                 log("OK.ru resuelto HLS fallback id=$id")
                 return
             }
