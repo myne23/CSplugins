@@ -717,6 +717,43 @@ class AnimeLHDProvider : MainAPI() {
                 "$BYSE_FALLBACK_HOST/$path".takeIf {
                     path.isNotBlank() && !embed.startsWith(BYSE_FALLBACK_HOST, ignoreCase = true)
                 }
+            )
+        } else {
+            listOf(embed)
+        }
+
+        val origin = "https://" + embed.substringAfter("://").substringBefore("/")
+        val referers = listOf("$API/", "$WEB/", "$origin/").distinct()
+        val collected = ConcurrentLinkedQueue<ExtractorLink>()
+
+        log("LOAD EXTRACTOR START | " + prefix + " | byse=" + isByse + " | embed=" + safeUrl(embed))
+
+        for (candidate in candidates) {
+            for (ref in referers) {
+                val before = collected.size
+                try {
+                    log("EXTRACTOR ATTEMPT | " + prefix + " | candidate=" + safeUrl(candidate) + " | referer=" + safeUrl(ref))
+                    loadExtractor(candidate, ref, subtitleCallback) { link ->
+                        log("EXTRACTOR LINK RAW | " + prefix + " | source=" + link.source + " | name=" + link.name + " | type=" + link.type + " | quality=" + link.quality + " | url=" + safeUrl(link.url) + " | referer=" + safeUrl(link.referer))
+                        collected.add(link)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log("EXTRACTOR ATTEMPT ERROR | " + prefix + " | " + e.javaClass.simpleName + ": " + e.message)
+                }
+                if (collected.size > before) break
+            }
+            if (collected.isNotEmpty()) break
+        }
+
+        log("LOAD EXTRACTOR END | " + prefix + " | links=" + collected.size)
+        for (link in collected.distinctBy { it.url }) {
+            val tagged = retag(link, prefix)
+            log("EXTRACTOR LINK EMIT | " + prefix + " | " + tagged.name + " | type=" + tagged.type + " | quality=" + tagged.quality + " | url=" + safeUrl(tagged.url))
+            emit(tagged)
+        }
+    }
 
     private suspend fun bysePostJson(url: String, headers: Map<String, String>, payload: JSONObject, timeoutSeconds: Long = 15L): JSONObject {
         val response = app.post(
