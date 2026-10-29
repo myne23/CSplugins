@@ -1387,35 +1387,14 @@ class AnimESProvider : MainAPI() {
                 .replace(Regex("""\\+u0026""", RegexOption.IGNORE_CASE), "&")
                 .replace(Regex("""\\+(?:/|u002f)""", RegexOption.IGNORE_CASE), "/")
                 .replace(Regex("""\\+u003d""", RegexOption.IGNORE_CASE), "=")
-            val directVideos = videoEntry.findAll(page).mapNotNull { match ->
-                val q = quality(match.groupValues[1])
-                val url = match.groupValues[2].replace("\\/", "/").trim()
-                if (q <= 0 || url.isBlank()) null else Triple(q, match.groupValues[1], url)
-            }.distinctBy { it.third }.sortedByDescending { it.first }.toList()
-            if (directVideos.isNotEmpty()) {
-                for (video in directVideos) {
-                    val streamHeaders = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
-                    val link = newExtractorLink(
-                        source = name,
-                        name = "OK.ru · " + video.first + "p",
-                        url = video.third,
-                        type = ExtractorLinkType.VIDEO
-                    ) {
-                        referer = okEmbedUrl
-                        quality = video.first
-                    }
-                    link.headers = streamHeaders
-                    sink.emit(link, TAG_ANIMEYT)
-                }
-                log("OK.ru resueltos videos=${directVideos.size} max=${directVideos.first().first}p id=$id")
-                return
-            }
+            // Preferir la playlist HLS de OK.ru: contiene las calidades adaptativas
+            // y evita mostrar cada representación como una fuente separada.
             val hls = hlsEntry.find(page)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
             if (!hls.isNullOrBlank()) {
                 val streamHeaders = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
                 val link = newExtractorLink(
                     source = name,
-                    name = "OK.ru · HLS",
+                    name = "OK.ru",
                     url = hls,
                     type = ExtractorLinkType.M3U8
                 ) {
@@ -1424,7 +1403,32 @@ class AnimESProvider : MainAPI() {
                 }
                 link.headers = streamHeaders
                 sink.emit(link, TAG_ANIMEYT)
-                log("OK.ru resuelto HLS fallback id=$id")
+                log("OK.ru playlist HLS encontrada id=$id")
+                return
+            }
+
+            // Si el HTML no expone HLS, emitir una sola representación directa:
+            // la de mayor calidad, en vez de inundar la lista con todas.
+            val directVideos = videoEntry.findAll(page).mapNotNull { match ->
+                val q = quality(match.groupValues[1])
+                val url = match.groupValues[2].replace("\\/", "/").trim()
+                if (q <= 0 || url.isBlank()) null else Triple(q, match.groupValues[1], url)
+            }.distinctBy { it.third }.sortedByDescending { it.first }.toList()
+            val bestVideo = directVideos.firstOrNull()
+            if (bestVideo != null) {
+                val streamHeaders = mapOf("User-Agent" to UA, "Referer" to "https://ok.ru/")
+                val link = newExtractorLink(
+                    source = name,
+                    name = "OK.ru · " + bestVideo.first + "p",
+                    url = bestVideo.third,
+                    type = ExtractorLinkType.VIDEO
+                ) {
+                    referer = okEmbedUrl
+                    quality = bestVideo.first
+                }
+                link.headers = streamHeaders
+                sink.emit(link, TAG_ANIMEYT)
+                log("OK.ru sin HLS; única fuente directa=${bestVideo.first}p id=$id")
                 return
             }
         }
