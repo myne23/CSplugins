@@ -190,11 +190,14 @@ private fun tmdb(path: String?, size: String = "w300"): String? {
     return if (p.startsWith("http")) p else "$TMDB/$size$p"
 }
 
-private fun langLabel(raw: String): String = when (raw.uppercase()) {
-    "SUB" -> "SUB"
-    "LAT" -> "LAT"
-    "ESP" -> "CAST"
-    else -> raw.uppercase()
+private fun langLabel(raw: String): String {
+    val value = raw.trim().uppercase()
+    return when {
+        value == "LAT" || value.contains("LATINO") || value.contains("LATAM") -> "LAT"
+        value == "SUB" || value.contains("SUBTITUL") || value.contains("JAPONES") || value.contains("JAPONÉS") -> "SUB"
+        value == "ESP" || value == "CAST" || value.contains("CASTELL") || value.contains("ESPAÑOL") || value.contains("ESPANOL") -> "CAST"
+        else -> value
+    }
 }
 
 private fun MainAPI.toSearch(o: JSONObject): SearchResponse? {
@@ -397,8 +400,7 @@ class AnimeLHDProvider : MainAPI() {
         }
     }
 
-    /* ------------------------------------------------------------
-     * Main page / search
+    /* ------------------------------------------------------------     * Main page / search
      * ------------------------------------------------------------ */
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -651,8 +653,11 @@ class AnimeLHDProvider : MainAPI() {
                                 }
                                 BYSE_EMBED.containsMatchIn(embed) ||
                                     embed.contains("byseraguci.com", ignoreCase = true) -> {
-                                    log("BYSE ROUTE | $prefix | embed=" + safeUrl(embed))
-                                    loadByseManual(embed, prefix, "$WEB/ver/$slug/$episode", emit)
+                                    val bysePrefix = "[$lang] " + server.replace(
+                                        Regex("""(?i)(?:\\s*[-·|]\\s*)?720p?\\b"""), ""
+                                    ).trim().ifBlank { server }
+                                    log("BYSE ROUTE | $bysePrefix | embed=" + safeUrl(embed))
+                                    loadByseManual(embed, bysePrefix, "$WEB/ver/$slug/$episode", emit)
                                 }
                                 LULU_HOSTS.any { embed.contains(it, ignoreCase = true) } ->
                                     loadLulu(embed, prefix, emit)
@@ -797,8 +802,7 @@ class AnimeLHDProvider : MainAPI() {
 
     private fun byseFixedUnsigned(value: java.math.BigInteger): ByteArray {
         val raw = value.toByteArray().let {
-            if (it.size > 32 && it[0] == 0.toByte()) it.copyOfRange(1, it.size) else it
-        }
+            if (it.size > 32 && it[0] == 0.toByte()) it.copyOfRange(1, it.size) else it        }
         val out = ByteArray(32)
         val copy = raw.takeLast(32).toByteArray()
         System.arraycopy(copy, 0, out, 32 - copy.size, copy.size)
@@ -1197,7 +1201,6 @@ class AnimeLHDProvider : MainAPI() {
 
         // Antes el Origin estaba fijo a un dominio; ahora sale de la URL real.
         val origin = "https://" + realUrl.substringAfter("://").substringBefore("/")
-
         val postResponse = app.post(
             realUrl,
             headers = mapOf(
