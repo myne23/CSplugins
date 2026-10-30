@@ -18,6 +18,8 @@ import java.net.URLEncoder
 import java.net.URI
 import com.lagradost.nicehttp.JsonAsString
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.Base64
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -236,6 +238,10 @@ class AnimeLHDProvider : MainAPI() {
     @Volatile
     private var homeCache: Pair<Long, String>? = null
 
+    // recent y added pueden solicitar la portada en paralelo desde CloudX.
+    // Un único vuelo evita dos desafíos Cloudflare simultáneos para el mismo HTML.
+    private val homeFetchMutex = Mutex()
+
     // La API devuelve Unauthorized de forma consistente; evitamos repetir
     // esa llamada en cada categoría/búsqueda y usamos el HTML público.
     @Volatile
@@ -345,10 +351,20 @@ class AnimeLHDProvider : MainAPI() {
         if (cached != null && System.currentTimeMillis() - cached.first < HOME_CACHE_MS) {
             return cached.second
         }
-        val html = fetch("$WEB/") ?: return null
-        val flat = flattenRsc(html)
-        homeCache = System.currentTimeMillis() to flat
-        return flat
+
+        return homeFetchMutex.withLock {
+            // Revisa nuevamente la caché después de esperar: otra categoría
+            // puede haber completado la misma descarga mientras tanto.
+            val latest = homeCache
+            if (latest != null && System.currentTimeMillis() - latest.first < HOME_CACHE_MS) {
+                return@withLock latest.second
+            }
+
+            val html = fetch("$WEB/") ?: return@withLock null
+            val flat = flattenRsc(html)
+            homeCache = System.currentTimeMillis() to flat
+            flat
+        }
     }
 
     /* ------------------------------------------------------------
