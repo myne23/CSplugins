@@ -240,6 +240,11 @@ class AnimeLHDProvider : MainAPI() {
     // Un único vuelo evita dos desafíos Cloudflare simultáneos para el mismo HTML.
     private val homeFetchMutex = Mutex()
 
+    // CloudflareKiller conserva estado mutable por host. Las peticiones paralelas
+    // de CloudX pueden dejar algunas llamadas esperando dentro del interceptor;
+    // serializamos la petición completa, incluida la lectura del body.
+    private val webRequestMutex = Mutex()
+
     // La API devuelve Unauthorized de forma consistente; evitamos repetir
     // esa llamada en cada categoría/búsqueda y usamos el HTML público.
     @Volatile
@@ -253,31 +258,33 @@ class AnimeLHDProvider : MainAPI() {
     // coincida con el del WebView que resolvió el challenge.
     private suspend fun fetch(url: String, json: Boolean = false): String? {
         return try {
-            val headers =
-                if (json) mapOf(
-                    "Accept" to "application/json, text/plain, */*",
-                    "Referer" to "$WEB/",
-                    "Origin" to WEB
-                ) else mapOf("Referer" to "$WEB/")
+            webRequestMutex.withLock {
+                val headers =
+                    if (json) mapOf(
+                        "Accept" to "application/json, text/plain, */*",
+                        "Referer" to "$WEB/",
+                        "Origin" to WEB
+                    ) else mapOf("Referer" to "$WEB/")
 
-            log("HTTP GET | " + safeUrl(url))
-            // Evita que una petición HTML/API quede bloqueada indefinidamente
-            // dentro del interceptor o durante la resolución de Cloudflare.
-            val res = app.get(url, headers = headers, interceptor = cfInterceptor, timeout = 25)
-            val body = res.text
-            log("HTTP RESULT | code=" + res.code + " | ok=" + res.isSuccessful + " | chars=" + body.length + " | url=" + safeUrl(url))
-            if (res.isSuccessful) body
-            else {
-                val errorBody = body.take(180).replace("\n", " ")
-                log("HTTP ERROR BODY | " + errorBody)
-                if (json && res.code == 403 &&
-                    (body.contains("Unauthorized", ignoreCase = true) ||
-                     body.contains("\"success\":false", ignoreCase = true))
-                ) {
-                    apiUnavailableUntil = System.currentTimeMillis() + API_UNAUTHORIZED_COOLDOWN_MS
-                    log("API COOLDOWN | Unauthorized; se priorizará HTML durante 10 minutos")
+                log("HTTP QUEUED | " + safeUrl(url))
+                // Mantiene una sola petición activa durante todo el ciclo:
+                // CloudflareKiller, respuesta y lectura del body.
+                val res = app.get(url, headers = headers, interceptor = cfInterceptor, timeout = 25)
+                val body = res.text
+                log("HTTP RESULT | code=" + res.code + " | ok=" + res.isSuccessful + " | chars=" + body.length + " | url=" + safeUrl(url))
+                if (res.isSuccessful) body
+                else {
+                    val errorBody = body.take(180).replace("\\n", " ")
+                    log("HTTP ERROR BODY | " + errorBody)
+                    if (json && res.code == 403 &&
+                        (body.contains("Unauthorized", ignoreCase = true) ||
+                         body.contains("\\"success\\":false", ignoreCase = true))
+                    ) {
+                        apiUnavailableUntil = System.currentTimeMillis() + API_UNAUTHORIZED_COOLDOWN_MS
+                        log("API COOLDOWN | Unauthorized; se priorizará HTML durante 10 minutos")
+                    }
+                    null
                 }
-                null
             }
         } catch (e: CancellationException) {
             throw e
