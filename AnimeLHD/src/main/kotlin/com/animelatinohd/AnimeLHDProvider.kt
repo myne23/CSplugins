@@ -274,11 +274,11 @@ class AnimeLHDProvider : MainAPI() {
                 log("HTTP RESULT | code=" + res.code + " | ok=" + res.isSuccessful + " | chars=" + body.length + " | url=" + safeUrl(url))
                 if (res.isSuccessful) body
                 else {
-                    val errorBody = body.take(180).replace("\\n", " ")
+                    val errorBody = body.take(180).replace("\n", " ")
                     log("HTTP ERROR BODY | " + errorBody)
                     if (json && res.code == 403 &&
                         (body.contains("Unauthorized", ignoreCase = true) ||
-                         body.contains("\\"success\\":false", ignoreCase = true))
+                         body.contains("\"success\":false", ignoreCase = true))
                     ) {
                         apiUnavailableUntil = System.currentTimeMillis() + API_UNAUTHORIZED_COOLDOWN_MS
                         log("API COOLDOWN | Unauthorized; se priorizará HTML durante 10 minutos")
