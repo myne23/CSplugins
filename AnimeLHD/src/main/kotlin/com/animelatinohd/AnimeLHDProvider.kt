@@ -70,7 +70,22 @@ private fun safeUrl(url: String?): String {
 
 private class CloudflareInterceptor(private val killer: CloudflareKiller) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
-        val response = chain.proceed(chain.request())
+        val host = chain.request().url.host
+        val hadSession = killer.savedCookies.containsKey(host)
+
+        // CloudflareKiller debe intervenir en TODAS las peticiones:
+        // así aplica las cookies cf_clearance guardadas incluso cuando
+        // la respuesta inicial ya no contiene un challenge.
+        val response = killer.intercept(chain)
+
+        val savedNames = killer.savedCookies[host]?.keys?.joinToString().orEmpty()
+        log(
+            "CF SESSION | host=" + host +
+                " | reused=" + hadSession +
+                " | cookies=" + savedNames +
+                " | code=" + response.code
+        )
+
         val body = try {
             response.peekBody(512 * 1024).string()
         } catch (_: Exception) {
@@ -91,14 +106,11 @@ private class CloudflareInterceptor(private val killer: CloudflareKiller) : Inte
         )
 
         if (challenge) {
-            log("CLOUDFLARE CHALLENGE | code=${response.code} | retry=CloudflareKiller")
-            response.close()
-            return killer.intercept(chain)
+            log("CLOUDFLARE CHALLENGE PERSISTENTE | host=" + host + " | code=" + response.code)
         }
         return response
     }
 }
-
 /* ====================================================================
  * Helpers JSON / RSC (Next.js mete los datos en self.__next_f.push)
  * ==================================================================== */
