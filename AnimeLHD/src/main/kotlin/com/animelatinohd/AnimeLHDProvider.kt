@@ -76,7 +76,11 @@ private class CloudflareInterceptor(private val killer: CloudflareKiller) : Inte
         // CloudflareKiller debe intervenir en TODAS las peticiones:
         // así aplica las cookies cf_clearance guardadas incluso cuando
         // la respuesta inicial ya no contiene un challenge.
-        val response = killer.intercept(chain)
+        // CloudStream puede disparar varias cargas en paralelo. CloudflareKiller
+        // mantiene cookies y estado mutable por host; serializamos su acceso.
+        val response = synchronized(killer) {
+            killer.intercept(chain)
+        }
 
         val savedNames = killer.savedCookies[host]?.keys?.joinToString().orEmpty()
         log(
@@ -253,7 +257,9 @@ class AnimeLHDProvider : MainAPI() {
                 ) else mapOf("Referer" to "$WEB/")
 
             log("HTTP GET | " + safeUrl(url))
-            val res = app.get(url, headers = headers, interceptor = cfInterceptor)
+            // Evita que una petición HTML/API quede bloqueada indefinidamente
+            // dentro del interceptor o durante la resolución de Cloudflare.
+            val res = app.get(url, headers = headers, interceptor = cfInterceptor, timeout = 25)
             val body = res.text
             log("HTTP RESULT | code=" + res.code + " | ok=" + res.isSuccessful + " | chars=" + body.length + " | url=" + safeUrl(url))
             if (res.isSuccessful) body
