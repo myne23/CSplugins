@@ -298,13 +298,13 @@ class AnimeLHDProvider : MainAPI() {
         log("HTML FALLBACK BODY | chars=" + html.length + " | hasNext=" + html.contains("self.__next_f.push"))
         val flat = flattenRsc(html)
         log("HTML FALLBACK RSC | chars=" + flat.length +
-            " | hasInitialAnimes=" + flat.contains("\\\"initialAnimes\\\":") +
-            " | hasInitialData=" + flat.contains("\\\"initialData\\\":") +
-            " | hasData=" + flat.contains("\\\"data\\\":") +
+            " | hasInitialAnimes=" + flat.contains("\"initialAnimes\":") +
+            " | hasInitialData=" + flat.contains("\"initialData\":") +
+            " | hasData=" + flat.contains("\"data\":") +
             " | hasSearch=" + flat.contains("search", ignoreCase = true))
         val objText = jsonAfter(flat, htmlKey)
         if (objText == null) {
-            val markers = listOf("\\\"initialAnimes\\\":", "\\\"initialData\\\":", "\\\"animes\\\":", "\\\"data\\\":")
+            val markers = listOf("\"initialAnimes\":", "\"initialData\":", "\"animes\":", "\"data\":")
                 .filter { flat.contains(it) }
             log("HTML FALLBACK PARSE MISS | requestedKey=" + htmlKey + " | foundMarkers=" + markers.joinToString())
             return emptyList<JSONObject>() to 1
