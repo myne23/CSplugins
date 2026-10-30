@@ -347,8 +347,7 @@ class AnimeLHDProvider : MainAPI() {
         // quedarse esperando sin completar la respuesta. Usamos directamente
         // las páginas públicas de Next.js para categorías y búsqueda.
         log("API SKIP | se usa HTML directamente")
-        log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)
-        val html = fetch(htmlUrl) ?: run {
+        log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)        val html = fetch(htmlUrl) ?: run {
             log("HTML FALLBACK FAIL | fetch devolvió null")
             return emptyList<JSONObject>() to 1
         }
@@ -614,22 +613,30 @@ class AnimeLHDProvider : MainAPI() {
         log("PLAYERS FOUND | count=" + players.size)
         players.forEachIndexed { index, p -> log("PLAYER[" + index + "] | lang=" + p.optString("language") + " | server=" + p.optString("server_name") + " | bridge=" + safeUrl(p.optString("bridge_url"))) }
 
-        val pendingLinks = ConcurrentLinkedQueue<ExtractorLink>()
+        data class OrderedLink(val languageRank: Int, val sequence: Int, val link: ExtractorLink)
+        val pendingLinks = ConcurrentLinkedQueue<OrderedLink>()
         val seen = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val sequence = AtomicInteger(0)
 
-        // Se recopilan en paralelo para no ralentizar la resolución, pero se
-        // entregan a CloudStream en el orden de idioma preferido.
-        val emit: suspend (ExtractorLink) -> Unit = { link ->
-            if (seen.add(link.url)) {
-                pendingLinks.add(link)
-            }
-        }
-
+        // Cada reproductor conserva su idioma original como metadato de orden.
+        // No dependemos del nombre que genere cada extractor, que puede variar.
         coroutineScope {
             players.map { p ->
                 async {
                     try {
-                        val lang = langLabel(p.optString("language"))
+                        val rawLanguage = p.optString("language")
+                        val lang = langLabel(rawLanguage)
+                        val languageRank = when (lang) {
+                            "LAT" -> 0
+                            "SUB" -> 1
+                            "CAST" -> 2
+                            else -> 3
+                        }
+                        val emitForPlayer: suspend (ExtractorLink) -> Unit = { link ->
+                            if (seen.add(link.url)) {
+                                pendingLinks.add(OrderedLink(languageRank, sequence.getAndIncrement(), link))
+                            }
+                        }
                         val server = p.optString("server_name")
                         val bridge = p.optString("bridge_url")
                         if (bridge.isBlank()) return@async
@@ -649,7 +656,7 @@ class AnimeLHDProvider : MainAPI() {
                                 server.equals("Gamma", ignoreCase = true) ||
                                     embed.contains("ashleyhardat.com", ignoreCase = true) -> {
                                     log("VOE ROUTE | $prefix | embed=" + safeUrl(embed))
-                                    loadVoe(embed, prefix, emit)
+                                    loadVoe(embed, prefix, emitForPlayer)
                                 }
                                 BYSE_EMBED.containsMatchIn(embed) ||
                                     embed.contains("byseraguci.com", ignoreCase = true) -> {
@@ -657,11 +664,11 @@ class AnimeLHDProvider : MainAPI() {
                                         Regex("""(?i)(?:\\s*[-·|]\\s*)?720p?\\b"""), ""
                                     ).trim().ifBlank { server }
                                     log("BYSE ROUTE | $bysePrefix | embed=" + safeUrl(embed))
-                                    loadByseManual(embed, bysePrefix, "$WEB/ver/$slug/$episode", emit)
+                                    loadByseManual(embed, bysePrefix, "$WEB/ver/$slug/$episode", emitForPlayer)
                                 }
                                 LULU_HOSTS.any { embed.contains(it, ignoreCase = true) } ->
-                                    loadLulu(embed, prefix, emit)
-                                else -> loadGeneric(embed, prefix, subtitleCallback, emit)
+                                    loadLulu(embed, prefix, emitForPlayer)
+                                else -> loadGeneric(embed, prefix, subtitleCallback, emitForPlayer)
                             }
                         }
                     } catch (e: CancellationException) {
@@ -673,10 +680,9 @@ class AnimeLHDProvider : MainAPI() {
             }.awaitAll()
         }
 
-        val languageOrder = mapOf("[LAT]" to 0, "[SUB]" to 1, "[CAST]" to 2)
-        val orderedLinks = pendingLinks.toList().sortedBy { link ->
-            languageOrder.entries.firstOrNull { (tag, _) -> link.name.contains(tag) }?.value ?: 3
-        }
+        val orderedLinks = pendingLinks.toList()
+            .sortedWith(compareBy<OrderedLink> { it.languageRank }.thenBy { it.sequence })
+            .map { it.link }
         orderedLinks.forEach(callback)
 
         log("LOADLINKS END | enlaces_emitidos=" + orderedLinks.size + " | players=" + players.size)
@@ -698,7 +704,6 @@ class AnimeLHDProvider : MainAPI() {
             if (it.startsWith("//")) "https:$it" else it
         }
     }
-
     private suspend fun retag(link: ExtractorLink, prefix: String): ExtractorLink =
         newExtractorLink(
             source = link.source,
@@ -1047,8 +1052,7 @@ class AnimeLHDProvider : MainAPI() {
     }
 
 
-    /** Resuelve Gamma/VOE manualmente, sin depender de loadExtractor. */
-    private suspend fun loadVoe(
+    /** Resuelve Gamma/VOE manualmente, sin depender de loadExtractor. */    private suspend fun loadVoe(
         embedUrl: String,
         prefix: String,
         emit: suspend (ExtractorLink) -> Unit
