@@ -490,14 +490,14 @@ class AnimeLHDProvider : MainAPI() {
         log("PLAYERS FOUND | count=" + players.size)
         players.forEachIndexed { index, p -> log("PLAYER[" + index + "] | lang=" + p.optString("language") + " | server=" + p.optString("server_name") + " | bridge=" + safeUrl(p.optString("bridge_url"))) }
 
-        val count = AtomicInteger(0)
-        val lock = Any()
+        val pendingLinks = ConcurrentLinkedQueue<ExtractorLink>()
         val seen = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+        // Se recopilan en paralelo para no ralentizar la resolución, pero se
+        // entregan a CloudStream en el orden de idioma preferido.
         val emit: suspend (ExtractorLink) -> Unit = { link ->
             if (seen.add(link.url)) {
-                count.incrementAndGet()
-                synchronized(lock) { callback(link) }
+                pendingLinks.add(link)
             }
         }
 
@@ -546,8 +546,14 @@ class AnimeLHDProvider : MainAPI() {
             }.awaitAll()
         }
 
-        log("LOADLINKS END | enlaces_emitidos=" + count.get() + " | players=" + players.size)
-        return count.get() > 0
+        val languageOrder = mapOf("[LAT]" to 0, "[SUB]" to 1, "[CAST]" to 2)
+        val orderedLinks = pendingLinks.toList().sortedBy { link ->
+            languageOrder.entries.firstOrNull { (tag, _) -> link.name.contains(tag) }?.value ?: 3
+        }
+        orderedLinks.forEach(callback)
+
+        log("LOADLINKS END | enlaces_emitidos=" + orderedLinks.size + " | players=" + players.size)
+        return orderedLinks.isNotEmpty()
     }
 
     /** bridge_url -> URL del embed real (el iframe que devuelve el bridge). */
@@ -897,7 +903,7 @@ class AnimeLHDProvider : MainAPI() {
                 else if (actualQuality >= 480) "480p" else if (actualQuality >= 360) "360p" else "Auto"
             val link = newExtractorLink(
                 source = name,
-                name = "$prefix · Bysekoze · " + qualityLabel,
+                name = "$prefix · Bysekoze",
                 url = streamUrl,
                 type = if (isHls || isDash) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
             ) {
