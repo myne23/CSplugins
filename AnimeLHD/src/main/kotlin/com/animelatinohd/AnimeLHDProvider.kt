@@ -395,7 +395,7 @@ class AnimeLHDProvider : MainAPI() {
         val (raw, _) = fetchList(
             "$API/api/animes?search=$q&page=1",
             "$WEB/directorio?search=$q",
-            "\\"initialAnimes\\":"
+            "\"initialAnimes\":"
         )
         val mapped = raw.mapNotNull { toSearch(it) }
         log("SEARCH END | raw=" + raw.size + " | mapped=" + mapped.size)
