@@ -294,24 +294,10 @@ class AnimeLHDProvider : MainAPI() {
         htmlKey: String
     ): Pair<List<JSONObject>, Int> {
 
-        val now = System.currentTimeMillis()
-        if (now >= apiUnavailableUntil) {
-            fetch(apiUrl, json = true)?.let { txt ->
-                try {
-                    val j = JSONObject(txt)
-                    val data = j.optJSONArray("data")
-                    if (data != null) {
-                        return data.objs() to j.optInt("last_page", 1)
-                    }
-                    log("API JSON sin array data; se usa HTML")
-                } catch (e: Exception) {
-                    log("API no devolvió JSON válido: ${e.message}; se usa HTML")
-                }
-            }
-        } else {
-            log("API SKIP | cooldown activo; se usa HTML directamente")
-        }
-
+        // La API de AnimeLHD devuelve 403 Unauthorized y en CloudX puede
+        // quedarse esperando sin completar la respuesta. Usamos directamente
+        // las páginas públicas de Next.js para categorías y búsqueda.
+        log("API SKIP | se usa HTML directamente")
         log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)
         val html = fetch(htmlUrl) ?: run {
             log("HTML FALLBACK FAIL | fetch devolvió null")
