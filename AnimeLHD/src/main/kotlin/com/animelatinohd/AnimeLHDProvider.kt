@@ -23,8 +23,7 @@ import kotlinx.coroutines.sync.withLock
 import java.util.Base64
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.LinkedHashMap
 
 /* ====================================================================
  * Config
@@ -37,6 +36,8 @@ private const val API = "https://website.animelatinohd.com"
 private const val TMDB = "https://image.tmdb.org/t/p"
 
 private const val HOME_CACHE_MS = 180_000L
+private const val PAGE_CACHE_MS = 45_000L
+private const val PAGE_CACHE_MAX = 80
 private const val API_UNAUTHORIZED_COOLDOWN_MS = 10 * 60 * 1000L
 private const val BRIDGE_TIMEOUT_MS = 10_000L
 private const val EXTRACTOR_TIMEOUT_MS = 9_000L
@@ -245,6 +246,30 @@ class AnimeLHDProvider : MainAPI() {
     // serializamos la petición completa, incluida la lectura del body.
     private val webRequestMutex = Mutex()
 
+    // Caché breve para páginas HTML: evita repetir descargas cuando CloudX
+    // solicita dos veces la misma categoría, búsqueda o ficha casi al mismo tiempo.
+    private val pageCacheLock = Any()
+    private val pageCache = LinkedHashMap<String, Pair<Long, String>>(16, 0.75f, true)
+
+    private fun cachedPage(url: String): String? = synchronized(pageCacheLock) {
+        val entry = pageCache[url] ?: return@synchronized null
+        if (System.currentTimeMillis() - entry.first >= PAGE_CACHE_MS) {
+            pageCache.remove(url)
+            null
+        } else entry.second
+    }
+
+    private fun rememberPage(url: String, body: String) = synchronized(pageCacheLock) {
+        pageCache[url] = System.currentTimeMillis() to body
+        while (pageCache.size > PAGE_CACHE_MAX) {
+            val eldest = pageCache.entries.iterator()
+            if (eldest.hasNext()) {
+                eldest.next()
+                eldest.remove()
+            } else break
+        }
+    }
+
     // La API devuelve Unauthorized de forma consistente; evitamos repetir
     // esa llamada en cada categoría/búsqueda y usamos el HTML público.
     @Volatile
@@ -257,8 +282,18 @@ class AnimeLHDProvider : MainAPI() {
     // OJO: no seteamos User-Agent a mano; CloudflareKiller necesita que
     // coincida con el del WebView que resolvió el challenge.
     private suspend fun fetch(url: String, json: Boolean = false): String? {
+        // Solo cacheamos páginas del sitio público; no API ni respuestas de extractores.
+        val cacheable = !json && url.startsWith("$WEB/")
+        if (cacheable) cachedPage(url)?.let {
+            log("HTTP CACHE HIT | " + safeUrl(url))
+            return it
+        }
         return try {
             webRequestMutex.withLock {
+                if (cacheable) cachedPage(url)?.let {
+                    log("HTTP CACHE HIT (queued) | " + safeUrl(url))
+                    return@withLock it
+                }
                 val headers =
                     if (json) mapOf(
                         "Accept" to "application/json, text/plain, */*",
@@ -272,8 +307,10 @@ class AnimeLHDProvider : MainAPI() {
                 val res = app.get(url, headers = headers, interceptor = cfInterceptor, timeout = 25)
                 val body = res.text
                 log("HTTP RESULT | code=" + res.code + " | ok=" + res.isSuccessful + " | chars=" + body.length + " | url=" + safeUrl(url))
-                if (res.isSuccessful) body
-                else {
+                if (res.isSuccessful) {
+                    if (cacheable) rememberPage(url, body)
+                    body
+                } else {
                     val errorBody = body.take(180).replace("\n", " ")
                     log("HTTP ERROR BODY | " + errorBody)
                     if (json && res.code == 403 &&
