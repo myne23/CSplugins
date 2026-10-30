@@ -347,7 +347,8 @@ class AnimeLHDProvider : MainAPI() {
         // quedarse esperando sin completar la respuesta. Usamos directamente
         // las páginas públicas de Next.js para categorías y búsqueda.
         log("API SKIP | se usa HTML directamente")
-        log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)        val html = fetch(htmlUrl) ?: run {
+        log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)
+        val html = fetch(htmlUrl) ?: run {
             log("HTML FALLBACK FAIL | fetch devolvió null")
             return emptyList<JSONObject>() to 1
         }
