@@ -662,7 +662,7 @@ class AnimeLHDProvider : MainAPI() {
                                 BYSE_EMBED.containsMatchIn(embed) ||
                                     embed.contains("byseraguci.com", ignoreCase = true) -> {
                                     val bysePrefix = "[$lang] " + server.replace(
-                                        Regex("""(?i)(?:\\s*[-·|]\\s*)?720p?\\b"""), ""
+                                        Regex("""(?i)(?:\s*[-·|]\s*)?720p?\b"""), ""
                                     ).trim().ifBlank { server }
                                     log("BYSE ROUTE | $bysePrefix | embed=" + safeUrl(embed))
                                     loadByseManual(embed, bysePrefix, "$WEB/ver/$slug/$episode", emitForPlayer)
@@ -681,10 +681,26 @@ class AnimeLHDProvider : MainAPI() {
             }.awaitAll()
         }
 
+        // Orden global por el idioma del enlace final, no por el resolver.
+        // El idioma del reproductor queda como respaldo si el nombre no trae etiqueta.
         val orderedLinks = pendingLinks.toList()
-            .sortedWith(compareBy<OrderedLink> { it.languageRank }.thenBy { it.sequence })
+            .sortedWith(
+                compareBy<OrderedLink> {
+                    val label = Regex("""\[(LAT|SUB|CAST)\]""", RegexOption.IGNORE_CASE)
+                        .find(it.link.name)?.groupValues?.getOrNull(1)?.uppercase()
+                    when (label) {
+                        "LAT" -> 0
+                        "SUB" -> 1
+                        "CAST" -> 2
+                        else -> it.languageRank
+                    }
+                }.thenBy { it.sequence }
+            )
             .map { it.link }
-        orderedLinks.forEach(callback)
+        orderedLinks.forEachIndexed { index, link ->
+            log("FINAL SOURCE ORDER[$index] | " + link.name)
+            callback(link)
+        }
 
         log("LOADLINKS END | enlaces_emitidos=" + orderedLinks.size + " | players=" + players.size)
         return orderedLinks.isNotEmpty()
