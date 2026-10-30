@@ -35,6 +35,7 @@ private const val API = "https://website.animelatinohd.com"
 private const val TMDB = "https://image.tmdb.org/t/p"
 
 private const val HOME_CACHE_MS = 180_000L
+private const val API_UNAUTHORIZED_COOLDOWN_MS = 10 * 60 * 1000L
 private const val BRIDGE_TIMEOUT_MS = 10_000L
 private const val EXTRACTOR_TIMEOUT_MS = 9_000L
 private const val VOE_TIMEOUT_NS = 25_000_000_000L
@@ -69,15 +70,28 @@ private fun safeUrl(url: String?): String {
 
 private class CloudflareInterceptor(private val killer: CloudflareKiller) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
-        val request = chain.request()
-        val response = chain.proceed(request)
-        val body = response.peekBody(512 * 1024).string()
-        val title = try {
-            Jsoup.parse(body).select("title").text()
-        } catch (e: Exception) {
+        val response = chain.proceed(chain.request())
+        val body = try {
+            response.peekBody(512 * 1024).string()
+        } catch (_: Exception) {
             ""
         }
-        if (title.contains("Just a moment", ignoreCase = true)) {
+        val contentType = response.header("Content-Type").orEmpty()
+        val looksLikeHtml = contentType.contains("text/html", ignoreCase = true) ||
+            body.trimStart().startsWith("<!doctype", ignoreCase = true) ||
+            body.trimStart().startsWith("<html", ignoreCase = true)
+        val challenge = looksLikeHtml && (
+            body.contains("Just a moment", ignoreCase = true) ||
+            body.contains("cf-chl-", ignoreCase = true) ||
+            body.contains("challenge-platform", ignoreCase = true) ||
+            body.contains("Checking your browser", ignoreCase = true) ||
+            body.contains("Enable JavaScript and cookies", ignoreCase = true) ||
+            body.contains("cf-browser-verification", ignoreCase = true) ||
+            body.contains("Attention Required! | Cloudflare", ignoreCase = true)
+        )
+
+        if (challenge) {
+            log("CLOUDFLARE CHALLENGE | code=${response.code} | retry=CloudflareKiller")
             response.close()
             return killer.intercept(chain)
         }
@@ -206,6 +220,11 @@ class AnimeLHDProvider : MainAPI() {
     @Volatile
     private var homeCache: Pair<Long, String>? = null
 
+    // La API devuelve Unauthorized de forma consistente; evitamos repetir
+    // esa llamada en cada categoría/búsqueda y usamos el HTML público.
+    @Volatile
+    private var apiUnavailableUntil: Long = 0L
+
     /* ------------------------------------------------------------
      * HTTP
      * ------------------------------------------------------------ */
@@ -227,7 +246,15 @@ class AnimeLHDProvider : MainAPI() {
             log("HTTP RESULT | code=" + res.code + " | ok=" + res.isSuccessful + " | chars=" + body.length + " | url=" + safeUrl(url))
             if (res.isSuccessful) body
             else {
-                log("HTTP ERROR BODY | " + body.take(180).replace("\n", " "))
+                val errorBody = body.take(180).replace("\n", " ")
+                log("HTTP ERROR BODY | " + errorBody)
+                if (json && res.code == 403 &&
+                    (body.contains("Unauthorized", ignoreCase = true) ||
+                     body.contains("\"success\":false", ignoreCase = true))
+                ) {
+                    apiUnavailableUntil = System.currentTimeMillis() + API_UNAUTHORIZED_COOLDOWN_MS
+                    log("API COOLDOWN | Unauthorized; se priorizará HTML durante 10 minutos")
+                }
                 null
             }
         } catch (e: CancellationException) {
@@ -245,13 +272,22 @@ class AnimeLHDProvider : MainAPI() {
         htmlKey: String
     ): Pair<List<JSONObject>, Int> {
 
-        fetch(apiUrl, json = true)?.let { txt ->
-            try {
-                val j = JSONObject(txt)
-                return (j.optJSONArray("data")?.objs() ?: emptyList()) to j.optInt("last_page", 1)
-            } catch (e: Exception) {
-                log("API no devolvió JSON: ${e.message}")
+        val now = System.currentTimeMillis()
+        if (now >= apiUnavailableUntil) {
+            fetch(apiUrl, json = true)?.let { txt ->
+                try {
+                    val j = JSONObject(txt)
+                    val data = j.optJSONArray("data")
+                    if (data != null) {
+                        return data.objs() to j.optInt("last_page", 1)
+                    }
+                    log("API JSON sin array data; se usa HTML")
+                } catch (e: Exception) {
+                    log("API no devolvió JSON válido: ${e.message}; se usa HTML")
+                }
             }
+        } else {
+            log("API SKIP | cooldown activo; se usa HTML directamente")
         }
 
         val html = fetch(htmlUrl) ?: return emptyList<JSONObject>() to 1
