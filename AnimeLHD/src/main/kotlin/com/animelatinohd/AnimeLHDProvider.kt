@@ -698,8 +698,21 @@ class AnimeLHDProvider : MainAPI() {
             )
             .map { it.link }
         orderedLinks.forEachIndexed { index, link ->
-            log("FINAL SOURCE ORDER[$index] | " + link.name)
-            callback(link)
+            // CloudStream puede agrupar/ordenar por ExtractorLink.source.
+            // Unificamos ese metadato para conservar el orden global LAT/SUB/CAST.
+            val normalized = newExtractorLink(
+                source = name,
+                name = link.name,
+                url = link.url,
+                type = link.type
+            ) {
+                referer = link.referer
+                quality = link.quality
+                headers = link.headers
+                extractorData = link.extractorData
+            }
+            log("FINAL SOURCE ORDER[$index] | source=" + normalized.source + " | name=" + normalized.name + " | quality=" + normalized.quality)
+            callback(normalized)
         }
 
         log("LOADLINKS END | enlaces_emitidos=" + orderedLinks.size + " | players=" + players.size)
@@ -1033,7 +1046,7 @@ class AnimeLHDProvider : MainAPI() {
             )
             val isHls = Regex("""\.m3u8(?:$|[?#])""", RegexOption.IGNORE_CASE).containsMatchIn(streamUrl)
             val isDash = Regex("""\.mpd(?:$|[?#])""", RegexOption.IGNORE_CASE).containsMatchIn(streamUrl)
-            var actualQuality = Regex("""(\\d{3,4})\\s*[pP]?""").find(chosen.first)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: Qualities.Unknown.value
+            var actualQuality = Regex("""(\d{3,4})\s*[pP]?""").find(chosen.first)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: Qualities.Unknown.value
             if (isHls) {
                 try {
                     val manifest = app.get(streamUrl, headers = streamHeaders, timeout = 8)
