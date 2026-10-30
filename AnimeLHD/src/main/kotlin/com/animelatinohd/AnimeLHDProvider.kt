@@ -290,17 +290,36 @@ class AnimeLHDProvider : MainAPI() {
             log("API SKIP | cooldown activo; se usa HTML directamente")
         }
 
-        val html = fetch(htmlUrl) ?: return emptyList<JSONObject>() to 1
+        log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)
+        val html = fetch(htmlUrl) ?: run {
+            log("HTML FALLBACK FAIL | fetch devolvió null")
+            return emptyList<JSONObject>() to 1
+        }
+        log("HTML FALLBACK BODY | chars=" + html.length + " | hasNext=" + html.contains("self.__next_f.push"))
         val flat = flattenRsc(html)
-        val obj = jsonAfter(flat, htmlKey)?.let {
-            try {
-                JSONObject(it)
-            } catch (e: Exception) {
-                null
-            }
-        } ?: return emptyList<JSONObject>() to 1
-
-        return (obj.optJSONArray("data")?.objs() ?: emptyList()) to obj.optInt("last_page", 1)
+        log("HTML FALLBACK RSC | chars=" + flat.length +
+            " | hasInitialAnimes=" + flat.contains("\\\"initialAnimes\\\":") +
+            " | hasInitialData=" + flat.contains("\\\"initialData\\\":") +
+            " | hasData=" + flat.contains("\\\"data\\\":") +
+            " | hasSearch=" + flat.contains("search", ignoreCase = true))
+        val objText = jsonAfter(flat, htmlKey)
+        if (objText == null) {
+            val markers = listOf("\\\"initialAnimes\\\":", "\\\"initialData\\\":", "\\\"animes\\\":", "\\\"data\\\":")
+                .filter { flat.contains(it) }
+            log("HTML FALLBACK PARSE MISS | requestedKey=" + htmlKey + " | foundMarkers=" + markers.joinToString())
+            return emptyList<JSONObject>() to 1
+        }
+        val obj = try {
+            JSONObject(objText)
+        } catch (e: Exception) {
+            log("HTML FALLBACK JSON ERROR | " + e.javaClass.simpleName + ": " + e.message)
+            return emptyList<JSONObject>() to 1
+        }
+        val data = obj.optJSONArray("data")
+        log("HTML FALLBACK PARSED | keys=" + obj.keys().asSequence().toList().joinToString() +
+            " | dataCount=" + (data?.length() ?: -1) +
+            " | lastPage=" + obj.optInt("last_page", 1))
+        return (data?.objs() ?: emptyList()) to obj.optInt("last_page", 1)
     }
 
     private suspend fun homeFlat(): String? {
@@ -372,12 +391,15 @@ class AnimeLHDProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse>? {
         val q = URLEncoder.encode(query, "UTF-8")
+        log("SEARCH START | query=" + query + " | encoded=" + q)
         val (raw, _) = fetchList(
             "$API/api/animes?search=$q&page=1",
             "$WEB/directorio?search=$q",
-            "\"initialAnimes\":"
+            "\\"initialAnimes\\":"
         )
-        return raw.mapNotNull { toSearch(it) }
+        val mapped = raw.mapNotNull { toSearch(it) }
+        log("SEARCH END | raw=" + raw.size + " | mapped=" + mapped.size)
+        return mapped
     }
 
     /* ------------------------------------------------------------
