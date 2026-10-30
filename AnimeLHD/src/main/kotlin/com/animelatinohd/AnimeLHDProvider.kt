@@ -80,9 +80,7 @@ private class CloudflareInterceptor(private val killer: CloudflareKiller) : Inte
         // la respuesta inicial ya no contiene un challenge.
         // CloudStream puede disparar varias cargas en paralelo. CloudflareKiller
         // mantiene cookies y estado mutable por host; serializamos su acceso.
-        val response = synchronized(killer) {
-            killer.intercept(chain)
-        }
+        val response = killer.intercept(chain)
 
         val savedNames = killer.savedCookies[host]?.keys?.joinToString().orEmpty()
         log(
