@@ -2066,8 +2066,8 @@ class AnimESProvider : MainAPI() {
                     async {
                         val collected = ConcurrentLinkedQueue<ExtractorLink>()
                         val sourceSink = LinkSink { link -> collected.add(link) }
-                        val animeAvTag = "$" + "TAG_ANIMEAV · " + "$" + "language"
-                        safely("AnimeAV " + "$" + "language " + "$" + "server") {
+                        val animeAvTag = TAG_ANIMEAV + " · " + language
+                        safely("AnimeAV " + language + " " + server) {
                             when (server.lowercase()) {
                                 "upnshare" ->
                                     withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
@@ -2078,7 +2078,7 @@ class AnimESProvider : MainAPI() {
                                     // No descartar servidores nuevos por su nombre: delegarlos al extractor.
                                     runExtractor(
                                         url = rawUrl,
-                                        referers = listOf("$" + "AV_BASE/", "$" + "AV_BASE/media/" + "$" + "animeSlug/" + "$" + "episodeNumber"),
+                                        referers = listOf(AV_BASE + "/", AV_BASE + "/media/" + animeSlug + "/" + episodeNumber),
                                         tag = animeAvTag,
                                         sink = sourceSink,
                                         subtitleCallback = subtitleCallback
