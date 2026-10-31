@@ -954,7 +954,7 @@ class AnimESProvider : MainAPI() {
         // Aceptar tanto "av|..." como "https://animeyt.cc/av|..." para la búsqueda directa.
         val avData = when {
             data.startsWith("av|") -> data
-            Regex("""^https?://[^/]+/av\\|""", RegexOption.IGNORE_CASE).containsMatchIn(data) ->
+            Regex("""^https?://[^/]+/av\|""", RegexOption.IGNORE_CASE).containsMatchIn(data) ->
                 "av|" + data.substringAfter("/av|")
             else -> null
         }
