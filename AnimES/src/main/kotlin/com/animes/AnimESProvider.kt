@@ -2040,35 +2040,62 @@ class AnimESProvider : MainAPI() {
 
         log("AVDBG SERVERS found=${servers.size} unique=${uniqueServers.size} details=${uniqueServers.joinToString { "${it.first}:${it.third}" }} slug=$animeSlug episode=$episodeNumber")
 
-        // UPNShare ya no bloquea el lanzamiento de los extractores: todo en paralelo.
-        coroutineScope {
-            uniqueServers
+        // Resolver todos los servidores en paralelo para no sumar sus tiempos de espera,
+        // pero guardar sus enlaces por separado y publicarlos en el orden preferido.
+        fun sourcePriority(server: String, url: String): Int {
+            val normalized = server.lowercase()
+            return when {
+                normalized.contains("byse") ||
+                    url.contains("bysekoze", true) ||
+                    url.contains("bysesukior", true) ||
+                    url.contains("n1mwq.org", true) -> 0
+                normalized == "upnshare" -> 1
+                normalized.contains("voe") -> 2
+                else -> 3
+            }
+        }
+
+        val orderedServers = uniqueServers.sortedBy { (server, url, _) ->
+            sourcePriority(server, url)
+        }
+        log("AVDBG SERVER_ORDER " + orderedServers.joinToString(" -> ") { it.first })
+
+        val resolvedGroups = coroutineScope {
+            orderedServers
                 .map { (server, rawUrl, language) ->
                     async {
-                        val animeAvTag = "$TAG_ANIMEAV · $language"
-                      safely("AnimeAV $language $server") {
+                        val collected = ConcurrentLinkedQueue<ExtractorLink>()
+                        val sourceSink = LinkSink { link -> collected.add(link) }
+                        val animeAvTag = "$" + "TAG_ANIMEAV · " + "$" + "language"
+                        safely("AnimeAV " + "$" + "language " + "$" + "server") {
                             when (server.lowercase()) {
                                 "upnshare" ->
                                     withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
-                                        loadUpnShare(rawUrl, sink, animeAvTag)
+                                        loadUpnShare(rawUrl, sourceSink, animeAvTag)
                                     }
 
                                 else ->
                                     // No descartar servidores nuevos por su nombre: delegarlos al extractor.
                                     runExtractor(
                                         url = rawUrl,
-                                        referers = listOf("$AV_BASE/", "$AV_BASE/media/$animeSlug/$episodeNumber"),
+                                        referers = listOf("$" + "AV_BASE/", "$" + "AV_BASE/media/" + "$" + "animeSlug/" + "$" + "episodeNumber"),
                                         tag = animeAvTag,
-                                        sink = sink,
+                                        sink = sourceSink,
                                         subtitleCallback = subtitleCallback
                                     )
                             }
                         }
+                        collected.toList()
                     }
                 }
                 .awaitAll()
         }
-        log("AVDBG SOURCES_DONE links=${sink.count} slug=$animeSlug episode=$episodeNumber")
+
+        // awaitAll conserva el orden de entrada, aunque los extractores terminen en otro orden.
+        for (group in resolvedGroups) {
+            for (link in group) sink.emit(link, null)
+        }
+        log("AVDBG SOURCES_DONE links=" + sink.count + " slug=" + animeSlug + " episode=" + episodeNumber)
     }
 
     private suspend fun resolveAnimeAvSlug(titles: List<String>): String? {
