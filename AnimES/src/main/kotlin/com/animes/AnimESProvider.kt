@@ -933,7 +933,10 @@ class AnimESProvider : MainAPI() {
             val title = parts[3].trim().ifBlank { titleFromSlug(avSlug) }
             safely("AnimeAV direct") {
                 withTimeoutOrNull(ANIMEAV_TIMEOUT_MS) {
-                    loadAnimeAv(listOf(title), episodeNumber, sink, subtitleCallback, explicitSlug = avSlug)
+                    // Resolver el slug desde el título igual que en las series del catálogo.
+                    // Algunas fichas encontradas por búsqueda directa usan un alias/slug
+                    // que no coincide con el que AnimeAV espera para cargar el episodio.
+                    loadAnimeAv(listOf(title), episodeNumber, sink, subtitleCallback)
                 }
             }
             return sink.count > 0
