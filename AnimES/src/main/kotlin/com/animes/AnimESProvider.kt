@@ -614,6 +614,7 @@ class AnimESProvider : MainAPI() {
     }
 
     private suspend fun searchAnimeAvResults(query: String): List<SearchResponse> {
+        log("AVDBG SEARCH start query='$query'")
         val aliases = mapOf(
             "link click" to listOf("shiguang dailiren", "shiguang dailiren ii", "shiguang dailiren iii"),
             "linkclick" to listOf("shiguang dailiren", "shiguang dailiren ii", "shiguang dailiren iii"),
@@ -633,7 +634,11 @@ class AnimESProvider : MainAPI() {
                 directSlugs.map { slug -> async {
                     val url = "$AV_BASE/media/$slug/"
                     try {
-                        val response = withTimeoutOrNull(6000) { app.get(url, headers = headers) } ?: return@async null
+                        val response = withTimeoutOrNull(6000) { app.get(url, headers = headers) } ?: run {
+                            log("AVDBG SEARCH_ALIAS timeout slug=$slug")
+                            return@async null
+                        }
+                        log("AVDBG SEARCH_ALIAS slug=$slug HTTP=${response.code}")
                         if (!response.isSuccessful) return@async null
                         val html = response.text
                         val pageTitle = Regex("""<meta\b[^>]*>""", RegexOption.IGNORE_CASE).findAll(html)
@@ -648,9 +653,13 @@ class AnimESProvider : MainAPI() {
                         newAnimeSearchResponse("$pageTitle •AnimeAV", url, TvType.Anime) {
                             posterUrl = extractPosterFromHtml(html, url)
                         }
-                    } catch (_: Exception) { null }
+                    } catch (e: Exception) {
+                        log("AVDBG SEARCH_ALIAS exception slug=$slug type=${e.javaClass.simpleName} message=${e.message}")
+                        null
+                    }
                 } }.awaitAll().filterNotNull()
             }
+            log("AVDBG SEARCH_ALIAS results=${direct.size} query='$query'")
             if (direct.isNotEmpty()) return direct
         }
 
@@ -679,6 +688,7 @@ class AnimESProvider : MainAPI() {
             isRelevantSearchTitle(query, result.name) ||
                 normalizeTitle(result.name.removeSuffix(" •AnimeAV")).let { it in aliasTitles || aliasTitles.any(it::contains) }
         }.distinctBy { it.url }
+        log("AVDBG SEARCH_CATALOG query='$query' parsed=${results.size} matched=${matched.size}")
         if (matched.isNotEmpty()) {
             val ordered = matched.sortedByDescending { result ->
                 val title = normalizeTitle(result.name.removeSuffix(" •AnimeAV"))
@@ -700,6 +710,7 @@ class AnimESProvider : MainAPI() {
         }
         val fallbackMatches = fallback.filter { isRelevantSearchTitle(query, it.name) }.distinctBy { it.url }
             .sortedByDescending { animeTitleScore(query, it.name) }.take(40)
+        log("AVDBG SEARCH_FALLBACK parsed=${fallback.size} matched=${fallbackMatches.size} query='$query'")
         return fallbackMatches
     }
 
@@ -823,7 +834,15 @@ class AnimESProvider : MainAPI() {
         val slug = match.groupValues[1]
         val canonical = "$AV_BASE/media/$slug/"
         val headers = mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")
-        val html = try { app.get(canonical, headers = headers).text } catch (_: Exception) { return null }
+        log("AVDBG LOAD_PAGE start slug=$slug url=$canonical")
+        val response = try { app.get(canonical, headers = headers) } catch (e: Exception) {
+            log("AVDBG LOAD_PAGE exception slug=$slug type=${e.javaClass.simpleName} message=${e.message}")
+            return null
+        }
+        log("AVDBG LOAD_PAGE HTTP=${response.code} slug=$slug")
+        if (!response.isSuccessful) return null
+        val html = response.text
+        log("AVDBG LOAD_PAGE html slug=$slug bytes=${html.length}")
         fun metaContent(key: String): String? = Regex("""<meta\b[^>]*>""", RegexOption.IGNORE_CASE)
             .findAll(html).map { it.value }.firstNotNullOfOrNull { tag ->
                 val metaKey = Regex("""\b(?:property|name)\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
@@ -839,6 +858,7 @@ class AnimESProvider : MainAPI() {
         val plot = Regex("""<meta[^>]+name=["']description["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.get(1)?.let(::cleanHtml)
         val seasonNumber = inferSeasonNumber("$title $slug")
+        log("AVDBG LOAD_PAGE title='$title' slug=$slug season=$seasonNumber")
         val episodes = linkedMapOf<Int, Episode>()
         val anchors = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
         val safeTitle = title.replace("|", " ")
@@ -855,7 +875,11 @@ class AnimESProvider : MainAPI() {
                 name = epTitle; episode = number; season = seasonNumber; posterUrl = poster
             })
         }
-        if (episodes.isEmpty()) return null
+        if (episodes.isEmpty()) {
+            log("AVDBG LOAD_PAGE NO_EPISODES slug=$slug title='$title' htmlBytes=${html.length}")
+            return null
+        }
+        log("AVDBG LOAD_PAGE episodes=${episodes.size} first=${episodes.keys.minOrNull()} last=${episodes.keys.maxOrNull()} slug=$slug")
         return newTvSeriesLoadResponse(title, canonical, TvType.Anime, episodes.toSortedMap().values.toList()) {
             posterUrl = poster; this.plot = plot
             seasonNames = listOf(SeasonData(season = seasonNumber, name = "Temporada $seasonNumber", displaySeason = seasonNumber))
@@ -920,6 +944,7 @@ class AnimESProvider : MainAPI() {
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         val sink = LinkSink(callback)
+        log("AVDBG LOAD_LINKS start dataPrefix='${data.take(100)}'")
         if (data.startsWith("movie|")) {
             val movieUrl = data.split("|", limit = 3).getOrNull(1) ?: return false
             safely("AnimeYT movie") { loadAnimeYtSources(movieUrl, sink, subtitleCallback) }
@@ -931,14 +956,18 @@ class AnimESProvider : MainAPI() {
             val avSlug = parts[1].trim()
             val episodeNumber = parts[2].trim().toIntOrNull() ?: return false
             val title = parts[3].trim().ifBlank { titleFromSlug(avSlug) }
-            safely("AnimeAV direct") {
-                withTimeoutOrNull(ANIMEAV_TIMEOUT_MS) {
+            log("AVDBG LOAD_LINKS direct slugFromData=$avSlug title='$title' episode=$episodeNumber")
+            val completed = withTimeoutOrNull(ANIMEAV_TIMEOUT_MS) {
+                safely("AnimeAV direct") {
                     // Resolver el slug desde el título igual que en las series del catálogo.
                     // Algunas fichas encontradas por búsqueda directa usan un alias/slug
                     // que no coincide con el que AnimeAV espera para cargar el episodio.
                     loadAnimeAv(listOf(title), episodeNumber, sink, subtitleCallback)
                 }
+                true
             }
+            if (completed == null) log("AVDBG LOAD_LINKS TIMEOUT direct title='$title' episode=$episodeNumber")
+            log("AVDBG LOAD_LINKS direct done links=${sink.count} title='$title' episode=$episodeNumber")
             return sink.count > 0
         }
         val parts = data.split("|", limit = 4)
@@ -1895,10 +1924,12 @@ class AnimESProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         explicitSlug: String? = null
     ) {
+        log("AVDBG RESOLVE start titles=${titles.joinToString(" / ")} explicitSlug=$explicitSlug episode=$episodeNumber")
         val animeSlug = explicitSlug ?: resolveAnimeAvSlug(titles.take(2)) ?: run {
-            log("AnimeAV: anime no encontrado")
+            log("AVDBG RESOLVE FAILED titles=${titles.joinToString(" / ")} episode=$episodeNumber")
             return
         }
+        log("AVDBG RESOLVE selected slug=$animeSlug episode=$episodeNumber")
 
         // Antes: media page (HTML pesado + regex) -> episode page.
         // Ahora vamos directo a la página del episodio; si no existe, devuelve 404.
@@ -1922,7 +1953,11 @@ class AnimESProvider : MainAPI() {
             log("AnimeAV: episodio $epUrl HTTP=${r.code}")
             if (r.isSuccessful) { page = r.text; break }
         }
-        if (page == null) return
+        if (page == null) {
+            log("AVDBG EPISODE_PAGE NOT_FOUND slug=$animeSlug episode=$episodeNumber")
+            return
+        }
+        log("AVDBG EPISODE_PAGE parsed slug=$animeSlug episode=$episodeNumber htmlBytes=${page.length}")
 
         // Si cambió el envoltorio JS de "embeds", buscar SUB/DUB en toda la página
         // en vez de descartar el episodio antes de inspeccionar sus servidores.
@@ -1990,7 +2025,7 @@ class AnimESProvider : MainAPI() {
         if (servers.isEmpty()) log("AnimeAV: sin servidores en el HTML slug=$animeSlug ep=$episodeNumber len=${page.length} hasEmbeds=${page.contains("embeds")}")
         val uniqueServers = servers.filter { (_, rawUrl, _) -> sink.claimEmbed(rawUrl) }
 
-        log("AnimeAV servidores únicos=" + uniqueServers.size)
+        log("AVDBG SERVERS found=${servers.size} unique=${uniqueServers.size} details=${uniqueServers.joinToString { "${it.first}:${it.third}" }} slug=$animeSlug episode=$episodeNumber")
 
         // UPNShare ya no bloquea el lanzamiento de los extractores: todo en paralelo.
         coroutineScope {
@@ -2020,20 +2055,28 @@ class AnimESProvider : MainAPI() {
                 }
                 .awaitAll()
         }
+        log("AVDBG SOURCES_DONE links=${sink.count} slug=$animeSlug episode=$episodeNumber")
     }
 
     private suspend fun resolveAnimeAvSlug(titles: List<String>): String? {
+        log("AVDBG SLUG_LOOKUP titles=${titles.joinToString(" / ")}")
 
         for (t in titles) {
-            animeAvSlugCache[normalizeTitle(t)]?.let { return it }
+            animeAvSlugCache[normalizeTitle(t)]?.let {
+                log("AVDBG SLUG_CACHE title='$t' slug=$it")
+                return it
+            }
         }
 
         for (t in titles) {
+            log("AVDBG SLUG_SEARCH title='$t'")
             val slug = searchAnimeAv(t) ?: continue
             titles.forEach { animeAvSlugCache[normalizeTitle(it)] = slug }
+            log("AVDBG SLUG_FOUND title='$t' slug=$slug")
             return slug
         }
 
+        log("AVDBG SLUG_NOT_FOUND titles=${titles.joinToString(" / ")}")
         return null
     }
 
@@ -2041,10 +2084,15 @@ class AnimESProvider : MainAPI() {
 
         val encoded = URLEncoder.encode(title, "UTF-8")
 
-        val res = app.get(
-            "$AV_BASE/catalogo?search=$encoded",
-            headers = mapOf("User-Agent" to UA)
-        )
+        val searchUrl = "$AV_BASE/catalogo?search=$encoded"
+        log("AVDBG SLUG_REQUEST title='$title' url=$searchUrl")
+        val res = try {
+            app.get(searchUrl, headers = mapOf("User-Agent" to UA))
+        } catch (e: Exception) {
+            log("AVDBG SLUG_REQUEST_ERROR title='$title' type=${e.javaClass.simpleName} message=${e.message}")
+            return null
+        }
+        log("AVDBG SLUG_HTTP title='$title' status=${res.code} htmlBytes=${res.text.length}")
 
         if (!res.isSuccessful) {
             log("AnimeAV: search HTTP=${res.code}")
@@ -2070,7 +2118,7 @@ class AnimESProvider : MainAPI() {
             return null
         }
 
-        log("AnimeAV: '$title' -> ${best.first} (score=${best.second})")
+        log("AVDBG SLUG_MATCH title='$title' candidate='${best.first}' score=${best.second}")
 
         return best.first
             .removePrefix("/media/")
