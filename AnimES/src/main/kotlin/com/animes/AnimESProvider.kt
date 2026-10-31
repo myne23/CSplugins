@@ -1461,7 +1461,8 @@ class AnimESProvider : MainAPI() {
                 .firstOrNull { it.startsWith("http", true) }
         }
         if (!hlsUrl.isNullOrBlank()) {
-            // generateM3u8 expande el master en una entrada por calidad (360p/480p/720p...).
+            // Mantener el master HLS como una sola fuente: el reproductor puede elegir
+            // las variantes de calidad internamente sin llenar la lista de fuentes.
             val variants = try {
                 M3u8Helper.generateM3u8(source = name, streamUrl = hlsUrl, referer = "https://ok.ru/", headers = okHeaders)
             } catch (e: CancellationException) {
@@ -1470,29 +1471,18 @@ class AnimESProvider : MainAPI() {
                 log("OK.ru generateM3u8 ERROR id=$id: ${e.javaClass.simpleName}: ${e.message}")
                 emptyList()
             }
-            if (variants.isNotEmpty()) {
-                for (v in variants.sortedByDescending { it.quality }) {
-                    val label = v.quality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
-                    sink.emit(
-                        newExtractorLink(source = name, name = "OK.ru$label", url = v.url, type = ExtractorLinkType.M3U8) {
-                            referer = "https://ok.ru/"
-                            quality = v.quality
-                            headers = okHeaders
-                        },
-                        TAG_ANIMEYT
-                    )
-                }
-            } else {
-                sink.emit(
-                    newExtractorLink(source = name, name = "OK.ru · HLS", url = hlsUrl, type = ExtractorLinkType.M3U8) {
-                        referer = "https://ok.ru/"
-                        quality = Qualities.Unknown.value
-                        headers = okHeaders
-                    },
-                    TAG_ANIMEYT
-                )
-            }
-            log("OK.ru HLS id=$id variantes=${variants.size}")
+            val maxQuality = variants.maxOfOrNull { it.quality }?.takeIf { it > 0 }
+                ?: Qualities.Unknown.value
+            val label = maxQuality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
+            sink.emit(
+                newExtractorLink(source = name, name = "OK.ru$label", url = hlsUrl, type = ExtractorLinkType.M3U8) {
+                    referer = "https://ok.ru/"
+                    quality = maxQuality
+                    headers = okHeaders
+                },
+                TAG_ANIMEYT
+            )
+            log("OK.ru HLS id=$id variantes=${variants.size} publicada=1 calidad=$maxQuality")
             return
         }
 
@@ -1511,19 +1501,20 @@ class AnimESProvider : MainAPI() {
             true
         }
         if (finished == null) log("OK.ru loadExtractor TIMEOUT id=$id")
-        for (link in collected.distinctBy { it.url }.sortedByDescending { it.quality }) {
-            val label = link.quality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
+        val bestLink = collected.distinctBy { it.url }.maxByOrNull { it.quality }
+        if (bestLink != null) {
+            val label = bestLink.quality.takeIf { it > 0 }?.let { " · ${it}p" }.orEmpty()
             sink.emit(
-                newExtractorLink(source = name, name = "OK.ru$label", url = link.url, type = link.type) {
+                newExtractorLink(source = name, name = "OK.ru$label", url = bestLink.url, type = bestLink.type) {
                     referer = "https://ok.ru/"
-                    quality = link.quality
+                    quality = bestLink.quality
                     headers = okHeaders
-                    extractorData = link.extractorData
+                    extractorData = bestLink.extractorData
                 },
                 TAG_ANIMEYT
             )
         }
-        log("OK.ru extractor respaldo links=${collected.size} id=$id")
+        log("OK.ru extractor respaldo links=${collected.size} publicada=${if (bestLink == null) 0 else 1} id=$id")
     }
 
     private suspend fun loadAnimeYtSources(
