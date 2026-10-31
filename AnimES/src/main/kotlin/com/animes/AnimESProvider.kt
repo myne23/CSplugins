@@ -973,8 +973,9 @@ class AnimESProvider : MainAPI() {
             log("AVDBG LOAD_LINKS direct normalized=true slugFromData=$avSlug title='$title' episode=$episodeNumber")
             val completed = withTimeoutOrNull(ANIMEAV_TIMEOUT_MS) {
                 safely("AnimeAV direct") {
-                    // Resolver el slug desde el título igual que en las series del catálogo.
-                    loadAnimeAv(listOf(title), episodeNumber, sink, subtitleCallback)
+                    // El slug ya viene guardado en los datos de AnimeAV: usarlo directamente.
+                    // No volver a buscar por el título SEO de la página, que puede no coincidir.
+                    loadAnimeAv(listOf(title), episodeNumber, sink, subtitleCallback, explicitSlug = avSlug)
                 }
                 true
             }
