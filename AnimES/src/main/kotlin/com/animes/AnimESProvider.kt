@@ -950,18 +950,30 @@ class AnimESProvider : MainAPI() {
             safely("AnimeYT movie") { loadAnimeYtSources(movieUrl, sink, subtitleCallback) }
             return sink.count > 0
         }
-        if (data.startsWith("av|")) {
-            val parts = data.split("|", limit = 5)
-            if (parts.size < 4) return false
+        // CloudStream puede anteponer la URL base del provider al data de los episodios.
+        // Aceptar tanto "av|..." como "https://animeyt.cc/av|..." para la búsqueda directa.
+        val avData = when {
+            data.startsWith("av|") -> data
+            Regex("""^https?://[^/]+/av\\|""", RegexOption.IGNORE_CASE).containsMatchIn(data) ->
+                "av|" + data.substringAfter("/av|")
+            else -> null
+        }
+        if (avData != null) {
+            val parts = avData.split("|", limit = 5)
+            if (parts.size < 4) {
+                log("AVDBG LOAD_LINKS invalid AnimeAV data fields=${parts.size}")
+                return false
+            }
             val avSlug = parts[1].trim()
-            val episodeNumber = parts[2].trim().toIntOrNull() ?: return false
+            val episodeNumber = parts[2].trim().toIntOrNull() ?: run {
+                log("AVDBG LOAD_LINKS invalid AnimeAV episode='${parts[2]}'")
+                return false
+            }
             val title = parts[3].trim().ifBlank { titleFromSlug(avSlug) }
-            log("AVDBG LOAD_LINKS direct slugFromData=$avSlug title='$title' episode=$episodeNumber")
+            log("AVDBG LOAD_LINKS direct normalized=true slugFromData=$avSlug title='$title' episode=$episodeNumber")
             val completed = withTimeoutOrNull(ANIMEAV_TIMEOUT_MS) {
                 safely("AnimeAV direct") {
                     // Resolver el slug desde el título igual que en las series del catálogo.
-                    // Algunas fichas encontradas por búsqueda directa usan un alias/slug
-                    // que no coincide con el que AnimeAV espera para cargar el episodio.
                     loadAnimeAv(listOf(title), episodeNumber, sink, subtitleCallback)
                 }
                 true
