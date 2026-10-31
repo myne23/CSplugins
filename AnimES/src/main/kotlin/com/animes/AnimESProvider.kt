@@ -1744,25 +1744,29 @@ class AnimESProvider : MainAPI() {
                                 { stage, detail -> log("Abyss $stage: $detail") }
                             ) { progress, message -> log("Abyss progress=$progress $message") }
                         }
-                        // HLS nativo solo si el resolver encontró una playlist explícita (Sora fragmentado).
-                        qualities.firstOrNull { it.source.hlsUrl.isNotBlank() }?.source?.let { hlsSource ->
+                        // Si existe una playlist HLS explícita, publicar solo el master:
+                        // el reproductor puede elegir sus calidades internamente.
+                        val hlsSource = qualities.firstOrNull { it.source.hlsUrl.isNotBlank() }?.source
+                        if (hlsSource != null) {
                             log("Abyss HLS explícito detectado; playlist=" + hlsSource.hlsUrl.substringBefore("?").take(180))
                             sink.emit(newExtractorLink(source = name, name = "AbyssPlayer · HLS", url = hlsSource.hlsUrl,
                                 type = ExtractorLinkType.M3U8) {
                                 quality = Qualities.Unknown.value
                                 headers = mapOf("Referer" to hlsSource.referer, "User-Agent" to UA)
                             }, TAG_ANIMEYT)
-                        }
-                        // Un link por resolución (antes se forzaba una sola y quality=720 fijo).
-                        for (q in qualities) {
-                            if (q.source.hlsUrl.isNotBlank()) continue
-                            val localUrl = abyssMediaServer.register(q.source)
-                            log("Abyss resuelto; ${q.height}p servidor local listo filename=${q.source.filename} sora=${q.source.segmented}")
-                            val label = if (q.height > 0) " · ${q.height}p" else ""
-                            sink.emit(newExtractorLink(source = name, name = "AbyssPlayer$label", url = localUrl,
-                                type = ExtractorLinkType.VIDEO) {
-                                quality = if (q.height > 0) q.height else Qualities.Unknown.value
-                            }, TAG_ANIMEYT)
+                        } else {
+                            // Cuando Abyss entrega MP4 separados, conservar únicamente la
+                            // resolución más alta para evitar entradas duplicadas en CloudStream.
+                            val best = qualities.filter { it.source.hlsUrl.isBlank() }.maxByOrNull { it.height }
+                            if (best != null) {
+                                val localUrl = abyssMediaServer.register(best.source)
+                                log("Abyss resuelto; mejor calidad=${best.height}p servidor local listo filename=${best.source.filename} sora=${best.source.segmented}")
+                                val label = if (best.height > 0) " · ${best.height}p" else ""
+                                sink.emit(newExtractorLink(source = name, name = "AbyssPlayer$label", url = localUrl,
+                                    type = ExtractorLinkType.VIDEO) {
+                                    quality = if (best.height > 0) best.height else Qualities.Unknown.value
+                                }, TAG_ANIMEYT)
+                            }
                         }
                     }
                     runCatching { URI(candidate).host.orEmpty().lowercase().removePrefix("www.") }.getOrDefault("")
