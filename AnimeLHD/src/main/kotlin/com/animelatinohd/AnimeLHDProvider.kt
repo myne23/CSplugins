@@ -303,7 +303,7 @@ class AnimeLHDProvider : MainAPI() {
                 interceptUrl = Regex("(?!)"),
                 userAgent = null,
                 useOkhttp = false,
-                additionalUrls = listOf(Regex("(?!)")),
+                additionalUrls = listOf(Regex(".")),
                 timeout = 45_000L
             )
             resolver.resolveUsingWebView(url, headers = headers) {
