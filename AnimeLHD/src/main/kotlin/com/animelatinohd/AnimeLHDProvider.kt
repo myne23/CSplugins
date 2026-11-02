@@ -1,8 +1,10 @@
 package com.animelatinohd
 
 import android.util.Log
+import android.webkit.CookieManager
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -237,7 +239,8 @@ class AnimeLHDProvider : MainAPI() {
         "added" to "Animes agregados"
     )
 
-    private val cfInterceptor = CloudflareInterceptor(CloudflareKiller())
+    private val cfKiller = CloudflareKiller()
+    private val cfInterceptor = CloudflareInterceptor(cfKiller)
 
     @Volatile
     private var homeCache: Pair<Long, String>? = null
@@ -286,8 +289,57 @@ class AnimeLHDProvider : MainAPI() {
 
     // OJO: no seteamos User-Agent a mano; CloudflareKiller necesita que
     // coincida con el del WebView que resolvió el challenge.
+    /**
+     * Cloudflare a veces entrega el challenge como HTML 200 (o sin el header
+     * Server esperado por CloudflareKiller). En ese caso el interceptor nativo
+     * no abre WebView. Lo hacemos aquí, fuera del interceptor, y guardamos
+     * cf_clearance para que el siguiente request reutilice la sesión.
+     */
+    private suspend fun solveCloudflareChallenge(url: String, headers: Map<String, String>): Boolean {
+        val host = try { java.net.URI(url).host } catch (_: Exception) { null } ?: return false
+        return try {
+            log("CF WEBVIEW START | host=$host")
+            val resolver = WebViewResolver(
+                interceptUrl = Regex("(?!)"),
+                userAgent = null,
+                useOkhttp = false,
+                additionalUrls = listOf(Regex("(?!)")),
+                timeout = 45_000L
+            )
+            resolver.resolveUsingWebView(url, headers = headers) {
+                val cookie = try { CookieManager.getInstance().getCookie(url) } catch (_: Exception) { null }
+                if (!cookie.isNullOrBlank() && cookie.contains("cf_clearance=")) {
+                    val parsed = CloudflareKiller.parseCookieMap(cookie)
+                    if (parsed.containsKey("cf_clearance")) {
+                        cfKiller.savedCookies[host] = parsed
+                        log("CF WEBVIEW COOKIE | host=$host | names=" + parsed.keys.joinToString())
+                        true
+                    } else false
+                } else false
+            }
+            val solved = cfKiller.savedCookies[host]?.containsKey("cf_clearance") == true
+            log("CF WEBVIEW RESULT | host=$host | solved=$solved")
+            solved
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log("CF WEBVIEW ERROR | host=$host | " + e.javaClass.simpleName + ": " + e.message)
+            false
+        }
+    }
+
+    private fun isCloudflareChallenge(body: String): Boolean {
+        val sample = body.take(512 * 1024)
+        return sample.contains("Just a moment", ignoreCase = true) ||
+            sample.contains("cf-chl-", ignoreCase = true) ||
+            sample.contains("challenge-platform", ignoreCase = true) ||
+            sample.contains("Checking your browser", ignoreCase = true) ||
+            sample.contains("Enable JavaScript and cookies", ignoreCase = true) ||
+            sample.contains("cf-browser-verification", ignoreCase = true) ||
+            sample.contains("Attention Required! | Cloudflare", ignoreCase = true)
+    }
+
     private suspend fun fetch(url: String, json: Boolean = false): String? {
-        // Solo cacheamos páginas del sitio público; no API ni respuestas de extractores.
         val cacheable = !json && url.startsWith("$WEB/")
         if (cacheable) cachedPage(url)?.let {
             log("HTTP CACHE HIT | " + safeUrl(url))
@@ -299,28 +351,42 @@ class AnimeLHDProvider : MainAPI() {
                     log("HTTP CACHE HIT (queued) | " + safeUrl(url))
                     return@withLock it
                 }
-                val headers =
-                    if (json) mapOf(
-                        "Accept" to "application/json, text/plain, */*",
-                        "Referer" to "$WEB/",
-                        "Origin" to WEB
-                    ) else mapOf("Referer" to "$WEB/")
+                val headers = if (json) mapOf(
+                    "Accept" to "application/json, text/plain, */*",
+                    "Referer" to "$WEB/",
+                    "Origin" to WEB
+                ) else mapOf("Referer" to "$WEB/")
 
                 log("HTTP QUEUED | " + safeUrl(url))
-                // Mantiene una sola petición activa durante todo el ciclo:
-                // CloudflareKiller, respuesta y lectura del body.
-                val res = app.get(url, headers = headers, interceptor = cfInterceptor, timeout = 25)
-                val body = res.text
-                log("HTTP RESULT | code=" + res.code + " | ok=" + res.isSuccessful + " | chars=" + body.length + " | url=" + safeUrl(url))
-                if (res.isSuccessful) {
+                val first = app.get(url, headers = headers, interceptor = cfInterceptor, timeout = 25)
+                var body = first.text
+                var successful = first.isSuccessful
+                var code = first.code
+                log("HTTP RESULT | code=$code | ok=$successful | chars=" + body.length + " | url=" + safeUrl(url))
+
+                if (isCloudflareChallenge(body)) {
+                    val host = try { java.net.URI(url).host } catch (_: Exception) { "?" }
+                    log("CF CHALLENGE HTML | host=$host | code=$code")
+                    if (solveCloudflareChallenge(url, headers)) {
+                        log("CF RETRY | " + safeUrl(url))
+                        val retry = app.get(url, headers = headers, interceptor = cfInterceptor, timeout = 25)
+                        body = retry.text
+                        successful = retry.isSuccessful
+                        code = retry.code
+                        log("CF RETRY RESULT | code=$code | ok=$successful | chars=" + body.length)
+                    } else {
+                        log("CF BYPASS FAILED | " + safeUrl(url))
+                    }
+                }
+
+                if (successful && !isCloudflareChallenge(body)) {
                     if (cacheable) rememberPage(url, body)
                     body
                 } else {
-                    val errorBody = body.take(180).replace("\n", " ")
-                    log("HTTP ERROR BODY | " + errorBody)
-                    if (json && res.code == 403 &&
+                    log("HTTP ERROR BODY | " + body.take(180).replace("\n", " "))
+                    if (json && code == 403 &&
                         (body.contains("Unauthorized", ignoreCase = true) ||
-                         body.contains("\"success\":false", ignoreCase = true))
+                         body.contains("\\"success\\":false", ignoreCase = true))
                     ) {
                         apiUnavailableUntil = System.currentTimeMillis() + API_UNAUTHORIZED_COOLDOWN_MS
                         log("API COOLDOWN | Unauthorized; se priorizará HTML durante 10 minutos")
@@ -335,7 +401,6 @@ class AnimeLHDProvider : MainAPI() {
             null
         }
     }
-
     /** Intenta la API JSON; si falla, parsea el HTML de la página equivalente. */
     private suspend fun fetchList(
         apiUrl: String,
