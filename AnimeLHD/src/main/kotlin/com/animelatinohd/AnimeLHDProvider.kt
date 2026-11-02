@@ -189,6 +189,14 @@ class AnimeLHDProvider : MainAPI() {
 
     private val cfKiller = CloudflareKiller()
 
+    // Cloudflare puede desafiar simultáneamente Home, Latinos y Castellanos.
+    // Solo la primera petición HTML inicia el bypass; las demás esperan a que
+    // CloudflareKiller consiga la sesión y luego continúan en paralelo.
+    private val cfBootstrapMutex = Mutex()
+
+    @Volatile
+    private var cfSessionBootstrapped = false
+
     @Volatile
     private var homeCache: Pair<Long, String>? = null
 
@@ -251,7 +259,29 @@ class AnimeLHDProvider : MainAPI() {
             ) else mapOf("Referer" to "$WEB/")
 
             log("HTTP START | " + safeUrl(url))
-            val response = app.get(url, headers = headers, interceptor = cfKiller, timeout = 25)
+
+            // La primera petición al dominio se ejecuta sola para evitar que
+            // varias instancias de WebView resuelvan el mismo challenge.
+            // Una vez obtenida una respuesta válida, las siguientes peticiones
+            // reutilizan la sesión de CloudflareKiller y vuelven a ser paralelas.
+            val bootstrapResponse = if (url.startsWith("$WEB/") && !cfSessionBootstrapped) {
+                cfBootstrapMutex.withLock {
+                    if (!cfSessionBootstrapped) {
+                        log("CF BOOTSTRAP START | " + safeUrl(url))
+                        val first = app.get(url, headers = headers, interceptor = cfKiller, timeout = 25)
+                        if (first.isSuccessful) {
+                            cfSessionBootstrapped = true
+                            log("CF BOOTSTRAP READY | " + safeUrl(url))
+                        } else {
+                            log("CF BOOTSTRAP RETRY NEEDED | code=${first.code}")
+                        }
+                        first
+                    } else null
+                }
+            } else null
+
+            val response = bootstrapResponse
+                ?: app.get(url, headers = headers, interceptor = cfKiller, timeout = 25)
             val body = response.text
             log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | url=" + safeUrl(url))
 
