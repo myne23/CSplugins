@@ -1,18 +1,14 @@
 package com.animelatinohd
 
 import android.util.Log
-import android.webkit.CookieManager
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
-import okhttp3.Interceptor
-import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -72,57 +68,9 @@ private fun safeUrl(url: String?): String {
 }
 
 /* ====================================================================
- * Cloudflare
- * ==================================================================== */
-
-private class CloudflareInterceptor(private val killer: CloudflareKiller) : Interceptor {
-    override fun intercept(chain: Interceptor.Chain): Response {
-        val host = chain.request().url.host
-        val hadSession = killer.savedCookies.containsKey(host)
-
-        // CloudflareKiller debe intervenir en TODAS las peticiones:
-        // así aplica las cookies cf_clearance guardadas incluso cuando
-        // la respuesta inicial ya no contiene un challenge.
-        // CloudStream puede disparar varias cargas en paralelo. CloudflareKiller
-        // mantiene cookies y estado mutable por host; serializamos su acceso.
-        val response = killer.intercept(chain)
-
-        val savedNames = killer.savedCookies[host]?.keys?.joinToString().orEmpty()
-        log(
-            "CF SESSION | host=" + host +
-                " | reused=" + hadSession +
-                " | cookies=" + savedNames +
-                " | code=" + response.code
-        )
-
-        val body = try {
-            response.peekBody(512 * 1024).string()
-        } catch (_: Exception) {
-            ""
-        }
-        val contentType = response.header("Content-Type").orEmpty()
-        val looksLikeHtml = contentType.contains("text/html", ignoreCase = true) ||
-            body.trimStart().startsWith("<!doctype", ignoreCase = true) ||
-            body.trimStart().startsWith("<html", ignoreCase = true)
-        val challenge = looksLikeHtml && (
-            body.contains("Just a moment", ignoreCase = true) ||
-            body.contains("cf-chl-", ignoreCase = true) ||
-            body.contains("challenge-platform", ignoreCase = true) ||
-            body.contains("Checking your browser", ignoreCase = true) ||
-            body.contains("Enable JavaScript and cookies", ignoreCase = true) ||
-            body.contains("cf-browser-verification", ignoreCase = true) ||
-            body.contains("Attention Required! | Cloudflare", ignoreCase = true)
-        )
-
-        if (challenge) {
-            log("CLOUDFLARE CHALLENGE PERSISTENTE | host=" + host + " | code=" + response.code)
-        }
-        return response
-    }
-}
-/* ====================================================================
  * Helpers JSON / RSC (Next.js mete los datos en self.__next_f.push)
  * ==================================================================== */
+
 
 /** Une y des-escapa todos los self.__next_f.push([1,"..."]) del HTML. */
 private fun flattenRsc(html: String): String {
@@ -240,7 +188,6 @@ class AnimeLHDProvider : MainAPI() {
     )
 
     private val cfKiller = CloudflareKiller()
-    private val cfInterceptor = CloudflareInterceptor(cfKiller)
 
     @Volatile
     private var homeCache: Pair<Long, String>? = null
@@ -248,11 +195,6 @@ class AnimeLHDProvider : MainAPI() {
     // recent y added pueden solicitar la portada en paralelo desde CloudX.
     // Un único vuelo evita dos desafíos Cloudflare simultáneos para el mismo HTML.
     private val homeFetchMutex = Mutex()
-
-    // CloudflareKiller conserva estado mutable por host. Las peticiones paralelas
-    // de CloudX pueden dejar algunas llamadas esperando dentro del interceptor;
-    // serializamos la petición completa, incluida la lectura del body.
-    private val webRequestMutex = Mutex()
 
     // Caché breve para páginas HTML: evita repetir descargas cuando CloudX
     // solicita dos veces la misma categoría, búsqueda o ficha casi al mismo tiempo.
@@ -290,109 +232,42 @@ class AnimeLHDProvider : MainAPI() {
     // OJO: no seteamos User-Agent a mano; CloudflareKiller necesita que
     // coincida con el del WebView que resolvió el challenge.
     /**
-     * Cloudflare a veces entrega el challenge como HTML 200 (o sin el header
-     * Server esperado por CloudflareKiller). En ese caso el interceptor nativo
-     * no abre WebView. Lo hacemos aquí, fuera del interceptor, y guardamos
-     * cf_clearance para que el siguiente request reutilice la sesión.
+     * Descarga HTML con caché por URL. Las peticiones independientes no se
+     * bloquean entre sí: OkHttp reutiliza conexiones y CloudflareKiller solo
+     * interviene si recibe una respuesta 403/503 reconocida como Cloudflare.
      */
-    private suspend fun solveCloudflareChallenge(url: String, headers: Map<String, String>): Boolean {
-        val host = try { java.net.URI(url).host } catch (_: Exception) { null } ?: return false
-        return try {
-            log("CF WEBVIEW START | host=$host")
-            val resolver = WebViewResolver(
-                interceptUrl = Regex("(?!)"),
-                userAgent = null,
-                useOkhttp = false,
-                additionalUrls = listOf(Regex(".")),
-                timeout = 45_000L
-            )
-            resolver.resolveUsingWebView(url, headers = headers) {
-                val cookie = try { CookieManager.getInstance().getCookie(url) } catch (_: Exception) { null }
-                if (!cookie.isNullOrBlank() && cookie.contains("cf_clearance=")) {
-                    val parsed = CloudflareKiller.parseCookieMap(cookie)
-                    if (parsed.containsKey("cf_clearance")) {
-                        cfKiller.savedCookies[host] = parsed
-                        log("CF WEBVIEW COOKIE | host=$host | names=" + parsed.keys.joinToString())
-                        true
-                    } else false
-                } else false
-            }
-            val solved = cfKiller.savedCookies[host]?.containsKey("cf_clearance") == true
-            log("CF WEBVIEW RESULT | host=$host | solved=$solved")
-            solved
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            log("CF WEBVIEW ERROR | host=$host | " + e.javaClass.simpleName + ": " + e.message)
-            false
-        }
-    }
-
-    private fun isCloudflareChallenge(body: String): Boolean {
-        val sample = body.take(512 * 1024)
-        return sample.contains("Just a moment", ignoreCase = true) ||
-            sample.contains("cf-chl-", ignoreCase = true) ||
-            sample.contains("challenge-platform", ignoreCase = true) ||
-            sample.contains("Checking your browser", ignoreCase = true) ||
-            sample.contains("Enable JavaScript and cookies", ignoreCase = true) ||
-            sample.contains("cf-browser-verification", ignoreCase = true) ||
-            sample.contains("Attention Required! | Cloudflare", ignoreCase = true)
-    }
-
     private suspend fun fetch(url: String, json: Boolean = false): String? {
         val cacheable = !json && url.startsWith("$WEB/")
         if (cacheable) cachedPage(url)?.let {
             log("HTTP CACHE HIT | " + safeUrl(url))
             return it
         }
+
         return try {
-            webRequestMutex.withLock {
-                if (cacheable) cachedPage(url)?.let {
-                    log("HTTP CACHE HIT (queued) | " + safeUrl(url))
-                    return@withLock it
-                }
-                val headers = if (json) mapOf(
-                    "Accept" to "application/json, text/plain, */*",
-                    "Referer" to "$WEB/",
-                    "Origin" to WEB
-                ) else mapOf("Referer" to "$WEB/")
+            val headers = if (json) mapOf(
+                "Accept" to "application/json, text/plain, */*",
+                "Referer" to "$WEB/",
+                "Origin" to WEB
+            ) else mapOf("Referer" to "$WEB/")
 
-                log("HTTP QUEUED | " + safeUrl(url))
-                val first = app.get(url, headers = headers, interceptor = cfInterceptor, timeout = 25)
-                var body = first.text
-                var successful = first.isSuccessful
-                var code = first.code
-                log("HTTP RESULT | code=$code | ok=$successful | chars=" + body.length + " | url=" + safeUrl(url))
+            log("HTTP START | " + safeUrl(url))
+            val response = app.get(url, headers = headers, interceptor = cfKiller, timeout = 25)
+            val body = response.text
+            log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | url=" + safeUrl(url))
 
-                if (isCloudflareChallenge(body)) {
-                    val host = try { java.net.URI(url).host } catch (_: Exception) { "?" }
-                    log("CF CHALLENGE HTML | host=$host | code=$code")
-                    if (solveCloudflareChallenge(url, headers)) {
-                        log("CF RETRY | " + safeUrl(url))
-                        val retry = app.get(url, headers = headers, interceptor = cfInterceptor, timeout = 25)
-                        body = retry.text
-                        successful = retry.isSuccessful
-                        code = retry.code
-                        log("CF RETRY RESULT | code=$code | ok=$successful | chars=" + body.length)
-                    } else {
-                        log("CF BYPASS FAILED | " + safeUrl(url))
-                    }
+            if (response.isSuccessful) {
+                if (cacheable) rememberPage(url, body)
+                body
+            } else {
+                log("HTTP ERROR BODY | " + body.take(180).replace("\n", " "))
+                if (json && response.code == 403 &&
+                    (body.contains("Unauthorized", ignoreCase = true) ||
+                     body.contains("\\\"success\\\":false", ignoreCase = true))
+                ) {
+                    apiUnavailableUntil = System.currentTimeMillis() + API_UNAUTHORIZED_COOLDOWN_MS
+                    log("API COOLDOWN | Unauthorized; se priorizará HTML durante 10 minutos")
                 }
-
-                if (successful && !isCloudflareChallenge(body)) {
-                    if (cacheable) rememberPage(url, body)
-                    body
-                } else {
-                    log("HTTP ERROR BODY | " + body.take(180).replace("\n", " "))
-                    if (json && code == 403 &&
-                        (body.contains("Unauthorized", ignoreCase = true) ||
-                         body.contains("\\"success\\":false", ignoreCase = true))
-                    ) {
-                        apiUnavailableUntil = System.currentTimeMillis() + API_UNAUTHORIZED_COOLDOWN_MS
-                        log("API COOLDOWN | Unauthorized; se priorizará HTML durante 10 minutos")
-                    }
-                    null
-                }
+                null
             }
         } catch (e: CancellationException) {
             throw e
