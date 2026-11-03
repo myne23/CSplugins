@@ -1572,7 +1572,18 @@ class AnimESProvider : MainAPI() {
             if (Regex("""^/\d+/anime/[^/]+$""", RegexOption.IGNORE_CASE).matches(path)) playbackPaths += "$mainUrl$path/"
         }
         var playbackFetched = 0
-        for (playbackUrl in playbackPaths.take(5)) {
+        // Si loadLinks ya recibió la URL individual del episodio seleccionado,
+        // no recorrer los enlaces de episodios anterior/siguiente que aparecen
+        // en esa página: sus reproductores no pertenecen al capítulo solicitado.
+        val requestedIsEpisodePage = Regex("""^/\\d+/anime/[^/]+/?$""", RegexOption.IGNORE_CASE)
+            .matches(pathOf(requestedUrl))
+        val eligiblePlaybackPaths = playbackPaths.filter { playbackUrl ->
+            !requestedIsEpisodePage || playbackUrl.trimEnd('/') == requestedUrl.trimEnd('/')
+        }.take(5)
+        if (requestedIsEpisodePage && eligiblePlaybackPaths.size < playbackPaths.size) {
+            log("AnimeYT playback fallback: se ignoran ${playbackPaths.size - eligiblePlaybackPaths.size} rutas de otros episodios; solicitado=$requestedUrl")
+        }
+        for (playbackUrl in eligiblePlaybackPaths) {
             if (playbackUrl.trimEnd('/') == requestedUrl.trimEnd('/')) continue
             val playbackResponse = try {
                 app.get(playbackUrl, headers = apiHeaders + mapOf("Referer" to sourcePage))
