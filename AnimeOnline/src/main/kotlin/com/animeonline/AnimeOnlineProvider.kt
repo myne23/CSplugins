@@ -828,7 +828,7 @@ class AnimeOnlineProvider : MainAPI() {
         // Los idiomas se mantienen separados (LAT, ES, SUB, etc.).
         fun normalizeProvider(value: String): String =
             value.lowercase()
-                .replace(Regex("""\\([^)]*\\)"""), "")
+                .replace(Regex("""\([^)]*\)"""), "")
                 .replace(Regex("""[^a-z0-9]"""), "")
 
         val bestByProviderAndLanguage = LinkedHashMap<String, ExtractorLink>()
