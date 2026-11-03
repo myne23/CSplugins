@@ -183,58 +183,75 @@ private class AnimeLHDCloudflareKiller(
     private val timeoutMs: Long
 ) : Interceptor {
     private val savedCookies = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
+    private val bypassMutex = Mutex()
+    private val cloudflareServers = setOf("cloudflare", "cloudflare-nginx")
+    private val errorCodes = setOf(403, 503)
 
     override fun intercept(chain: Interceptor.Chain): Response = runBlocking {
         val request = chain.request()
         val host = request.url.host
-        val cached = savedCookies[host]
 
-        if (cached != null) {
-            return@runBlocking proceed(request, cached)
-        }
-
+        // Siempre probamos primero la petición normal. El WebView solo se abre
+        // cuando la respuesta indica explícitamente un challenge de Cloudflare.
         val response = chain.proceed(request)
         val server = response.header("Server").orEmpty()
-        if (response.code !in listOf(403, 503) || !server.contains("cloudflare", ignoreCase = true)) {
-            return@runBlocking response
-        }
+        val mitigated = response.header("cf-mitigated").equals("challenge", ignoreCase = true)
+        val isCloudflareServer = cloudflareServers.any { server.contains(it, ignoreCase = true) }
+        val isChallenge = response.code in errorCodes && (mitigated || isCloudflareServer)
+
+        if (!isChallenge) return@runBlocking response
+
+        // Cerramos el body original antes de cualquier reintento.
         response.close()
 
-        fun captureCookie(): Boolean {
-            val raw = try {
-                CookieManager.getInstance()?.getCookie(request.url.toString())
+        bypassMutex.withLock {
+            // Otra petición pudo haber resuelto el challenge mientras esperábamos.
+            val cachedCookies = savedCookies[host]
+            if (cachedCookies != null) {
+                return@withLock proceed(request, cachedCookies)
+            }
+
+            fun captureCookie(): Boolean {
+                val raw = try {
+                    CookieManager.getInstance()?.getCookie(request.url.toString())
+                } catch (_: Exception) {
+                    null
+                } ?: return false
+                if (!raw.contains("cf_clearance", ignoreCase = true)) return false
+                val parsed = raw.split(";").mapNotNull { part ->
+                    val pair = part.trim().split("=", limit = 2)
+                    if (pair.size == 2 && pair[0].isNotBlank()) pair[0] to pair[1] else null
+                }.toMap()
+                if (parsed.isEmpty()) return false
+                savedCookies[host] = parsed
+                return true
+            }
+
+            try {
+                val resolver = WebViewResolver(
+                    interceptUrl = Regex(".^"),
+                    additionalUrls = listOf(Regex(".")),
+                    userAgent = null,
+                    useOkhttp = false,
+                    timeout = timeoutMs
+                )
+                resolver.resolveUsingWebView(request) { captureCookie() }
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
-                null
-            } ?: return false
-            if (!raw.contains("cf_clearance", ignoreCase = true)) return false
-            val parsed = raw.split(";").mapNotNull { part ->
-                val pair = part.trim().split("=", limit = 2)
-                if (pair.size == 2 && pair[0].isNotBlank()) pair[0] to pair[1] else null
-            }.toMap()
-            if (parsed.isEmpty()) return false
-            savedCookies[host] = parsed
-            return true
-        }
+                // En Android TV sin WebView (o si no puede iniciarse), seguimos
+                // con la petición normal sin propagar el error del resolver.
+            }
 
-        val resolver = WebViewResolver(
-            interceptUrl = Regex(".^"),
-            additionalUrls = listOf(Regex(".")),
-            userAgent = null,
-            useOkhttp = false,
-            timeout = timeoutMs
-        )
-        resolver.resolveUsingWebView(request) {
-            captureCookie()
-        }
+            val cookies = savedCookies[host]
+            if (cookies == null) {
+                log("CF BYPASS UNAVAILABLE | ${timeoutMs}ms | ${request.url.encodedPath}")
+                return@withLock chain.proceed(request)
+            }
 
-        val cookies = savedCookies[host]
-        if (cookies == null) {
-            android.util.Log.w("AnimeLHD", "CF BYPASS TIMEOUT | ${timeoutMs}ms | ${request.url.encodedPath}")
-            return@runBlocking chain.proceed(request)
+            log("CF BYPASS READY | ${request.url.encodedPath}")
+            proceed(request, cookies)
         }
-
-        android.util.Log.d("AnimeLHD", "CF BYPASS READY | ${request.url.encodedPath}")
-        proceed(request, cookies)
     }
 
     private suspend fun proceed(request: Request, cookies: Map<String, String>): Response {
@@ -247,7 +264,6 @@ private class AnimeLHDCloudflareKiller(
         ).await()
     }
 }
-
 /* ====================================================================
  * Provider
  * ==================================================================== */
