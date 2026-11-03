@@ -787,7 +787,7 @@ class AnimeOnlineProvider : MainAPI() {
                     ?.groupValues
                     ?.getOrNull(1)
 
-                if (sourceUrl.isNullOrBlank() || sourceUrl.contains("filemo", ignoreCase = true)) {
+                if (sourceUrl.isNullOrBlank()) {
                     null
                 } else {
                     PlayerEntry(server, sourceUrl, playerLanguage(item))
@@ -797,18 +797,13 @@ class AnimeOnlineProvider : MainAPI() {
 
         dbg { "LINKS servidores únicos=${entries.size}" }
 
-        val linkCount = AtomicInteger(0)
-        // La deduplicación final es concurrente porque los reproductores se resuelven
-        // en paralelo. Conserva la misma URL si corresponde a idiomas diferentes.
-        val emittedKeys = ConcurrentHashMap.newKeySet<String>()
-        val emitUnique: (ExtractorLink) -> Unit = { link ->
-            val key = "${link.url.substringBefore("#").trim()}|${link.name.substringAfterLast(" · ").trim()}|${link.type}"
-            if (emittedKeys.add(key)) {
-                linkCount.incrementAndGet()
-                callback(link)
-            } else {
-                dbg { "LINK DUPLICADO omitido: ${link.name} -> ${link.url}" }
-            }
+        // Los extractores pueden devolver una entrada genérica y varias URLs
+        // por calidad para el mismo servidor. Se acumulan primero y se agrupan
+        // después de resolver todos los reproductores.
+        val resolvedLinks = java.util.concurrent.ConcurrentLinkedQueue<ExtractorLink>()
+
+        val collectLink: (ExtractorLink) -> Unit = { link ->
+            resolvedLinks.add(link)
         }
 
         coroutineScope {
@@ -817,7 +812,7 @@ class AnimeOnlineProvider : MainAPI() {
                     async {
                         try {
                             withTimeoutOrNull(PLAYER_TIMEOUT_MS) {
-                                processPlayer(entry, data, subtitleCallback, emitUnique)
+                                processPlayer(entry, data, subtitleCallback, collectLink)
                             }
                         } catch (e: Exception) {
                             if (e is kotlinx.coroutines.CancellationException) throw e
@@ -828,7 +823,35 @@ class AnimeOnlineProvider : MainAPI() {
                 .awaitAll()
         }
 
-        dbg { "LINKS finales únicos=${linkCount.get()}" }
-        return linkCount.get() > 0
+        // Una sola fuente por servidor e idioma. Si StreamWish/VidhidePro/
+        // Filemoon devuelve varias calidades, se conserva la más alta.
+        // Los idiomas se mantienen separados (LAT, ES, SUB, etc.).
+        fun normalizeProvider(value: String): String =
+            value.lowercase()
+                .replace(Regex("""\\s*\\([^)]*\\)"""), "")
+                .replace(Regex("""[^a-z0-9]"""), "")
+
+        val bestByProviderAndLanguage = LinkedHashMap<String, ExtractorLink>()
+
+        for (link in resolvedLinks) {
+            val language = link.name.substringAfterLast(" · ").trim().uppercase()
+            val provider = normalizeProvider(link.source.ifBlank {
+                link.name.substringBefore(" · ").substringBefore(" (")
+            })
+
+            if (provider.isBlank()) continue
+
+            val key = "$provider|$language"
+            val current = bestByProviderAndLanguage[key]
+
+            if (current == null || link.quality > current.quality) {
+                bestByProviderAndLanguage[key] = link
+            }
+        }
+
+        bestByProviderAndLanguage.values.forEach(callback)
+
+        val linkCount = bestByProviderAndLanguage.size
+        dbg { "LINKS finales únicos por servidor/idioma=$linkCount (resueltos=${resolvedLinks.size})" }
     }
 }
