@@ -2,7 +2,15 @@ package com.animelatinohd
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.network.CloudflareKiller
+import android.webkit.CookieManager
+import com.lagradost.cloudstream3.USER_AGENT
+import com.lagradost.cloudstream3.network.WebViewResolver
+import com.lagradost.cloudstream3.network.getHeaders
+import com.lagradost.nicehttp.Requests.Companion.await
+import okhttp3.Interceptor
+import okhttp3.Request
+import okhttp3.Response
+import kotlinx.coroutines.runBlocking
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -167,6 +175,79 @@ private fun MainAPI.toSearch(o: JSONObject): SearchResponse? {
 }
 
 /* ====================================================================
+ * Cloudflare resolver con timeout configurable
+ * ==================================================================== */
+
+private class AnimeLHDCloudflareKiller(
+    private val timeoutMs: Long
+) : Interceptor {
+    private val savedCookies = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
+
+    override fun intercept(chain: Interceptor.Chain): Response = runBlocking {
+        val request = chain.request()
+        val host = request.url.host
+        val cached = savedCookies[host]
+
+        if (cached != null) {
+            return@runBlocking proceed(request, cached)
+        }
+
+        val response = chain.proceed(request)
+        val server = response.header("Server").orEmpty()
+        if (response.code !in listOf(403, 503) || !server.contains("cloudflare", ignoreCase = true)) {
+            return@runBlocking response
+        }
+        response.close()
+
+        fun captureCookie(): Boolean {
+            val raw = try {
+                CookieManager.getInstance()?.getCookie(request.url.toString())
+            } catch (_: Exception) {
+                null
+            } ?: return false
+            if (!raw.contains("cf_clearance", ignoreCase = true)) return false
+            val parsed = raw.split(";").mapNotNull { part ->
+                val pair = part.trim().split("=", limit = 2)
+                if (pair.size == 2 && pair[0].isNotBlank()) pair[0] to pair[1] else null
+            }.toMap()
+            if (parsed.isEmpty()) return false
+            savedCookies[host] = parsed
+            return true
+        }
+
+        val resolver = WebViewResolver(
+            interceptUrl = Regex(".^"),
+            additionalUrls = listOf(Regex(".")),
+            userAgent = null,
+            useOkhttp = false,
+            timeout = timeoutMs
+        )
+        resolver.resolveUsingWebView(request) {
+            captureCookie()
+        }
+
+        val cookies = savedCookies[host]
+        if (cookies == null) {
+            android.util.Log.w("AnimeLHD", "CF BYPASS TIMEOUT | ${timeoutMs}ms | ${request.url.encodedPath}")
+            return@runBlocking chain.proceed(request)
+        }
+
+        android.util.Log.d("AnimeLHD", "CF BYPASS READY | ${request.url.encodedPath}")
+        proceed(request, cookies)
+    }
+
+    private suspend fun proceed(request: Request, cookies: Map<String, String>): Response {
+        val userAgentHeaders = WebViewResolver.webViewUserAgent?.let {
+            mapOf("user-agent" to it)
+        } ?: mapOf("user-agent" to USER_AGENT)
+        val headers = getHeaders(request.headers.toMap() + userAgentHeaders, cookies + request.cookies)
+        return com.lagradost.cloudstream3.app.baseClient.newCall(
+            request.newBuilder().headers(headers).build()
+        ).await()
+    }
+}
+
+/* ====================================================================
  * Provider
  * ==================================================================== */
 
@@ -187,11 +268,10 @@ class AnimeLHDProvider : MainAPI() {
         "added" to "Animes agregados"
     )
 
-    private val cfKiller = CloudflareKiller()
+    // Resolver propio para limitar el WebView de Cloudflare a 12 segundos.
+    // CloudflareKiller usa internamente 60s fijos, demasiado para la carga del Home.
+    private val cfKiller = AnimeLHDCloudflareKiller(timeoutMs = 12_000L)
 
-    // Cloudflare puede desafiar simultáneamente Home, Latinos y Castellanos.
-    // Solo la primera petición HTML inicia el bypass; las demás esperan a que
-    // CloudflareKiller consiga la sesión y luego continúan en paralelo.
     private val cfBootstrapMutex = Mutex()
 
     @Volatile
@@ -268,7 +348,7 @@ class AnimeLHDProvider : MainAPI() {
                 cfBootstrapMutex.withLock {
                     if (!cfSessionBootstrapped) {
                         log("CF BOOTSTRAP START | " + safeUrl(url))
-                        val first = app.get(url, headers = headers, interceptor = cfKiller, timeout = 25)
+                        val first = app.get(url, headers = headers, interceptor = cfKiller, timeout = 12)
                         if (first.isSuccessful) {
                             cfSessionBootstrapped = true
                             log("CF BOOTSTRAP READY | " + safeUrl(url))
@@ -281,7 +361,7 @@ class AnimeLHDProvider : MainAPI() {
             } else null
 
             val response = bootstrapResponse
-                ?: app.get(url, headers = headers, interceptor = cfKiller, timeout = 25)
+                ?: app.get(url, headers = headers, interceptor = cfKiller, timeout = 12)
             val body = response.text
             log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | url=" + safeUrl(url))
 
@@ -380,8 +460,11 @@ class AnimeLHDProvider : MainAPI() {
             "recent" -> {
                 if (page > 1) emptyList<SearchResponse>() to false
                 else {
-                    val arr = homeFlat()?.let { jsonAfter(it, "\"episodes\":") }
-                    val list = (arr?.let { JSONArray(it).objs() } ?: emptyList())
+                    val flat = homeFlat()
+                    val arr = flat?.let { jsonAfter(it, "\"episodes\":") }
+                    val rawEpisodes = arr?.let { JSONArray(it).objs() } ?: emptyList()
+                    log("RECENT PARSE | homeChars=${flat?.length() ?: 0} | hasEpisodesMarker=${flat?.contains("\"episodes\":") == true} | rawEpisodes=${rawEpisodes.size}")
+                    val list = rawEpisodes
                         .mapNotNull { ep ->
                             val title = ep.optString("anime_title")
                             val slug = ep.optString("anime_slug")
@@ -397,6 +480,7 @@ class AnimeLHDProvider : MainAPI() {
                             }
                         }
                         .distinctBy { it.url }
+                    log("RECENT RESULT | mapped=${list.size}")
                     list to false
                 }
             }
