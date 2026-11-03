@@ -95,7 +95,7 @@ class AnimeOnlineProvider : MainAPI() {
 
         // Regex compiladas una sola vez
         private val RX_GO_TO_PLAYER = Regex("""go_to_player\(['"]([^'"]+)['"]\)""")
-        private val RX_EMBED_URL = Regex""""embed_url"\s*:\s*"([^"]+)""""
+        private val RX_EMBED_URL = Regex("\"embed_url\"\\s*:\\s*\"([^\"]+)\"")
         private val RX_UQLOAD_PACKED = Regex("""eval\(function\(p,a,c,k,e,d\).*?split\('\|'\)\)\)""")
         private val RX_UQLOAD_FILE = Regex("""file:\s*["'](https[^"']+)["']""")
         private val RX_NUMERANDO = Regex("""(\d+)\s*-\s*(\d+)""")
