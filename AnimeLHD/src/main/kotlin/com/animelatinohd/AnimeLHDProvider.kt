@@ -1576,14 +1576,10 @@ class AnimeLHDProvider : MainAPI() {
                 return
             }
 
-        // Lulu's CDN validates the page that generated the signed HLS URL.
-        // Keep the exact embed URL as Referer and use a browser-like User-Agent
-        // for both manifest probing and the player request.
-        val luluHeaders = mapOf(
-            "User-Agent" to VOE_BROWSER_UA,
-            "Referer" to embed
-        )
-        val luluQuality = detectHlsQuality(m3u8, luluHeaders)
+        val origin = "https://" + embed.substringAfter("://").substringBefore("/")
+
+        val luluReferer = "$origin/"
+        val luluQuality = detectHlsQuality(m3u8, mapOf("Referer" to luluReferer))
         log("LULU QUALITY | $prefix | $luluQuality")
         emit(
             newExtractorLink(
@@ -1592,9 +1588,8 @@ class AnimeLHDProvider : MainAPI() {
                 url = m3u8,
                 type = ExtractorLinkType.M3U8
             ) {
-                referer = embed
+                referer = luluReferer
                 quality = luluQuality
-                this.headers = luluHeaders
             }
         )
     }
