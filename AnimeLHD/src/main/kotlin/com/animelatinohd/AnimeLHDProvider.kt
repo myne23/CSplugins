@@ -264,6 +264,11 @@ private class AnimeLHDCloudflareKiller(
         ).await()
     }
 }
+private data class AnimeLHDHomeData(
+    val episodes: List<JSONObject>,
+    val animes: List<JSONObject>
+)
+
 /* ====================================================================
  * Provider
  * ==================================================================== */
@@ -295,7 +300,7 @@ class AnimeLHDProvider : MainAPI() {
     private var cfSessionBootstrapped = false
 
     @Volatile
-    private var homeCache: Pair<Long, String>? = null
+    private var homeDataCache: Pair<Long, AnimeLHDHomeData>? = null
 
     // recent y added pueden solicitar la portada en paralelo desde CloudX.
     // Un único vuelo evita dos desafíos Cloudflare simultáneos para el mismo HTML.
@@ -446,27 +451,42 @@ class AnimeLHDProvider : MainAPI() {
         return (data?.objs() ?: emptyList()) to obj.optInt("last_page", 1)
     }
 
-    private suspend fun homeFlat(): String? {
-        val cached = homeCache
-        if (cached != null && System.currentTimeMillis() - cached.first < HOME_CACHE_MS) {
+    private suspend fun homeData(): AnimeLHDHomeData? {
+        val now = System.currentTimeMillis()
+        val cached = homeDataCache
+        if (cached != null && now - cached.first < HOME_CACHE_MS) {
+            log("HOME DATA CACHE HIT | episodes=\${cached.second.episodes.size} | animes=\${cached.second.animes.size}")
             return cached.second
         }
 
         return homeFetchMutex.withLock {
-            // Revisa nuevamente la caché después de esperar: otra categoría
-            // puede haber completado la misma descarga mientras tanto.
-            val latest = homeCache
-            if (latest != null && System.currentTimeMillis() - latest.first < HOME_CACHE_MS) {
+            // Revisa nuevamente la caché después de esperar: recent y added
+            // suelen solicitar la misma portada en paralelo.
+            val latest = homeDataCache
+            val checkedAt = System.currentTimeMillis()
+            if (latest != null && checkedAt - latest.first < HOME_CACHE_MS) {
+                log("HOME DATA CACHE HIT (LOCK) | episodes=\${latest.second.episodes.size} | animes=\${latest.second.animes.size}")
                 return@withLock latest.second
             }
 
+            val startedAt = System.currentTimeMillis()
             val html = fetch("$WEB/") ?: return@withLock null
             val flat = flattenRsc(html)
-            homeCache = System.currentTimeMillis() to flat
-            flat
+
+            // Deserializamos los dos bloques una sola vez para ambas secciones.
+            val episodes = jsonAfter(flat, "\"episodes\":")
+                ?.let { runCatching { JSONArray(it).objs() }.getOrDefault(emptyList()) }
+                ?: emptyList()
+            val animes = jsonAfter(flat, "\"animes\":")
+                ?.let { runCatching { JSONArray(it).objs() }.getOrDefault(emptyList()) }
+                ?: emptyList()
+
+            val data = AnimeLHDHomeData(episodes, animes)
+            homeDataCache = System.currentTimeMillis() to data
+            log("HOME DATA PARSED | htmlChars=\${html.length} | rscChars=\${flat.length} | episodes=\${episodes.size} | animes=\${animes.size} | elapsedMs=\${System.currentTimeMillis() - startedAt}")
+            data
         }
     }
-
     /* ------------------------------------------------------------     * Main page / search
      * ------------------------------------------------------------ */
 
@@ -477,10 +497,8 @@ class AnimeLHDProvider : MainAPI() {
             "recent" -> {
                 if (page > 1) emptyList<SearchResponse>() to false
                 else {
-                    val flat = homeFlat()
-                    val arr = flat?.let { jsonAfter(it, "\"episodes\":") }
-                    val rawEpisodes = arr?.let { JSONArray(it).objs() } ?: emptyList()
-                    log("RECENT PARSE | homeChars=${flat?.length ?: 0} | hasEpisodesMarker=${flat?.contains("\"episodes\":") == true} | rawEpisodes=${rawEpisodes.size}")
+                    val rawEpisodes = homeData()?.episodes ?: emptyList()
+                    log("RECENT RESULT DATA | rawEpisodes=${rawEpisodes.size}")
                     val list = rawEpisodes
                         .mapNotNull { ep ->
                             val title = ep.optString("anime_title")
@@ -505,8 +523,7 @@ class AnimeLHDProvider : MainAPI() {
             "added" -> {
                 if (page > 1) emptyList<SearchResponse>() to false
                 else {
-                    val arr = homeFlat()?.let { jsonAfter(it, "\"animes\":") }
-                    val list = (arr?.let { JSONArray(it).objs() } ?: emptyList())
+                    val list = (homeData()?.animes ?: emptyList())
                         .mapNotNull { toSearch(it) }
                     list to false
                 }
