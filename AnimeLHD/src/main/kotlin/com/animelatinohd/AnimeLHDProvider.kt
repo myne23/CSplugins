@@ -43,8 +43,8 @@ private const val WEB = "https://www.animelatinohd.com"
 private const val API = "https://website.animelatinohd.com"
 private const val TMDB = "https://image.tmdb.org/t/p"
 
-private const val HOME_CACHE_MS = 180_000L
-private const val PAGE_CACHE_MS = 45_000L
+private const val HOME_CACHE_MS = 300_000L
+private const val PAGE_CACHE_MS = 60_000L
 private const val PAGE_CACHE_MAX = 80
 private const val API_UNAUTHORIZED_COOLDOWN_MS = 10 * 60 * 1000L
 private const val BRIDGE_TIMEOUT_MS = 10_000L
@@ -253,11 +253,41 @@ private class AnimeLHDCloudflareKiller(
         }
     }
 
+    /**
+     * Returns cookies visible to the WebView for this exact URL. This matters
+     * because www.animelatinohd.com and website.animelatinohd.com are sibling
+     * hosts: host-only cookies must not be copied blindly, while cookies scoped
+     * to .animelatinohd.com are returned by CookieManager for both hosts.
+     */
+    fun cookieHeader(url: String): String? {
+        val host = try {
+            okhttp3.Request.Builder().url(url).build().url.host
+        } catch (_: Exception) {
+            return null
+        }
+        val merged = LinkedHashMap<String, String>()
+        savedCookies[host]?.let { merged.putAll(it) }
+        val raw = try {
+            CookieManager.getInstance()?.getCookie(url)
+        } catch (_: Exception) {
+            null
+        }
+        raw.orEmpty().split(";").mapNotNull { part ->
+            val pair = part.trim().split("=", limit = 2)
+            if (pair.size == 2 && pair[0].isNotBlank()) pair[0] to pair[1] else null
+        }.forEach { (name, value) -> merged[name] = value }
+        return merged.entries.takeIf { it.isNotEmpty() }
+            ?.joinToString("; ") { (name, value) -> "$name=$value" }
+    }
+
     private suspend fun proceed(request: Request, cookies: Map<String, String>): Response {
         // Build headers with OkHttp directly. SkyStream's CS3 host does not
         // expose CloudStream's internal RequestsHelperKt.getHeaders().
         val userAgent = WebViewResolver.webViewUserAgent ?: USER_AGENT
-        val mergedCookies = cookies + request.cookies
+        val mergedCookies = LinkedHashMap<String, String>().apply {
+            putAll(cookies)
+            putAll(request.cookies)
+        }
         val cookieHeader = mergedCookies.entries.joinToString("; ") { (name, value) ->
             "$name=$value"
         }
@@ -354,7 +384,11 @@ class AnimeLHDProvider : MainAPI() {
      * bloquean entre sí: OkHttp reutiliza conexiones y CloudflareKiller solo
      * interviene si recibe una respuesta 403/503 reconocida como Cloudflare.
      */
-    private suspend fun fetch(url: String, json: Boolean = false): String? {
+    private suspend fun fetch(
+        url: String,
+        json: Boolean = false,
+        extraHeaders: Map<String, String> = emptyMap()
+    ): String? {
         val cacheable = !json && url.startsWith("$WEB/")
         if (cacheable) cachedPage(url)?.let {
             log("HTTP CACHE HIT | " + safeUrl(url))
@@ -362,11 +396,22 @@ class AnimeLHDProvider : MainAPI() {
         }
 
         return try {
-            val headers = if (json) mapOf(
-                "Accept" to "application/json, text/plain, */*",
-                "Referer" to "$WEB/",
-                "Origin" to WEB
-            ) else mapOf("Referer" to "$WEB/")
+            val headers = LinkedHashMap<String, String>().apply {
+                putAll(
+                    if (json) mapOf(
+                        "Accept" to "application/json, text/plain, */*",
+                        "Referer" to "$WEB/",
+                        "Origin" to WEB
+                    ) else mapOf("Referer" to "$WEB/")
+                )
+                putAll(extraHeaders)
+                // SkyStream may not share the WebView cookie jar with NiceHttp.
+                // Explicitly attach only cookies valid for this exact API URL.
+                if (url.startsWith("$API/")) {
+                    cfKiller.cookieHeader(url)?.let { put("Cookie", it) }
+                    putIfAbsent("User-Agent", WebViewResolver.webViewUserAgent ?: USER_AGENT)
+                }
+            }
 
             log("HTTP START | " + safeUrl(url))
 
@@ -393,7 +438,7 @@ class AnimeLHDProvider : MainAPI() {
             val response = bootstrapResponse
                 ?: app.get(url, headers = headers, interceptor = cfKiller, timeout = 12)
             val body = response.text
-            log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | url=" + safeUrl(url))
+            log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | server=${response.headers["Server"].orEmpty()} | cfRay=${response.headers["cf-ray"].orEmpty()} | url=" + safeUrl(url))
 
             if (response.isSuccessful) {
                 if (cacheable) rememberPage(url, body)
@@ -739,7 +784,9 @@ class AnimeLHDProvider : MainAPI() {
                         if (bridge.isBlank()) return@async
 
                         log("PLAYER START | [" + lang + "] " + server + " | bridge=" + safeUrl(bridge))
-                        val embed = withTimeoutOrNull(BRIDGE_TIMEOUT_MS) { resolveBridge(bridge) }
+                        val embed = withTimeoutOrNull(BRIDGE_TIMEOUT_MS) {
+                            resolveBridge(bridge, "$WEB/ver/$slug/$episode")
+                        }
                         if (embed == null) {
                             log("bridge sin iframe: $lang $server")
                             return@async
@@ -816,9 +863,15 @@ class AnimeLHDProvider : MainAPI() {
     }
 
     /** bridge_url -> URL del embed real (el iframe que devuelve el bridge). */
-    private suspend fun resolveBridge(bridgeUrl: String): String? {
+    private suspend fun resolveBridge(bridgeUrl: String, episodeReferer: String): String? {
         log("BRIDGE REQUEST | " + safeUrl(bridgeUrl))
-        val body = fetch(bridgeUrl) ?: run {
+        val body = fetch(
+            bridgeUrl,
+            extraHeaders = mapOf(
+                "Referer" to episodeReferer,
+                "Origin" to WEB
+            )
+        ) ?: run {
             log("BRIDGE FAIL | fetch devolvió null")
             return null
         }
