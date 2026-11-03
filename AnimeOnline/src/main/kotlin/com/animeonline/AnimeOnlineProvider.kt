@@ -849,9 +849,20 @@ class AnimeOnlineProvider : MainAPI() {
             }
         }
 
-        bestByProviderAndLanguage.values.forEach(callback)
+        // Orden de presentación: LAT primero, ES segundo y SUB tercero.
+        // Cualquier otro idioma se conserva después, sin eliminar fuentes.
+        val orderedLinks = bestByProviderAndLanguage.values.sortedBy { link ->
+            when (link.name.substringAfterLast(" · ").trim().uppercase()) {
+                "LAT" -> 0
+                "ES" -> 1
+                "SUB" -> 2
+                else -> 3
+            }
+        }
 
-        val linkCount = bestByProviderAndLanguage.size
+        orderedLinks.forEach(callback)
+
+        val linkCount = orderedLinks.size
         dbg { "LINKS finales únicos por servidor/idioma=$linkCount (resueltos=${resolvedLinks.size})" }
         return linkCount > 0
     }
