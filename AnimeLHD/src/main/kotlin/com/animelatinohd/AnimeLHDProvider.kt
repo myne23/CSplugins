@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.*
 import android.webkit.CookieManager
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.network.WebViewResolver
-import com.lagradost.cloudstream3.network.getHeaders
 import com.lagradost.nicehttp.Requests.Companion.await
 import com.lagradost.nicehttp.cookies
 import okhttp3.Interceptor
@@ -255,10 +254,19 @@ private class AnimeLHDCloudflareKiller(
     }
 
     private suspend fun proceed(request: Request, cookies: Map<String, String>): Response {
-        val userAgentHeaders = WebViewResolver.webViewUserAgent?.let {
-            mapOf("user-agent" to it)
-        } ?: mapOf("user-agent" to USER_AGENT)
-        val headers = getHeaders(request.headers.toMap() + userAgentHeaders, cookies + request.cookies)
+        // Build headers with OkHttp directly. SkyStream's CS3 host does not
+        // expose CloudStream's internal RequestsHelperKt.getHeaders().
+        val userAgent = WebViewResolver.webViewUserAgent ?: USER_AGENT
+        val mergedCookies = cookies + request.cookies
+        val cookieHeader = mergedCookies.entries.joinToString("; ") { (name, value) ->
+            "$name=$value"
+        }
+        val headers = request.headers.newBuilder()
+            .set("User-Agent", userAgent)
+            .apply {
+                if (cookieHeader.isNotBlank()) set("Cookie", cookieHeader)
+            }
+            .build()
         return com.lagradost.cloudstream3.app.baseClient.newCall(
             request.newBuilder().headers(headers).build()
         ).await()
