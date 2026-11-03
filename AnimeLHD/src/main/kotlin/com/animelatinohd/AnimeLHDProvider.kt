@@ -397,8 +397,7 @@ class AnimeLHDProvider : MainAPI() {
 
         return try {
             val headers = LinkedHashMap<String, String>().apply {
-                putAll(
-                    if (json) mapOf(
+                putAll(                    if (json) mapOf(
                         "Accept" to "application/json, text/plain, */*",
                         "Referer" to "$WEB/",
                         "Origin" to WEB
@@ -797,8 +796,7 @@ class AnimeLHDProvider : MainAPI() {
                         withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
                             val prefix = "[$lang] $server"
                             when {
-                                server.equals("Gamma", ignoreCase = true) ||
-                                    embed.contains("ashleyhardat.com", ignoreCase = true) -> {
+                                server.equals("Gamma", ignoreCase = true) ||                                    embed.contains("ashleyhardat.com", ignoreCase = true) -> {
                                     log("VOE ROUTE | $prefix | embed=" + safeUrl(embed))
                                     loadVoe(embed, prefix, emitForPlayer)
                                 }
@@ -1197,8 +1195,7 @@ class AnimeLHDProvider : MainAPI() {
             val isDash = Regex("""\.mpd(?:$|[?#])""", RegexOption.IGNORE_CASE).containsMatchIn(streamUrl)
             var actualQuality = Regex("""(\d{3,4})\s*[pP]?""").find(chosen.first)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: Qualities.Unknown.value
             if (isHls) {
-                try {
-                    val manifest = app.get(streamUrl, headers = streamHeaders, timeout = 8)
+                try {                    val manifest = app.get(streamUrl, headers = streamHeaders, timeout = 8)
                     val heights = Regex("""RESOLUTION=\d+x(\d+)""", RegexOption.IGNORE_CASE)
                         .findAll(manifest.text).mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }.toList()
                     if (heights.isNotEmpty()) actualQuality = heights.maxOrNull() ?: actualQuality
@@ -1579,10 +1576,14 @@ class AnimeLHDProvider : MainAPI() {
                 return
             }
 
-        val origin = "https://" + embed.substringAfter("://").substringBefore("/")
-
-        val luluReferer = "$origin/"
-        val luluQuality = detectHlsQuality(m3u8, mapOf("Referer" to luluReferer))
+        // Lulu's CDN validates the page that generated the signed HLS URL.
+        // Keep the exact embed URL as Referer and use a browser-like User-Agent
+        // for both manifest probing and the player request.
+        val luluHeaders = mapOf(
+            "User-Agent" to VOE_BROWSER_UA,
+            "Referer" to embed
+        )
+        val luluQuality = detectHlsQuality(m3u8, luluHeaders)
         log("LULU QUALITY | $prefix | $luluQuality")
         emit(
             newExtractorLink(
@@ -1591,8 +1592,9 @@ class AnimeLHDProvider : MainAPI() {
                 url = m3u8,
                 type = ExtractorLinkType.M3U8
             ) {
-                referer = luluReferer
+                referer = embed
                 quality = luluQuality
+                this.headers = luluHeaders
             }
         )
     }
