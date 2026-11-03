@@ -95,7 +95,7 @@ class AnimeOnlineProvider : MainAPI() {
 
         // Regex compiladas una sola vez
         private val RX_GO_TO_PLAYER = Regex("""go_to_player\(['"]([^'"]+)['"]\)""")
-        private val RX_EMBED_URL = Regex(""""embed_url"\s*:\s*"([^"]+)"""")
+        private val RX_EMBED_URL = Regex""""embed_url"\s*:\s*"([^"]+)""""
         private val RX_UQLOAD_PACKED = Regex("""eval\(function\(p,a,c,k,e,d\).*?split\('\|'\)\)\)""")
         private val RX_UQLOAD_FILE = Regex("""file:\s*["'](https[^"']+)["']""")
         private val RX_NUMERANDO = Regex("""(\d+)\s*-\s*(\d+)""")
@@ -687,13 +687,10 @@ class AnimeOnlineProvider : MainAPI() {
         entry: PlayerEntry,
         pageUrl: String,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit,
-        linkCount: AtomicInteger
+        callback: (ExtractorLink) -> Unit
     ) {
         if (entry.url.contains("uqload", ignoreCase = true)) {
-            if (resolveUqload(entry.url, pageUrl, entry.server, entry.lang, callback)) {
-                linkCount.incrementAndGet()
-            }
+            resolveUqload(entry.url, pageUrl, entry.server, entry.lang, callback)
             return
         }
 
@@ -713,10 +710,26 @@ class AnimeOnlineProvider : MainAPI() {
                     headers = link.headers
                 )
 
-                linkCount.incrementAndGet()
                 callback(modifiedLink)
             }
         )
+    }
+
+    private fun playerLanguage(item: Element): String {
+        // El idioma se toma del contenedor .OD más cercano que realmente declare
+        // una pista. Así no se hereda el idioma de un wrapper exterior por error.
+        val languageBlock = item.parents().firstOrNull {
+            it.hasClass("OD_SUB") || it.hasClass("OD_LAT") ||
+                it.hasClass("OD_ES") || it.hasClass("OD_EN")
+        } ?: item.parents().firstOrNull { it.hasClass("OD") }
+
+        return when {
+            languageBlock?.hasClass("OD_SUB") == true -> "SUB"
+            languageBlock?.hasClass("OD_LAT") == true -> "LAT"
+            languageBlock?.hasClass("OD_ES") == true -> "ES"
+            languageBlock?.hasClass("OD_EN") == true -> "EN"
+            else -> "SUB"
+        }
     }
 
     override suspend fun loadLinks(
@@ -743,8 +756,6 @@ class AnimeOnlineProvider : MainAPI() {
                 interceptor = cloudflareKiller
             )
 
-            // Antes, si faltaba "embed_url", substringAfter/Before devolvía basura ("{")
-            // que no estaba en blanco y se intentaba abrir como si fuera una URL.
             embedUrl = RX_EMBED_URL.find(apiResponse.text)
                 ?.groupValues
                 ?.getOrNull(1)
@@ -763,18 +774,11 @@ class AnimeOnlineProvider : MainAPI() {
             interceptor = cloudflareKiller
         ).document
 
-        val entries = ArrayList<PlayerEntry>()
-
-        for (block in embedDocument.select(".OD")) {
-            val blockLang = when {
-                block.hasClass("OD_SUB") -> "SUB"
-                block.hasClass("OD_LAT") -> "LAT"
-                block.hasClass("OD_ES") -> "ES"
-                block.hasClass("OD_EN") -> "EN"
-                else -> "SUB"
-            }
-
-            for (item in block.select("li[onclick*='go_to_player']")) {
+        // Cada <li> se recoge una sola vez, aunque haya wrappers .OD anidados.
+        // El idioma se determina usando su bloque de idioma más cercano.
+        val entries = embedDocument
+            .select("li[onclick*='go_to_player']")
+            .mapNotNull { item ->
                 val server = item.selectFirst("span")?.text()?.trim()
                     ?.takeIf { it.isNotBlank() }
                     ?: "Servidor"
@@ -783,28 +787,37 @@ class AnimeOnlineProvider : MainAPI() {
                     ?.groupValues
                     ?.getOrNull(1)
 
-                if (sourceUrl.isNullOrBlank()) continue
-                if (sourceUrl.contains("filemo", ignoreCase = true)) continue
+                if (sourceUrl.isNullOrBlank() || sourceUrl.contains("filemo", ignoreCase = true)) {
+                    null
+                } else {
+                    PlayerEntry(server, sourceUrl, playerLanguage(item))
+                }
+            }
+            .distinctBy { it.url to it.lang }
 
-                entries.add(PlayerEntry(server, sourceUrl, blockLang))
+        dbg { "LINKS servidores únicos=${entries.size}" }
+
+        val linkCount = AtomicInteger(0)
+        // La deduplicación final es concurrente porque los reproductores se resuelven
+        // en paralelo. Conserva la misma URL si corresponde a idiomas diferentes.
+        val emittedKeys = ConcurrentHashMap.newKeySet<String>()
+        val emitUnique: (ExtractorLink) -> Unit = { link ->
+            val key = "${link.url.substringBefore("#").trim()}|${link.name.substringAfterLast(" · ").trim()}|${link.type}"
+            if (emittedKeys.add(key)) {
+                linkCount.incrementAndGet()
+                callback(link)
+            } else {
+                dbg { "LINK DUPLICADO omitido: ${link.name} -> ${link.url}" }
             }
         }
 
-        dbg { "LINKS servidores=${entries.size}" }
-
-        val linkCount = AtomicInteger(0)
-
-        // Todos los servidores en paralelo y con timeout: antes iban de a uno y
-        // un servidor lento o caído frenaba a todos los que venían después.
         coroutineScope {
             entries
-                .distinctBy { it.url to it.lang }
                 .map { entry ->
                     async {
                         try {
                             withTimeoutOrNull(PLAYER_TIMEOUT_MS) {
-                                processPlayer(entry, data, subtitleCallback, callback, linkCount)
-                                true
+                                processPlayer(entry, data, subtitleCallback, emitUnique)
                             }
                         } catch (e: Exception) {
                             if (e is kotlinx.coroutines.CancellationException) throw e
@@ -815,6 +828,7 @@ class AnimeOnlineProvider : MainAPI() {
                 .awaitAll()
         }
 
+        dbg { "LINKS finales únicos=${linkCount.get()}" }
         return linkCount.get() > 0
     }
 }
