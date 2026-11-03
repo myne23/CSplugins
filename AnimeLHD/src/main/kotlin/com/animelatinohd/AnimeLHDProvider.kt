@@ -210,18 +210,41 @@ private class AnimeLHDCloudflareKiller(
                 return@withLock proceed(request, cachedCookies)
             }
 
-            fun captureCookie(): Boolean {
+            // CookieManager conserva cookies entre instancias del plugin y sesiones
+            // de navegación. Reutilizamos cf_clearance antes de abrir otro WebView.
+            fun readClearanceCookies(): Map<String, String>? {
                 val raw = try {
                     CookieManager.getInstance()?.getCookie(request.url.toString())
                 } catch (_: Exception) {
                     null
-                } ?: return false
-                if (!raw.contains("cf_clearance", ignoreCase = true)) return false
+                } ?: return null
+                if (!raw.contains("cf_clearance", ignoreCase = true)) return null
                 val parsed = raw.split(";").mapNotNull { part ->
                     val pair = part.trim().split("=", limit = 2)
                     if (pair.size == 2 && pair[0].isNotBlank()) pair[0] to pair[1] else null
                 }.toMap()
-                if (parsed.isEmpty()) return false
+                return parsed.takeIf { it.isNotEmpty() }
+            }
+
+            val persistedCookies = readClearanceCookies()
+            if (persistedCookies != null) {
+                savedCookies[host] = persistedCookies
+                val retry = proceed(request, persistedCookies)
+                val retryServer = retry.header("Server").orEmpty()
+                val retryMitigated = retry.header("cf-mitigated").equals("challenge", ignoreCase = true)
+                val retryIsCloudflare = cloudflareServers.any { retryServer.contains(it, ignoreCase = true) }
+                val retryIsChallenge = retry.code in errorCodes && (retryMitigated || retryIsCloudflare)
+                if (!retryIsChallenge) {
+                    log("CF COOKIE REUSE | ${request.url.encodedPath} | code=${retry.code}")
+                    return@withLock retry
+                }
+                retry.close()
+                log("CF COOKIE EXPIRED | ${request.url.encodedPath} | se renueva con WebView")
+                savedCookies.remove(host)
+            }
+
+            fun captureCookie(): Boolean {
+                val parsed = readClearanceCookies() ?: return false
                 savedCookies[host] = parsed
                 return true
             }
