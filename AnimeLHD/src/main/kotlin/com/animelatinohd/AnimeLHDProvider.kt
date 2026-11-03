@@ -328,9 +328,9 @@ class AnimeLHDProvider : MainAPI() {
         "added" to "Animes agregados"
     )
 
-    // Resolver propio para limitar el WebView de Cloudflare a 12 segundos.
-    // CloudflareKiller usa internamente 60s fijos, demasiado para la carga del Home.
-    private val cfKiller = AnimeLHDCloudflareKiller(timeoutMs = 12_000L)
+    // Usamos el mismo margen de 60 segundos que el resolver estándar de CloudStream.
+    // En Android TV, Turnstile/PAT puede tardar más de 12 segundos en completar.
+    private val cfKiller = AnimeLHDCloudflareKiller(timeoutMs = 60_000L)
 
     private val cfBootstrapMutex = Mutex()
 
@@ -422,7 +422,7 @@ class AnimeLHDProvider : MainAPI() {
                 cfBootstrapMutex.withLock {
                     if (!cfSessionBootstrapped) {
                         log("CF BOOTSTRAP START | " + safeUrl(url))
-                        val first = app.get(url, headers = headers, interceptor = cfKiller, timeout = 12)
+                        val first = app.get(url, headers = headers, interceptor = cfKiller, timeout = 60)
                         if (first.isSuccessful) {
                             cfSessionBootstrapped = true
                             log("CF BOOTSTRAP READY | " + safeUrl(url))
@@ -435,7 +435,7 @@ class AnimeLHDProvider : MainAPI() {
             } else null
 
             val response = bootstrapResponse
-                ?: app.get(url, headers = headers, interceptor = cfKiller, timeout = 12)
+                ?: app.get(url, headers = headers, interceptor = cfKiller, timeout = 60)
             val body = response.text
             log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | server=${response.headers["Server"].orEmpty()} | cfRay=${response.headers["cf-ray"].orEmpty()} | url=" + safeUrl(url))
 
