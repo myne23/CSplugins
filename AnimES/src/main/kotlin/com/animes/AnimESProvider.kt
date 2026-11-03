@@ -1575,7 +1575,7 @@ class AnimESProvider : MainAPI() {
         // Si loadLinks ya recibió la URL individual del episodio seleccionado,
         // no recorrer los enlaces de episodios anterior/siguiente que aparecen
         // en esa página: sus reproductores no pertenecen al capítulo solicitado.
-        val requestedIsEpisodePage = Regex("""^/\\d+/anime/[^/]+/?$""", RegexOption.IGNORE_CASE)
+        val requestedIsEpisodePage = Regex("""^/\d+/anime/[^/]+/?$""", RegexOption.IGNORE_CASE)
             .matches(pathOf(requestedUrl))
         val eligiblePlaybackPaths = playbackPaths.filter { playbackUrl ->
             !requestedIsEpisodePage || playbackUrl.trimEnd('/') == requestedUrl.trimEnd('/')
