@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.network.getHeaders
 import com.lagradost.nicehttp.Requests.Companion.await
+import com.lagradost.nicehttp.cookies
 import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
