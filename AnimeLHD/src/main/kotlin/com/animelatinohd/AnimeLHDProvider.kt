@@ -455,7 +455,7 @@ class AnimeLHDProvider : MainAPI() {
         val now = System.currentTimeMillis()
         val cached = homeDataCache
         if (cached != null && now - cached.first < HOME_CACHE_MS) {
-            log("HOME DATA CACHE HIT | episodes=\${cached.second.episodes.size} | animes=\${cached.second.animes.size}")
+            log("HOME DATA CACHE HIT | episodes=${cached.second.episodes.size} | animes=${cached.second.animes.size}")
             return cached.second
         }
 
@@ -465,7 +465,7 @@ class AnimeLHDProvider : MainAPI() {
             val latest = homeDataCache
             val checkedAt = System.currentTimeMillis()
             if (latest != null && checkedAt - latest.first < HOME_CACHE_MS) {
-                log("HOME DATA CACHE HIT (LOCK) | episodes=\${latest.second.episodes.size} | animes=\${latest.second.animes.size}")
+                log("HOME DATA CACHE HIT (LOCK) | episodes=${latest.second.episodes.size} | animes=${latest.second.animes.size}")
                 return@withLock latest.second
             }
 
@@ -483,7 +483,7 @@ class AnimeLHDProvider : MainAPI() {
 
             val data = AnimeLHDHomeData(episodes, animes)
             homeDataCache = System.currentTimeMillis() to data
-            log("HOME DATA PARSED | htmlChars=\${html.length} | rscChars=\${flat.length} | episodes=\${episodes.size} | animes=\${animes.size} | elapsedMs=\${System.currentTimeMillis() - startedAt}")
+            log("HOME DATA PARSED | htmlChars=${html.length} | rscChars=${flat.length} | episodes=${episodes.size} | animes=${animes.size} | elapsedMs=${System.currentTimeMillis() - startedAt}")
             data
         }
     }
