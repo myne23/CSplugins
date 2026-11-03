@@ -464,7 +464,7 @@ class AnimeLHDProvider : MainAPI() {
                     val flat = homeFlat()
                     val arr = flat?.let { jsonAfter(it, "\"episodes\":") }
                     val rawEpisodes = arr?.let { JSONArray(it).objs() } ?: emptyList()
-                    log("RECENT PARSE | homeChars=${flat?.length() ?: 0} | hasEpisodesMarker=${flat?.contains("\"episodes\":") == true} | rawEpisodes=${rawEpisodes.size}")
+                    log("RECENT PARSE | homeChars=${flat?.length ?: 0} | hasEpisodesMarker=${flat?.contains("\"episodes\":") == true} | rawEpisodes=${rawEpisodes.size}")
                     val list = rawEpisodes
                         .mapNotNull { ep ->
                             val title = ep.optString("anime_title")
