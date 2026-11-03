@@ -853,5 +853,6 @@ class AnimeOnlineProvider : MainAPI() {
 
         val linkCount = bestByProviderAndLanguage.size
         dbg { "LINKS finales únicos por servidor/idioma=$linkCount (resueltos=${resolvedLinks.size})" }
+        return linkCount > 0
     }
 }
