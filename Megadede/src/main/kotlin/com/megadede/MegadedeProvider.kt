@@ -345,21 +345,23 @@ class MegadedeProvider : MainAPI() {
             if (url.contains("/serie/") || isAnime) {
                 val matches = RX_EPISODE.findAll(html).toList()
 
-                val episodeWordIndex = html.indexOf("episod", ignoreCase = true)
-                val htmlSample = if (episodeWordIndex >= 0) {
-                    html.substring((episodeWordIndex - 500).coerceAtLeast(0), (episodeWordIndex + 1800).coerceAtMost(html.length))
+                val episodesSectionIndex = html.indexOf("Episodios", ignoreCase = true)
+                val episodesSample = if (episodesSectionIndex >= 0) {
+                    html.substring((episodesSectionIndex - 500).coerceAtLeast(0), (episodesSectionIndex + 9000).coerceAtMost(html.length))
                 } else {
-                    html.take(1800)
+                    ""
                 }.replace(Regex("""\\s+"""), " ")
+
+                val scriptTags = Regex("""<script[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .findAll(html).map { it.groupValues[1] }.take(20).toList()
 
                 logd {
                     "LOAD DIAG code=${response.code} bytes=${html.length} h1=${RX_H1.find(html)?.groupValues?.getOrNull(1)?.take(100)} " +
-                        "hasEpisodes=${episodeWordIndex >= 0} temporada=${html.contains("/temporada/")} " +
-                        "capitulo=${html.contains("/capitulo/")} matches=${matches.size} " +
-                        "hrefs=${RX_HREF_ANY.findAll(html).map { it.groupValues[1] }.take(25).toList()} " +
-                        "sample=${htmlSample.take(1800)}"
+                        "episodesSection=${episodesSectionIndex >= 0} episodeCardCount=${Regex("episode-card", RegexOption.IGNORE_CASE).findAll(html).count()} " +
+                        "seasonBtnCount=${Regex("season-btn", RegexOption.IGNORE_CASE).findAll(html).count()} " +
+                        "episodeLinks=${Regex("""href=["']([^"']+)["']""", RegexOption.IGNORE_CASE).findAll(episodesSample).map { it.groupValues[1] }.take(40).toList()} " +
+                        "scripts=$scriptTags sample=${episodesSample.take(9000)}"
                 }
-
                 // Se decide con el total crudo (igual que antes) para no cambiar
                 // qué series bajan metadata de episodios.
                 val fetchMeta = FETCH_EPISODE_METADATA && matches.size <= EPISODE_METADATA_MAX
