@@ -100,11 +100,11 @@ class MegadedeProvider : MainAPI() {
         // Formato actual: la ficha usa anclas con #s{temporada}-e{episodio}
         // y los números vienen en data-season / data-episode.
         private val RX_EPISODE = Regex(
-            """<a\\b(?=[^>]*data-episode-link)(?=[^>]*href=["']([^"']+)["'])(?=[^>]*data-season=["'](\\d+)["'])(?=[^>]*data-episode=["'](\\d+)["'])[^>]*>""",
+            """<a\b(?=[^>]*data-episode-link)(?=[^>]*href=["']([^"']+)["'])(?=[^>]*data-season=["'](\d+)["'])(?=[^>]*data-episode=["'](\d+)["'])[^>]*>""",
             OPT_I
         )
         private val RX_EPISODE_LEGACY = Regex(
-            """href\\s*=\\s*["']([^"']*/temporada/(\\d+)/capitulo/(\\d+)[^"']*)["']""",
+            """href\s*=\s*["']([^"']*/temporada/(\d+)/capitulo/(\d+)[^"']*)["']""",
             OPT_I
         )
 
