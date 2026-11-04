@@ -345,22 +345,27 @@ class MegadedeProvider : MainAPI() {
             if (url.contains("/serie/") || isAnime) {
                 val matches = RX_EPISODE.findAll(html).toList()
 
-                val episodesSectionIndex = html.indexOf("Episodios", ignoreCase = true)
+                val bodyStart = html.indexOf("<body", ignoreCase = true).let { if (it >= 0) it else 0 }
+                val bodyHtml = html.substring(bodyStart)
+                val episodesSectionIndex = bodyHtml.indexOf("Episodios", ignoreCase = true)
                 val episodesSample = if (episodesSectionIndex >= 0) {
-                    html.substring((episodesSectionIndex - 500).coerceAtLeast(0), (episodesSectionIndex + 9000).coerceAtMost(html.length))
+                    bodyHtml.substring((episodesSectionIndex - 700).coerceAtLeast(0), (episodesSectionIndex + 7000).coerceAtMost(bodyHtml.length))
                 } else {
-                    ""
+                    bodyHtml.take(7000)
                 }.replace(Regex("""\\s+"""), " ")
 
                 val scriptTags = Regex("""<script[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                     .findAll(html).map { it.groupValues[1] }.take(20).toList()
 
+                val episodeCardCount = Regex("episode-card", RegexOption.IGNORE_CASE).findAll(bodyHtml).count()
+                val seasonBtnCount = Regex("season-btn", RegexOption.IGNORE_CASE).findAll(bodyHtml).count()
+                val episodeLinks = Regex("""href=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .findAll(episodesSample).map { it.groupValues[1] }.take(40).toList()
+
                 logd {
                     "LOAD DIAG code=${response.code} bytes=${html.length} h1=${RX_H1.find(html)?.groupValues?.getOrNull(1)?.take(100)} " +
-                        "episodesSection=${episodesSectionIndex >= 0} episodeCardCount=${Regex("episode-card", RegexOption.IGNORE_CASE).findAll(html).count()} " +
-                        "seasonBtnCount=${Regex("season-btn", RegexOption.IGNORE_CASE).findAll(html).count()} " +
-                        "episodeLinks=${Regex("""href=["']([^"']+)["']""", RegexOption.IGNORE_CASE).findAll(episodesSample).map { it.groupValues[1] }.take(40).toList()} " +
-                        "scripts=$scriptTags sample=${episodesSample.take(9000)}"
+                        "bodyEpisodesSection=${episodesSectionIndex >= 0} episodeCardCountBody=$episodeCardCount " +
+                        "seasonBtnCountBody=$seasonBtnCount episodeLinks=$episodeLinks scripts=$scriptTags sample=${episodesSample.take(7000)}"
                 }
                 // Se decide con el total crudo (igual que antes) para no cambiar
                 // qué series bajan metadata de episodios.
