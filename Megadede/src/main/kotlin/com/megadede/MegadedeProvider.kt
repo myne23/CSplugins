@@ -97,8 +97,15 @@ class MegadedeProvider : MainAPI() {
         private val RX_H2_DESC = Regex(
             """<h2[^>]*class=["'][^"']*description[^"']*["'][^>]*>(.*?)</h2>""", OPT_ID
         )
+        // Formato actual: la ficha usa anclas con #s{temporada}-e{episodio}
+        // y los números vienen en data-season / data-episode.
         private val RX_EPISODE = Regex(
-            """href\s*=\s*["']([^"']*/temporada/(\d+)/capitulo/(\d+)[^"']*)["']""", OPT_I
+            """<a\\b(?=[^>]*data-episode-link)(?=[^>]*href=["']([^"']+)["'])(?=[^>]*data-season=["'](\\d+)["'])(?=[^>]*data-episode=["'](\\d+)["'])[^>]*>""",
+            OPT_I
+        )
+        private val RX_EPISODE_LEGACY = Regex(
+            """href\\s*=\\s*["']([^"']*/temporada/(\\d+)/capitulo/(\\d+)[^"']*)["']""",
+            OPT_I
         )
 
         private val RX_CHANGE_SERVER = Regex("""changeServer\(\s*['"]([^'"]+)['"]""", OPT_I)
@@ -344,6 +351,7 @@ class MegadedeProvider : MainAPI() {
 
             if (url.contains("/serie/") || isAnime) {
                 val matches = RX_EPISODE.findAll(html).toList()
+                    .ifEmpty { RX_EPISODE_LEGACY.findAll(html).toList() }
 
                 val bodyStart = html.indexOf("<body", ignoreCase = true).let { if (it >= 0) it else 0 }
                 val bodyHtml = html.substring(bodyStart)
@@ -369,7 +377,13 @@ class MegadedeProvider : MainAPI() {
                 }
                 // Se decide con el total crudo (igual que antes) para no cambiar
                 // qué series bajan metadata de episodios.
-                val fetchMeta = FETCH_EPISODE_METADATA && matches.size <= EPISODE_METADATA_MAX
+                // Los enlaces actuales son fragmentos de la misma ficha: HTTP ignora #sN-eN,
+                // por lo que bajar cada episodio repetiría la misma página y metadata.
+                val usesEpisodeFragments = matches.firstOrNull()
+                    ?.groupValues?.getOrNull(1)?.contains("#s", ignoreCase = true) == true
+                val fetchMeta = FETCH_EPISODE_METADATA &&
+                    !usesEpisodeFragments &&
+                    matches.size <= EPISODE_METADATA_MAX
 
                 val episodes = coroutineScope {
                     matches
@@ -431,7 +445,10 @@ class MegadedeProvider : MainAPI() {
                         .thenBy { it.episode ?: 0 }
                 )
 
-                logd { "LOAD episodios finales=${sortedEpisodes.size}" }
+                logd {
+                    "LOAD episodios finales=${sortedEpisodes.size} " +
+                        "formato=${if (usesEpisodeFragments) "data-episode-link" else "legacy"}"
+                }
 
                 return newTvSeriesLoadResponse(
                     title,
