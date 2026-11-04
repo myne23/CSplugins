@@ -1864,10 +1864,26 @@ class DonghuaLifeProvider : MainAPI() {
                                 playlist.contains("#EXTINF", true) -> "media"
                                 else -> "?"
                             }
-                            "${candidate.substringBefore('?').substringAfterLast('/')}[${qualityOf(candidate to playlist)}p,$kind]"
+                            "${candidate.substringBefore('?').substringAfter("/hls-vod/")}[${qualityOf(candidate to playlist)}p,$kind]"
+                        }
+                        val details = inspected.joinToString(" || ") { (candidate, playlist) ->
+                            val lines = playlist.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()
+                            val variants = lines.mapIndexedNotNull { index, line ->
+                                when {
+                                    line.startsWith("#EXT-X-STREAM-INF", true) ->
+                                        (line + " -> " + (lines.getOrNull(index + 1)?.substringBefore('?') ?: "")).take(260)
+                                    line.startsWith("#EXT-X-MEDIA", true) ||
+                                        line.startsWith("#EXT-X-I-FRAME-STREAM-INF", true) -> line.take(260)
+                                    else -> null
+                                }
+                            }.take(8)
+                            val summary = if (variants.isNotEmpty()) variants.joinToString(" ; ")
+                                else lines.take(3).joinToString(" ; ").take(180)
+                            "${candidate.substringBefore('?').substringAfter("/hls-vod/")} => $summary"
                         }
                         "rumble playlists: encontradas=${hlsUrls.size}, master=${master != null}, " +
                             "extraHQ=${highQuality?.second ?: 0}p, candidatos=$candidates"
+                        "rumble playlist details: $details"
                     }
 
                     sink.emit(
