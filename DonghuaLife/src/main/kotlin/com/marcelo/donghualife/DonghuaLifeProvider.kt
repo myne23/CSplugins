@@ -1789,7 +1789,7 @@ class DonghuaLifeProvider : MainAPI() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                debug { "rumble probe EXCEPTION \${e.javaClass.simpleName}: \${e.message}" }
+                debug { "rumble probe EXCEPTION ${e.javaClass.simpleName}: ${e.message}" }
                 null
             }
             if (probe != null) {
@@ -1803,12 +1803,12 @@ class DonghuaLifeProvider : MainAPI() {
                     .distinct()
                     .toList()
                 debug {
-                    "rumble probe HTTP \${probe.code}, bytes=\${probe.text.length}, " +
-                        "html=\${probeText.contains("<html", true)}, " +
-                        "hls=\${probeText.contains("hls-vod", true)}, " +
-                        "player=\${probeText.contains("player", true)}, " +
-                        "cloudflare=\${probeText.contains("cloudflare", true)}, " +
-                        "m3u8=\${hlsUrls.size}"
+                    "rumble probe HTTP ${probe.code}, bytes=${probe.text.length}, " +
+                        "html=${probeText.contains("<html", true)}, " +
+                        "hls=${probeText.contains("hls-vod", true)}, " +
+                        "player=${probeText.contains("player", true)}, " +
+                        "cloudflare=${probeText.contains("cloudflare", true)}, " +
+                        "m3u8=${hlsUrls.size}"
                 }
                 for (hlsUrl in hlsUrls) {
                     sink.emit(
