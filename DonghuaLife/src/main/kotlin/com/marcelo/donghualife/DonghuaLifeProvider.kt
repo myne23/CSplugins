@@ -1789,18 +1789,39 @@ class DonghuaLifeProvider : MainAPI() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                debug { "rumble probe EXCEPTION ${e.javaClass.simpleName}: ${e.message}" }
+                debug { "rumble probe EXCEPTION \${e.javaClass.simpleName}: \${e.message}" }
                 null
             }
             if (probe != null) {
-                val probeText = probe.text
+                val probeText = probe.text.replace("\\/", "/").replace("\\u0026", "&")
+                    .replace("&amp;", "&")
+                val hlsUrls = Regex(
+                    """https?://[^"'<\s]+?\.m3u8(?:\?[^"'<>\\s]*)?""",
+                    RegexOption.IGNORE_CASE
+                ).findAll(probeText)
+                    .map { it.value }
+                    .distinct()
+                    .toList()
                 debug {
-                    "rumble probe HTTP ${probe.code}, bytes=${probeText.length}, " +
-                        "html=${probeText.contains("<html", true)}, " +
-                        "hls=${probeText.contains("hls-vod", true)}, " +
-                        "player=${probeText.contains("player", true)}, " +
-                        "cloudflare=${probeText.contains("cloudflare", true)}"
+                    "rumble probe HTTP \${probe.code}, bytes=\${probe.text.length}, " +
+                        "html=\${probeText.contains("<html", true)}, " +
+                        "hls=\${probeText.contains("hls-vod", true)}, " +
+                        "player=\${probeText.contains("player", true)}, " +
+                        "cloudflare=\${probeText.contains("cloudflare", true)}, " +
+                        "m3u8=\${hlsUrls.size}"
                 }
+                for (hlsUrl in hlsUrls) {
+                    sink.emit(
+                        makeLink(
+                            "Rumble",
+                            hlsUrl,
+                            ExtractorLinkType.M3U8,
+                            url,
+                            mapOf("User-Agent" to BROWSER_UA, "Origin" to "https://rumble.com")
+                        )
+                    )
+                }
+                if (hlsUrls.isNotEmpty()) return
             }
         }
 
