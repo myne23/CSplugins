@@ -1237,13 +1237,13 @@ class DonghuaLifeProvider : MainAPI() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            debug { "postSource[$context] EXCEPTION \${e.javaClass.simpleName}: \${e.message}" }
+            debug { "postSource[$context] EXCEPTION ${e.javaClass.simpleName}: ${e.message}" }
             return null
         }
 
-        debug { "postSource[$context] HTTP \${response.code}, bytes=\${response.text.length}" }
+        debug { "postSource[$context] HTTP ${response.code}, bytes=${response.text.length}" }
         if (response.code !in 200..299) {
-            debug { "postSource[$context] rechazado por HTTP \${response.code}" }
+            debug { "postSource[$context] rechazado por HTTP ${response.code}" }
             return null
         }
 
@@ -1297,14 +1297,14 @@ class DonghuaLifeProvider : MainAPI() {
         sink: LinkSink,
         extraUuids: List<String>
     ) {
-        debug { "resolveSource[\${source.label}/\${source.provider}] iniciando" }
-        val body = postSource(source.token, pageUrl, cookies, "\${source.label}/\${source.provider}") ?: run {
-            debug { "resolveSource[\${source.label}/\${source.provider}] sin respuesta de API" }
+        debug { "resolveSource[${source.label}/${source.provider}] iniciando" }
+        val body = postSource(source.token, pageUrl, cookies, "${source.label}/${source.provider}") ?: run {
+            debug { "resolveSource[${source.label}/${source.provider}] sin respuesta de API" }
             return
         }
         val payload = parseSourceBody(body)
         debug {
-            "resolveSource[\${source.label}/\${source.provider}] body=\${body.length} chars, URLs=\${payload.urls.size}, hosts=\${payload.urls.map { hostOf(normalizeUrl(it)) }.distinct()}, subtitles=\${payload.subtitles.size}"
+            "resolveSource[${source.label}/${source.provider}] body=${body.length} chars, URLs=${payload.urls.size}, hosts=${payload.urls.map { hostOf(normalizeUrl(it)) }.distinct()}, subtitles=${payload.subtitles.size}"
         }
         val base = payload.mediaBase ?: mainUrl
 
@@ -1769,10 +1769,10 @@ class DonghuaLifeProvider : MainAPI() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            debug { "extractor $url EXCEPTION \${e.javaClass.simpleName}: \${e.message}" }
+            debug { "extractor $url EXCEPTION ${e.javaClass.simpleName}: ${e.message}" }
         }
 
-        debug { "extractor $url raw links=\${found.size}, hosts=\${found.map { hostOf(it.url) }.distinct()}" }
+        debug { "extractor $url raw links=${found.size}, hosts=${found.map { hostOf(it.url) }.distinct()}" }
 
         val lower = url.lowercase()
         val selected = when {
