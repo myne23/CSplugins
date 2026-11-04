@@ -1795,106 +1795,102 @@ class DonghuaLifeProvider : MainAPI() {
             if (probe != null) {
                 val probeText = probe.text.replace("\\/", "/").replace("\\u0026", "&")
                     .replace("&amp;", "&")
-                val hlsUrls = Regex(
-                    """https?://[^"'<\s]+?\.m3u8(?:\?[^"'<>\\s]*)?""",
-                    RegexOption.IGNORE_CASE
-                ).findAll(probeText)
-                    .map { it.value }
+                val hlsHeaders = mapOf(
+                    "User-Agent" to BROWSER_UA,
+                    "Origin" to "https://rumble.com",
+                    "Referer" to url
+                )
+
+                // Rumble publica un endpoint JSON con la playlist HLS y las variantes tar.
+                // Las URL tar incluyen ?r_file=chunklist.m3u8&r_type=...&r_range=...:
+                // hay que conservar la query completa para que el CDN devuelva la playlist.
+                val videoId = Regex("""/embed/(?:[0-9a-z]+\\.)?([0-9a-z]+)""", RegexOption.IGNORE_CASE)
+                    .find(url)?.groupValues?.getOrNull(1)
+                val videoData = videoId?.let { id ->
+                    attempt {
+                        app.get(
+                            "https://rumble.com/embedJS/u3/?request=video&ver=2&v=$id",
+                            headers = hlsHeaders + ("Accept" to "application/json"),
+                            timeout = SOURCE_TIMEOUT_S
+                        ).let { response ->
+                            if (response.isSuccessful) JSONObject(response.text) else null
+                        }
+                    }
+                }
+                val ua = videoData?.optJSONObject("ua")
+                val hlsAuto = ua?.optJSONObject("hls")?.optJSONObject("auto")
+                val apiMaster = hlsAuto?.optString("url")?.takeIf { it.isNotBlank() && it != "null" }
+
+                val tarObject = ua?.optJSONObject("tar")
+                val tarVariants = buildList {
+                    if (tarObject != null) {
+                        val keys = tarObject.keys()
+                        while (keys.hasNext()) {
+                            val key = keys.next()
+                            val item = tarObject.optJSONObject(key) ?: continue
+                            val variantUrl = item.optString("url").takeIf { it.isNotBlank() && it != "null" } ?: continue
+                            val meta = item.optJSONObject("meta")
+                            val height = meta?.optInt("h", 0)?.takeIf { it > 0 } ?: key.toIntOrNull() ?: 0
+                            if (height > 0) add(Triple(variantUrl, height, meta?.optInt("w", 0) ?: 0))
+                        }
+                    }
+                }.distinctBy { it.first }
+
+                // Fallback HTML: capturamos la URL entera, no solo hasta ".m3u8".
+                // En las variantes tar, ".m3u8" aparece dentro de r_file y truncarla rompe el enlace.
+                val htmlUrls = Regex("""https?://[^"'<>\\s]+""")
+                    .findAll(probeText)
+                    .map { it.value.trimEnd(',', ';', ')', ']') }
+                    .filter { it.contains(".m3u8", ignoreCase = true) }
                     .distinct()
                     .toList()
+
+                val master = apiMaster ?: htmlUrls.firstOrNull { it.contains("/hls-vod/") }
+                    ?: htmlUrls.firstOrNull()
                 debug {
                     "rumble probe HTTP ${probe.code}, bytes=${probe.text.length}, " +
-                        "html=${probeText.contains("<html", true)}, " +
-                        "hls=${probeText.contains("hls-vod", true)}, " +
-                        "player=${probeText.contains("player", true)}, " +
-                        "cloudflare=${probeText.contains("cloudflare", true)}, " +
-                        "m3u8=${hlsUrls.size}"
+                        "html=${probeText.contains("<html", true)}, player=${probeText.contains("player", true)}, " +
+                        "api=${videoData != null}, apiMaster=${apiMaster != null}, " +
+                        "tar=${tarVariants.size}, htmlM3u8=${htmlUrls.size}"
                 }
-                if (hlsUrls.isNotEmpty()) {
-                    // Se conserva la playlist maestra (agrupa las calidades) y, además,
-                    // se ofrece aparte la variante independiente de 2K/4K si Rumble la publica.
-                    val hlsHeaders = mapOf(
-                        "User-Agent" to BROWSER_UA,
-                        "Origin" to "https://rumble.com",
-                        "Referer" to url
-                    )
-                    val inspected = hlsUrls.amap { hlsUrl ->
+
+                if (master != null) {
+                    val masterText = attempt {
+                        app.get(master, headers = hlsHeaders, timeout = HLS_TIMEOUT_S).text
+                    }.orEmpty()
+                    val masterMaxHeight = Regex("""RESOLUTION=(\\d+)x(\\d+)""", RegexOption.IGNORE_CASE)
+                        .findAll(masterText)
+                        .mapNotNull { it.groupValues.getOrNull(2)?.toIntOrNull() }
+                        .maxOrNull() ?: 0
+
+                    // Solo se agrega la variante tar más alta si supera a la master.
+                    // Cada URL tar se valida como playlist antes de exponerla a CloudStream.
+                    val bestTar = tarVariants
+                        .filter { it.second > masterMaxHeight && it.second >= 1440 }
+                        .maxByOrNull { it.second }
+                    val validatedTar = bestTar?.let { variant ->
                         val playlist = attempt {
-                            app.get(hlsUrl, headers = hlsHeaders, timeout = HLS_TIMEOUT_S).text
+                            app.get(variant.first, headers = hlsHeaders, timeout = HLS_TIMEOUT_S).text
                         }.orEmpty()
-                        hlsUrl to playlist
+                        if (playlist.contains("#EXTM3U", ignoreCase = true)) variant else null
                     }
-                    val masterEntry = inspected.firstOrNull { (_, playlist) ->
-                        playlist.contains("#EXT-X-STREAM-INF", ignoreCase = true) ||
-                            playlist.contains("#EXT-X-MEDIA:", ignoreCase = true)
-                    }
-                    val master = masterEntry?.first ?: hlsUrls.first()
-
-                    val urlQualityPattern = Regex(
-                        """(?:^|[/_.-])(2160|1440|1080|720|576|480|360)p?(?:[/_.?&-]|$)|(?:^|[/_.-])(2k|4k)(?:[/_.?&-]|$)|(?:^|[/_.-])(2560x1440|3840x2160)(?:[/_.?&-]|$)""",
-                        RegexOption.IGNORE_CASE
-                    )
-                    fun qualityOf(candidate: Pair<String, String>): Int {
-                        val match = urlQualityPattern.find(candidate.first)
-                        val named = match?.groupValues?.drop(1)?.firstOrNull { it.isNotBlank() }
-                        val fromUrl = when {
-                            named.equals("2k", true) || named.equals("2560x1440", true) -> 1440
-                            named.equals("4k", true) || named.equals("3840x2160", true) -> 2160
-                            else -> named?.toIntOrNull() ?: 0
-                        }
-                        val fromPlaylist = Regex("""RESOLUTION=(\d+)x(\d+)""", RegexOption.IGNORE_CASE)
-                            .findAll(candidate.second)
-                            .mapNotNull { it.groupValues.getOrNull(2)?.toIntOrNull() }
-                            .maxOrNull() ?: 0
-                        return maxOf(fromUrl, fromPlaylist)
-                    }
-
-                    // No se vuelve a emitir la master como variante extra. Solo agregamos
-                    // una playlist independiente si podemos identificar que supera 1080p.
-                    val highQuality = inspected
-                        .filter { it.first != master }
-                        .map { it to qualityOf(it) }
-                        .filter { (_, quality) -> quality >= 1440 }
-                        .maxByOrNull { (_, quality) -> quality }
 
                     debug {
-                        val candidates = inspected.joinToString(" | ") { (candidate, playlist) ->
-                            val kind = when {
-                                playlist.contains("#EXT-X-STREAM-INF", true) -> "master"
-                                playlist.contains("#EXTINF", true) -> "media"
-                                else -> "?"
-                            }
-                            "${candidate.substringBefore('?').substringAfter("/hls-vod/")}[${qualityOf(candidate to playlist)}p,$kind]"
-                        }
-                        val details = inspected.joinToString(" || ") { (candidate, playlist) ->
-                            val lines = playlist.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()
-                            val variants = lines.mapIndexedNotNull { index, line ->
-                                when {
-                                    line.startsWith("#EXT-X-STREAM-INF", true) ->
-                                        (line + " -> " + (lines.getOrNull(index + 1)?.substringBefore('?') ?: "")).take(260)
-                                    line.startsWith("#EXT-X-MEDIA", true) ||
-                                        line.startsWith("#EXT-X-I-FRAME-STREAM-INF", true) -> line.take(260)
-                                    else -> null
-                                }
-                            }.take(8)
-                            val summary = if (variants.isNotEmpty()) variants.joinToString(" ; ")
-                                else lines.take(3).joinToString(" ; ").take(180)
-                            "${candidate.substringBefore('?').substringAfter("/hls-vod/")} => $summary"
-                        }
-                        "rumble playlists: encontradas=${hlsUrls.size}, master=${master != null}, " +
-                            "extraHQ=${highQuality?.second ?: 0}p, candidatos=$candidates"
-                        "rumble playlist details: $details"
+                        val tarSummary = tarVariants.sortedByDescending { it.second }
+                            .joinToString(" | ") { "${it.second}p:${it.third}w:${it.first.substringBefore('?').substringAfterLast('/')}" }
+                        "rumble quality: masterMax=${masterMaxHeight}p, tar=$tarSummary, " +
+                            "extra=${validatedTar?.second ?: 0}p, masterValid=${masterText.contains("#EXTM3U")}"
                     }
 
-                    sink.emit(
-                        makeLink("Rumble", master, ExtractorLinkType.M3U8, url, hlsHeaders)
-                    )
-                    highQuality?.let { (entry, quality) ->
+                    if (masterText.contains("#EXTM3U", ignoreCase = true)) {
+                        sink.emit(makeLink("Rumble", master, ExtractorLinkType.M3U8, url, hlsHeaders))
+                    }
+                    validatedTar?.let { variant ->
                         sink.emit(
-                            makeLink("Rumble ${quality}p", entry.first, ExtractorLinkType.M3U8, url, hlsHeaders)
+                            makeLink("Rumble ${variant.second}p", variant.first, ExtractorLinkType.M3U8, url, hlsHeaders)
                         )
                     }
-                    return
+                    if (masterText.contains("#EXTM3U", ignoreCase = true) || validatedTar != null) return
                 }
             }
         }
