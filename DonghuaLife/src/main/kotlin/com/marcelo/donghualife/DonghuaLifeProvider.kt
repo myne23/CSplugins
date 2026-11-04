@@ -60,7 +60,7 @@ class DonghuaLifeProvider : MainAPI() {
         const val TAG = "DonghuaLife"
 
         // true = logs en logcat con el tag "DonghuaLife".
-        const val DEBUG = true
+        const val DEBUG = false
 
         const val BROWSER_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
