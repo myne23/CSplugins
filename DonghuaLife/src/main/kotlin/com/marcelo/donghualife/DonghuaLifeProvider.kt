@@ -1831,7 +1831,11 @@ class DonghuaLifeProvider : MainAPI() {
                             val variantUrl = item.optString("url").takeIf { it.isNotBlank() && it != "null" } ?: continue
                             val meta = item.optJSONObject("meta")
                             val height = meta?.optInt("h", 0)?.takeIf { it > 0 } ?: key.toIntOrNull() ?: 0
-                            if (height > 0) add(Triple(variantUrl, height, meta?.optInt("w", 0) ?: 0))
+                            val width = meta?.optInt("w", 0) ?: 0
+                            // Normaliza videos panorámicos: 1920x816 equivale a clase 1080p,
+                            // 2560x1088 a 1440p, etc.
+                            val quality = maxOf(height, if (width > 0) width * 9 / 16 else 0)
+                            if (quality > 0) add(Triple(variantUrl, quality, width))
                         }
                     }
                 }.distinctBy { it.first }
@@ -1860,7 +1864,11 @@ class DonghuaLifeProvider : MainAPI() {
                     }.orEmpty()
                     val masterMaxHeight = Regex("""RESOLUTION=(\d+)x(\d+)""", RegexOption.IGNORE_CASE)
                         .findAll(masterText)
-                        .mapNotNull { it.groupValues.getOrNull(2)?.toIntOrNull() }
+                        .mapNotNull { match ->
+                            val width = match.groupValues.getOrNull(1)?.toIntOrNull() ?: 0
+                            val height = match.groupValues.getOrNull(2)?.toIntOrNull() ?: 0
+                            maxOf(height, if (width > 0) width * 9 / 16 else 0)
+                        }
                         .maxOrNull() ?: 0
 
                     // Solo se agrega la variante tar más alta si supera a la master.
