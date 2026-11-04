@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -321,7 +322,21 @@ class MegadedeProvider : MainAPI() {
         logd { "LOAD url=$url" }
 
         return try {
-            val response = app.get(url, headers = mapOf("Referer" to mainUrl))
+            val isSeriesOrAnime = url.contains("/serie/") || url.contains("/anime/")
+            var response = app.get(url, headers = mapOf("Referer" to mainUrl))
+
+            // Megadede a veces devuelve 502/503/504 transitorios al abrir fichas.
+            // Reintentar solo series/animes; películas conservan su petición original.
+            if (isSeriesOrAnime) {
+                var retry = 0
+                while (response.code in setOf(502, 503, 504) && retry < 2) {
+                    retry++
+                    val waitMs = retry * 1000L
+                    logd { "LOAD retry HTTP ${response.code}, intento ${retry + 1}/3 en ${waitMs}ms url=$url" }
+                    delay(waitMs)
+                    response = app.get(url, headers = mapOf("Referer" to mainUrl))
+                }
+            }
 
             if (!response.isSuccessful) {
                 Log.e(TAG, "LOAD HTTP ERROR: ${response.code}")
