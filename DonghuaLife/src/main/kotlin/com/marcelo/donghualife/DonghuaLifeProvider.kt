@@ -109,10 +109,10 @@ class DonghuaLifeProvider : MainAPI() {
         val STOPWORDS = setOf("el", "la", "los", "las", "de", "del", "the", "of", "a", "an", "and", "y", "en")
 
         // Fuentes del episodio (cada una trae un campo "token")
-        val TOKEN_FIELD = Regex("\"token\"\\s*:\\s*\"([^\"]+)\"")
+        val TOKEN_FIELD = Regex("\"token\"\s*:\s*\"([^\"]+)\"")
         val SOURCE_OBJECT = Regex("""\{[^{}]*"token"\s*:\s*"[^"]+"[^{}]*\}""")
         val EPISODE_ID_JSON = Regex(
-            "\"episodeId\"\\s*:\\s*\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""
+            "\"episodeId\"\s*:\s*\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""
         )
         val UUID_RE = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
         val IFRAME_SRC = Regex("""src=["']([^"']+)["']""")
@@ -122,12 +122,12 @@ class DonghuaLifeProvider : MainAPI() {
         val SUB_EXT = Regex("""\.(?:vtt|srt|ass|ssa)(?:\?.*)?$""", RegexOption.IGNORE_CASE)
         val SUB_NOISE = Regex("thumb|sprite|storyboard|preview")
         val SUB_ARRAY_KEY = Regex(
-            "\"(?:subtitles?|tracks|captions|subs|textTracks|subtitleTracks)\"\\s*:\\s*[\\[{]",
+            "\"(?:subtitles?|tracks|captions|subs|textTracks|subtitleTracks)\"\s*:\s*[\\[{]",
             RegexOption.IGNORE_CASE
         )
         val SUB_TEXT_URL = Regex(
-            "(?:https?:)?//[^\"'\\s\\\\<>]+?\\.(?:vtt|srt|ass|ssa)(?:\\?[^\"'\\s\\\\<>]*)?" +
-                "|/[^\"'\\s\\\\<>]+?\\.(?:vtt|srt|ass|ssa)(?:\\?[^\"'\\s\\\\<>]*)?",
+            "(?:https?:)?//[^\"'\s\\\\<>]+?\.(?:vtt|srt|ass|ssa)(?:\\?[^\"'\s\\\\<>]*)?" +
+                "|/[^\"'\s\\\\<>]+?\.(?:vtt|srt|ass|ssa)(?:\\?[^\"'\s\\\\<>]*)?",
             RegexOption.IGNORE_CASE
         )
         val FILE_LANG = Regex("(?:^|[._-])(es|en|pt|fr|id|ar|ru|it|de|tr|vi|th)(?:[._-]|$)")
@@ -1308,8 +1308,8 @@ class DonghuaLifeProvider : MainAPI() {
         }
         if (source.isR2) {
             val safeBody = body.take(1400)
-                .replace(Regex("""(?i)(token|authorization|signature|sig|key|secret)(["']?\\s*[:=]\\s*["']?)[^"',}&\\s]+"""), "$1$2[REDACTED]")
-                .replace(Regex("""(?i)([?&](?:token|sig|signature|key|auth)=)[^&\\s]+"""), "$1[REDACTED]")
+                .replace(Regex("""(?i)(token|authorization|signature|sig|key|secret)(["']?\s*[:=]\s*["']?)[^"',}&\s]+"""), "$1$2[REDACTED]")
+                .replace(Regex("""(?i)([?&](?:token|sig|signature|key|auth)=)[^&\s]+"""), "$1[REDACTED]")
             debug { "R2 response preview: $safeBody" }
         }
         val base = payload.mediaBase ?: mainUrl
@@ -1804,7 +1804,7 @@ class DonghuaLifeProvider : MainAPI() {
                 // Rumble publica un endpoint JSON con la playlist HLS y las variantes tar.
                 // Las URL tar incluyen ?r_file=chunklist.m3u8&r_type=...&r_range=...:
                 // hay que conservar la query completa para que el CDN devuelva la playlist.
-                val videoId = Regex("""/embed/(?:[0-9a-z]+\\.)?([0-9a-z]+)""", RegexOption.IGNORE_CASE)
+                val videoId = Regex("""/embed/(?:[0-9a-z]+\.)?([0-9a-z]+)""", RegexOption.IGNORE_CASE)
                     .find(url)?.groupValues?.getOrNull(1)
                 val videoData = videoId?.let { id ->
                     attempt {
@@ -1838,7 +1838,7 @@ class DonghuaLifeProvider : MainAPI() {
 
                 // Fallback HTML: capturamos la URL entera, no solo hasta ".m3u8".
                 // En las variantes tar, ".m3u8" aparece dentro de r_file y truncarla rompe el enlace.
-                val htmlUrls = Regex("""https?://[^"'<>\\s]+""")
+                val htmlUrls = Regex("""https?://[^"'<>\s]+""")
                     .findAll(probeText)
                     .map { it.value.trimEnd(',', ';', ')', ']') }
                     .filter { it.contains(".m3u8", ignoreCase = true) }
@@ -1858,7 +1858,7 @@ class DonghuaLifeProvider : MainAPI() {
                     val masterText = attempt {
                         app.get(master, headers = hlsHeaders, timeout = HLS_TIMEOUT_S).text
                     }.orEmpty()
-                    val masterMaxHeight = Regex("""RESOLUTION=(\\d+)x(\\d+)""", RegexOption.IGNORE_CASE)
+                    val masterMaxHeight = Regex("""RESOLUTION=(\d+)x(\d+)""", RegexOption.IGNORE_CASE)
                         .findAll(masterText)
                         .mapNotNull { it.groupValues.getOrNull(2)?.toIntOrNull() }
                         .maxOrNull() ?: 0
