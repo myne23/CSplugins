@@ -112,6 +112,9 @@ class MegadedeProvider : MainAPI() {
         private val RX_VIDURL_IFRAME = Regex(
             """<iframe[^>]+src=["']([^"']*/vidurl/[^"']+)["']""", OPT_I
         )
+        private val RX_EPISODE_HASH = Regex("""#s(\d+)-e(\d+)""", OPT_I)
+        private val RX_EPISODE_CONTENT = Regex("""/(serie|anime)/([^/?#]+)""", OPT_I)
+        private val RX_DATA_URL = Regex("""data-url=["']([^"']+)["']""", OPT_I)
 
         // Vidhide
         private val RX_PACKED = Regex(
@@ -490,17 +493,50 @@ class MegadedeProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val pageUrl = absoluteUrl(data)
+        val contentUrl = pageUrl.substringBefore("#")
+        val episodeHash = RX_EPISODE_HASH.find(data)
 
         logd { "LINKS pageUrl=$pageUrl" }
 
         return try {
-            val response = app.get(pageUrl, headers = mapOf("Referer" to mainUrl))
+            // Las series/animes actuales cargan el reproductor por AJAX:
+            // /api/episodio/{tipo}/{slug}/{temporada}/{episodio}
+            val html = if (episodeHash != null) {
+                val content = RX_EPISODE_CONTENT.find(contentUrl)
+                    ?: return false
+                val type = content.groupValues[1].lowercase()
+                val slug = content.groupValues[2]
+                val season = episodeHash.groupValues[1]
+                val episode = episodeHash.groupValues[2]
+                val episodeApi = "$mainUrl/api/episodio/$type/$slug/$season/$episode"
 
-            if (!response.isSuccessful) {
-                return false
+                logd { "LINKS episodio API=$episodeApi" }
+
+                val episodeResponse = app.get(
+                    episodeApi,
+                    headers = mapOf(
+                        "Accept" to "application/json",
+                        "Referer" to contentUrl
+                    )
+                )
+
+                if (!episodeResponse.isSuccessful) {
+                    logd { "LINKS episodio API HTTP ${episodeResponse.code}" }
+                    return false
+                }
+
+                val episodeJson = org.json.JSONObject(episodeResponse.text)
+                if (!episodeJson.optBoolean("success", false)) {
+                    logd { "LINKS episodio API success=false" }
+                    return false
+                }
+
+                episodeJson.optString("html").takeIf { it.isNotBlank() } ?: return false
+            } else {
+                val response = app.get(contentUrl, headers = mapOf("Referer" to mainUrl))
+                if (!response.isSuccessful) return false
+                response.text
             }
-
-            val html = response.text
 
             // LinkedHashSet: mantiene el orden y descarta repetidos.
             val servers = LinkedHashSet<String>()
@@ -510,6 +546,9 @@ class MegadedeProvider : MainAPI() {
             }
 
             findVidUrl(html)?.let { servers.add(it) }
+            for (m in RX_DATA_URL.findAll(html)) {
+                servers.add(absoluteUrl(m.groupValues[1]))
+            }
 
             logd { "LINKS total servidores: ${servers.size}" }
 
