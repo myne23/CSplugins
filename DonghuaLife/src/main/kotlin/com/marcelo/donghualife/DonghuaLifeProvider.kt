@@ -122,8 +122,8 @@ class DonghuaLifeProvider : MainAPI() {
         val SUB_EXT = Regex("""\.(?:vtt|srt|ass|ssa)(?:\?.*)?$""", RegexOption.IGNORE_CASE)
         val SUB_NOISE = Regex("thumb|sprite|storyboard|preview")
         val SUB_ARRAY_KEY = Regex(
-            "\"(?:subtitles?|tracks|captions|subs|textTracks|subtitleTracks)\"\\s*:\\s*[\\\\[{]",
-            RegexOption.IGNORE_CASE
+            """"(?:subtitles?|tracks|captions|subs|textTracks|subtitleTracks)"\\s*:\\s*(?:\\[|\\{)"""
+            , RegexOption.IGNORE_CASE
         )
         val SUB_TEXT_URL = Regex(
             """(?:https?:)?//[^"'\\<>]+?\.(?:vtt|srt|ass|ssa)(?:\?[^"'\\<>]*)?""" +
