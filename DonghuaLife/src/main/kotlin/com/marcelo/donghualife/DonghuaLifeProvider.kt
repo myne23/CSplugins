@@ -1217,8 +1217,13 @@ class DonghuaLifeProvider : MainAPI() {
     }
 
     /** POST a /api/player/source con el token de una fuente (o de un subtítulo). Devuelve el cuerpo si fue 2xx. */
-    private suspend fun postSource(token: String, pageUrl: String, cookies: String): String? {
-        val response = attempt {
+    private suspend fun postSource(
+        token: String,
+        pageUrl: String,
+        cookies: String,
+        context: String = "token"
+    ): String? {
+        val response = try {
             app.post(
                 "$mainUrl/api/player/source",
                 headers = apiHeaders(
@@ -1229,9 +1234,19 @@ class DonghuaLifeProvider : MainAPI() {
                 json = JsonAsString(JSONObject().put("token", token).toString()),
                 timeout = SOURCE_TIMEOUT_S
             )
-        } ?: return null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            debug { "postSource[$context] EXCEPTION \${e.javaClass.simpleName}: \${e.message}" }
+            return null
+        }
 
-        if (response.code !in 200..299) return null
+        debug { "postSource[$context] HTTP \${response.code}, bytes=\${response.text.length}" }
+        if (response.code !in 200..299) {
+            debug { "postSource[$context] rechazado por HTTP \${response.code}" }
+            return null
+        }
+
         return response.text.trim()
     }
 
@@ -1282,8 +1297,15 @@ class DonghuaLifeProvider : MainAPI() {
         sink: LinkSink,
         extraUuids: List<String>
     ) {
-        val body = postSource(source.token, pageUrl, cookies) ?: return
+        debug { "resolveSource[\${source.label}/\${source.provider}] iniciando" }
+        val body = postSource(source.token, pageUrl, cookies, "\${source.label}/\${source.provider}") ?: run {
+            debug { "resolveSource[\${source.label}/\${source.provider}] sin respuesta de API" }
+            return
+        }
         val payload = parseSourceBody(body)
+        debug {
+            "resolveSource[\${source.label}/\${source.provider}] body=\${body.length} chars, URLs=\${payload.urls.size}, hosts=\${payload.urls.map { hostOf(normalizeUrl(it)) }.distinct()}, subtitles=\${payload.subtitles.size}"
+        }
         val base = payload.mediaBase ?: mainUrl
 
         // Subtítulos que la API entrega como objetos con su propio token: se piden aparte.
@@ -1737,12 +1759,20 @@ class DonghuaLifeProvider : MainAPI() {
     private suspend fun extractWithExtractors(url: String, pageUrl: String, sink: LinkSink) {
         val found = Collections.synchronizedList(mutableListOf<ExtractorLink>())
 
-        loadExtractor(
-            url = url,
-            referer = "$mainUrl/",
-            subtitleCallback = { },
-            callback = { found.add(it) }
-        )
+        try {
+            loadExtractor(
+                url = url,
+                referer = "$mainUrl/",
+                subtitleCallback = { },
+                callback = { found.add(it) }
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            debug { "extractor $url EXCEPTION \${e.javaClass.simpleName}: \${e.message}" }
+        }
+
+        debug { "extractor $url raw links=\${found.size}, hosts=\${found.map { hostOf(it.url) }.distinct()}" }
 
         val lower = url.lowercase()
         val selected = when {
