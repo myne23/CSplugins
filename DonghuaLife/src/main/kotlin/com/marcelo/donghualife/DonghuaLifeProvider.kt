@@ -1810,18 +1810,46 @@ class DonghuaLifeProvider : MainAPI() {
                         "cloudflare=${probeText.contains("cloudflare", true)}, " +
                         "m3u8=${hlsUrls.size}"
                 }
-                for (hlsUrl in hlsUrls) {
+                if (hlsUrls.isNotEmpty()) {
+                    // Rumble puede publicar una URL por calidad. Se busca primero una playlist
+                    // maestra para que CloudStream muestre una sola fuente y el reproductor
+                    // pueda elegir entre todas las resoluciones (incluidas 2K/4K).
+                    val hlsHeaders = mapOf(
+                        "User-Agent" to BROWSER_UA,
+                        "Origin" to "https://rumble.com",
+                        "Referer" to url
+                    )
+                    val inspected = hlsUrls.amap { hlsUrl ->
+                        val playlist = attempt {
+                            app.get(hlsUrl, headers = hlsHeaders, timeout = HLS_TIMEOUT_S).text
+                        }.orEmpty()
+                        hlsUrl to playlist
+                    }
+                    val master = inspected.firstOrNull { (_, playlist) ->
+                        playlist.contains("#EXT-X-STREAM-INF", ignoreCase = true) ||
+                            playlist.contains("#EXT-X-MEDIA:", ignoreCase = true)
+                    }?.first
+
+                    val qualityPattern = Regex("""(?:^|[/_.-])(2160|1440|1080|720|576|480|360)p?(?:[/_.?&-]|$)""", RegexOption.IGNORE_CASE)
+                    val selectedUrl = master ?: hlsUrls.maxByOrNull { candidate ->
+                        qualityPattern.find(candidate)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+                    } ?: hlsUrls.first()
+
+                    debug {
+                        "rumble playlists: encontradas=${hlsUrls.size}, master=${master != null}, " +
+                            "seleccionada=${selectedUrl.substringBefore('?').takeLast(100)}"
+                    }
                     sink.emit(
                         makeLink(
                             "Rumble",
-                            hlsUrl,
+                            selectedUrl,
                             ExtractorLinkType.M3U8,
                             url,
-                            mapOf("User-Agent" to BROWSER_UA, "Origin" to "https://rumble.com")
+                            hlsHeaders
                         )
                     )
+                    return
                 }
-                if (hlsUrls.isNotEmpty()) return
             }
         }
 
