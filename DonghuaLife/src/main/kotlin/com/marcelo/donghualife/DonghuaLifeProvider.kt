@@ -109,10 +109,10 @@ class DonghuaLifeProvider : MainAPI() {
         val STOPWORDS = setOf("el", "la", "los", "las", "de", "del", "the", "of", "a", "an", "and", "y", "en")
 
         // Fuentes del episodio (cada una trae un campo "token")
-        val TOKEN_FIELD = Regex("\"token\"\s*:\s*\"([^\"]+)\"")
+        val TOKEN_FIELD = Regex("\"token\"\\s*:\\s*\"([^\"]+)\"")
         val SOURCE_OBJECT = Regex("""\{[^{}]*"token"\s*:\s*"[^"]+"[^{}]*\}""")
         val EPISODE_ID_JSON = Regex(
-            "\"episodeId\"\s*:\s*\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""
+            "\"episodeId\"\\s*:\\s*\"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""
         )
         val UUID_RE = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
         val IFRAME_SRC = Regex("""src=["']([^"']+)["']""")
@@ -122,12 +122,12 @@ class DonghuaLifeProvider : MainAPI() {
         val SUB_EXT = Regex("""\.(?:vtt|srt|ass|ssa)(?:\?.*)?$""", RegexOption.IGNORE_CASE)
         val SUB_NOISE = Regex("thumb|sprite|storyboard|preview")
         val SUB_ARRAY_KEY = Regex(
-            "\"(?:subtitles?|tracks|captions|subs|textTracks|subtitleTracks)\"\s*:\s*[\\[{]",
+            "\"(?:subtitles?|tracks|captions|subs|textTracks|subtitleTracks)\"\\s*:\\s*[\\\\[{]",
             RegexOption.IGNORE_CASE
         )
         val SUB_TEXT_URL = Regex(
-            "(?:https?:)?//[^\"'\s\\\\<>]+?\.(?:vtt|srt|ass|ssa)(?:\\?[^\"'\s\\\\<>]*)?" +
-                "|/[^\"'\s\\\\<>]+?\.(?:vtt|srt|ass|ssa)(?:\\?[^\"'\s\\\\<>]*)?",
+            """(?:https?:)?//[^"'\\<>]+?\.(?:vtt|srt|ass|ssa)(?:\?[^"'\\<>]*)?""" +
+                """|/[^"'\\<>]+?\.(?:vtt|srt|ass|ssa)(?:\?[^"'\\<>]*)?""",
             RegexOption.IGNORE_CASE
         )
         val FILE_LANG = Regex("(?:^|[._-])(es|en|pt|fr|id|ar|ru|it|de|tr|vi|th)(?:[._-]|$)")
