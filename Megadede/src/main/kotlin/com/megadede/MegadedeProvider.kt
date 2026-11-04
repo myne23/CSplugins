@@ -50,7 +50,7 @@ class MegadedeProvider : MainAPI() {
 
         // true = muestra los logs de debug (los Log.e de errores siempre se muestran).
         // En false no se construye ni un solo string de log, por eso es más rápido.
-        private val DEBUG = false
+        private val DEBUG = true
 
         // false = /load no baja la página de cada episodio (poster/sinopsis por episodio).
         // Es lo más lento de load() en series; apagarlo lo acelera muchísimo.
@@ -345,6 +345,16 @@ class MegadedeProvider : MainAPI() {
             if (url.contains("/serie/") || isAnime) {
                 val matches = RX_EPISODE.findAll(html).toList()
 
+                logd {
+                    "LOAD HTML temporada=${html.contains("/temporada/")} capitulo=${html.contains("/capitulo/")} " +
+                        "episodeMatches=${matches.size} hrefs=" +
+                        Regex("""href=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                            .findAll(html)
+                            .map { it.groupValues[1] }
+                            .filter { it.contains("episod", true) || it.contains("temporada", true) || it.contains("capitulo", true) }
+                            .take(20)
+                            .toList()
+                }
                 logd { "LOAD matches episodios=${matches.size}" }
 
                 // Se decide con el total crudo (igual que antes) para no cambiar
