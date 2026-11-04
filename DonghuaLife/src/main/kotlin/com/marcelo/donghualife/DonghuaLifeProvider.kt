@@ -1306,6 +1306,12 @@ class DonghuaLifeProvider : MainAPI() {
         debug {
             "resolveSource[${source.label}/${source.provider}] body=${body.length} chars, URLs=${payload.urls.size}, hosts=${payload.urls.map { hostOf(normalizeUrl(it)) }.distinct()}, subtitles=${payload.subtitles.size}"
         }
+        if (source.isR2) {
+            val safeBody = body.take(1400)
+                .replace(Regex("(?i)(token|authorization|signature|sig|key|secret)(\\\\\\"?\\\\s*[:=]\\\\s*\\\\"?)[^\\\\"&,}\\\\s]+"), "$1$2[REDACTED]")
+                .replace(Regex("(?i)([?&](?:token|sig|signature|key|auth)=)[^&\\\\s]+"), "$1[REDACTED]")
+            debug { "R2 response preview: $safeBody" }
+        }
         val base = payload.mediaBase ?: mainUrl
 
         // Subtítulos que la API entrega como objetos con su propio token: se piden aparte.
@@ -1758,6 +1764,35 @@ class DonghuaLifeProvider : MainAPI() {
     /** Rumble, Filemoon, Streamwish y cualquier otro embed: se resuelve con los extractores de CloudStream. */
     private suspend fun extractWithExtractors(url: String, pageUrl: String, sink: LinkSink) {
         val found = Collections.synchronizedList(mutableListOf<ExtractorLink>())
+
+        if (url.contains("rumble.com", ignoreCase = true)) {
+            val probe = try {
+                app.get(
+                    url,
+                    headers = mapOf(
+                        "User-Agent" to BROWSER_UA,
+                        "Referer" to "$mainUrl/",
+                        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                    ),
+                    timeout = SOURCE_TIMEOUT_S
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                debug { "rumble probe EXCEPTION ${e.javaClass.simpleName}: ${e.message}" }
+                null
+            }
+            if (probe != null) {
+                val probeText = probe.text
+                debug {
+                    "rumble probe HTTP ${probe.code}, bytes=${probeText.length}, " +
+                        "html=${probeText.contains("<html", true)}, " +
+                        "hls=${probeText.contains("hls-vod", true)}, " +
+                        "player=${probeText.contains("player", true)}, " +
+                        "cloudflare=${probeText.contains("cloudflare", true)}"
+                }
+            }
+        }
 
         try {
             loadExtractor(
