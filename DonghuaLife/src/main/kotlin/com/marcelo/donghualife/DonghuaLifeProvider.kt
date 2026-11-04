@@ -1314,6 +1314,12 @@ class DonghuaLifeProvider : MainAPI() {
         }
         val base = payload.mediaBase ?: mainUrl
 
+        // R2 devuelve una ruta relativa de proxy (/api/r2-media?u=...), no la URL absoluta.
+        val r2MediaUrl = if (source.isR2) {
+            attempt { JSONObject(body).optString("url").takeIf { it.isNotBlank() && it != "null" } }
+                ?.let { raw -> if (raw.startsWith("http")) raw else fixUrl(raw) }
+        } else null
+
         // Subtítulos que la API entrega como objetos con su propio token: se piden aparte.
         var subtitles = (source.subtitles + payload.subtitles)
             .distinctBy { it.second }
@@ -1328,7 +1334,11 @@ class DonghuaLifeProvider : MainAPI() {
         }
         emitSubtitles(subtitles, subtitleCallback, sink)
 
-        for (candidate in payload.urls.map { normalizeUrl(it) }.distinct()) {
+        val candidates = (payload.urls + listOfNotNull(r2MediaUrl))
+            .map { normalizeUrl(it) }
+            .distinct()
+        if (r2MediaUrl != null) debug { "R2 media proxy: $r2MediaUrl" }
+        for (candidate in candidates) {
             emitUrl(candidate, source, pageUrl, sink, subtitleCallback)
         }
     }
