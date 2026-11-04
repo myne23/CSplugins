@@ -1308,8 +1308,8 @@ class DonghuaLifeProvider : MainAPI() {
         }
         if (source.isR2) {
             val safeBody = body.take(1400)
-                .replace(Regex("(?i)(token|authorization|signature|sig|key|secret)(\\\\\\"?\\\\s*[:=]\\\\s*\\\\"?)[^\\\\"&,}\\\\s]+"), "$1$2[REDACTED]")
-                .replace(Regex("(?i)([?&](?:token|sig|signature|key|auth)=)[^&\\\\s]+"), "$1[REDACTED]")
+                .replace(Regex("""(?i)(token|authorization|signature|sig|key|secret)(["']?\\s*[:=]\\s*["']?)[^"',}&\\s]+"""), "$1$2[REDACTED]")
+                .replace(Regex("""(?i)([?&](?:token|sig|signature|key|auth)=)[^&\\s]+"""), "$1[REDACTED]")
             debug { "R2 response preview: $safeBody" }
         }
         val base = payload.mediaBase ?: mainUrl
