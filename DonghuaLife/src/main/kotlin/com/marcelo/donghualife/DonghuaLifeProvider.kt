@@ -1811,9 +1811,8 @@ class DonghuaLifeProvider : MainAPI() {
                         "m3u8=${hlsUrls.size}"
                 }
                 if (hlsUrls.isNotEmpty()) {
-                    // Rumble puede publicar una URL por calidad. Se busca primero una playlist
-                    // maestra para que CloudStream muestre una sola fuente y el reproductor
-                    // pueda elegir entre todas las resoluciones (incluidas 2K/4K).
+                    // Se conserva la playlist maestra (agrupa las calidades) y, además,
+                    // se ofrece aparte la variante independiente de 2K/4K si Rumble la publica.
                     val hlsHeaders = mapOf(
                         "User-Agent" to BROWSER_UA,
                         "Origin" to "https://rumble.com",
@@ -1825,29 +1824,60 @@ class DonghuaLifeProvider : MainAPI() {
                         }.orEmpty()
                         hlsUrl to playlist
                     }
-                    val master = inspected.firstOrNull { (_, playlist) ->
+                    val masterEntry = inspected.firstOrNull { (_, playlist) ->
                         playlist.contains("#EXT-X-STREAM-INF", ignoreCase = true) ||
                             playlist.contains("#EXT-X-MEDIA:", ignoreCase = true)
-                    }?.first
+                    }
+                    val master = masterEntry?.first ?: hlsUrls.first()
 
-                    val qualityPattern = Regex("""(?:^|[/_.-])(2160|1440|1080|720|576|480|360)p?(?:[/_.?&-]|$)""", RegexOption.IGNORE_CASE)
-                    val selectedUrl = master ?: hlsUrls.maxByOrNull { candidate ->
-                        qualityPattern.find(candidate)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
-                    } ?: hlsUrls.first()
+                    val urlQualityPattern = Regex(
+                        """(?:^|[/_.-])(2160|1440|1080|720|576|480|360)p?(?:[/_.?&-]|$)|(?:^|[/_.-])(2k|4k)(?:[/_.?&-]|$)|(?:^|[/_.-])(2560x1440|3840x2160)(?:[/_.?&-]|$)""",
+                        RegexOption.IGNORE_CASE
+                    )
+                    fun qualityOf(candidate: Pair<String, String>): Int {
+                        val match = urlQualityPattern.find(candidate.first)
+                        val named = match?.groupValues?.drop(1)?.firstOrNull { it.isNotBlank() }
+                        val fromUrl = when {
+                            named.equals("2k", true) || named.equals("2560x1440", true) -> 1440
+                            named.equals("4k", true) || named.equals("3840x2160", true) -> 2160
+                            else -> named?.toIntOrNull() ?: 0
+                        }
+                        val fromPlaylist = Regex("""RESOLUTION=(\d+)x(\d+)""", RegexOption.IGNORE_CASE)
+                            .findAll(candidate.second)
+                            .mapNotNull { it.groupValues.getOrNull(2)?.toIntOrNull() }
+                            .maxOrNull() ?: 0
+                        return maxOf(fromUrl, fromPlaylist)
+                    }
+
+                    // No se vuelve a emitir la master como variante extra. Solo agregamos
+                    // una playlist independiente si podemos identificar que supera 1080p.
+                    val highQuality = inspected
+                        .filter { it.first != master }
+                        .map { it to qualityOf(it) }
+                        .filter { (_, quality) -> quality >= 1440 }
+                        .maxByOrNull { (_, quality) -> quality }
 
                     debug {
+                        val candidates = inspected.joinToString(" | ") { (candidate, playlist) ->
+                            val kind = when {
+                                playlist.contains("#EXT-X-STREAM-INF", true) -> "master"
+                                playlist.contains("#EXTINF", true) -> "media"
+                                else -> "?"
+                            }
+                            "${candidate.substringBefore('?').substringAfterLast('/')}[${qualityOf(candidate to playlist)}p,$kind]"
+                        }
                         "rumble playlists: encontradas=${hlsUrls.size}, master=${master != null}, " +
-                            "seleccionada=${selectedUrl.substringBefore('?').takeLast(100)}"
+                            "extraHQ=${highQuality?.second ?: 0}p, candidatos=$candidates"
                     }
+
                     sink.emit(
-                        makeLink(
-                            "Rumble",
-                            selectedUrl,
-                            ExtractorLinkType.M3U8,
-                            url,
-                            hlsHeaders
-                        )
+                        makeLink("Rumble", master, ExtractorLinkType.M3U8, url, hlsHeaders)
                     )
+                    highQuality?.let { (entry, quality) ->
+                        sink.emit(
+                            makeLink("Rumble ${quality}p", entry.first, ExtractorLinkType.M3U8, url, hlsHeaders)
+                        )
+                    }
                     return
                 }
             }
