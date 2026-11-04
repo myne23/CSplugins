@@ -345,17 +345,20 @@ class MegadedeProvider : MainAPI() {
             if (url.contains("/serie/") || isAnime) {
                 val matches = RX_EPISODE.findAll(html).toList()
 
+                val episodeWordIndex = html.indexOf("episod", ignoreCase = true)
+                val htmlSample = if (episodeWordIndex >= 0) {
+                    html.substring((episodeWordIndex - 500).coerceAtLeast(0), (episodeWordIndex + 1800).coerceAtMost(html.length))
+                } else {
+                    html.take(1800)
+                }.replace(Regex("""\\s+"""), " ")
+
                 logd {
-                    "LOAD HTML temporada=${html.contains("/temporada/")} capitulo=${html.contains("/capitulo/")} " +
-                        "episodeMatches=${matches.size} hrefs=" +
-                        Regex("""href=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-                            .findAll(html)
-                            .map { it.groupValues[1] }
-                            .filter { it.contains("episod", true) || it.contains("temporada", true) || it.contains("capitulo", true) }
-                            .take(20)
-                            .toList()
+                    "LOAD DIAG code=${response.code} bytes=${html.length} h1=${RX_H1.find(html)?.groupValues?.getOrNull(1)?.take(100)} " +
+                        "hasEpisodes=${episodeWordIndex >= 0} temporada=${html.contains("/temporada/")} " +
+                        "capitulo=${html.contains("/capitulo/")} matches=${matches.size} " +
+                        "hrefs=${RX_HREF_ANY.findAll(html).map { it.groupValues[1] }.take(25).toList()} " +
+                        "sample=${htmlSample.take(1800)}"
                 }
-                logd { "LOAD matches episodios=${matches.size}" }
 
                 // Se decide con el total crudo (igual que antes) para no cambiar
                 // qué series bajan metadata de episodios.
