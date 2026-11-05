@@ -271,8 +271,20 @@ private class AnimeLHDCloudflareKiller(
                 return@withLock chain.proceed(request)
             }
 
-            log("CF BYPASS READY | ${request.url.encodedPath}")
-            proceed(request, cookies)
+            log("CF BYPASS COOKIE CAPTURED | ${request.url.encodedPath}")
+            val bypassResponse = proceed(request, cookies)
+            val bypassServer = bypassResponse.header("Server").orEmpty()
+            val bypassMitigated = bypassResponse.header("cf-mitigated").equals("challenge", ignoreCase = true)
+            val bypassIsCloudflare = cloudflareServers.any { bypassServer.contains(it, ignoreCase = true) }
+            val bypassRejected = bypassResponse.code in errorCodes && (bypassMitigated || bypassIsCloudflare)
+            if (bypassRejected) {
+                log("CF BYPASS REJECTED | code=${bypassResponse.code} | ${request.url.encodedPath}")
+                bypassResponse.close()
+                savedCookies.remove(host)
+                return@withLock chain.proceed(request)
+            }
+            log("CF BYPASS VERIFIED | code=${bypassResponse.code} | ${request.url.encodedPath}")
+            bypassResponse
         }
     }
 
@@ -360,6 +372,11 @@ class AnimeLHDProvider : MainAPI() {
     @Volatile
     private var cfSessionBootstrapped = false
 
+    // Evita que las categorías que esperan el primer bootstrap vuelvan a
+    // disparar el mismo desafío cuando Cloudflare no pudo resolverse en TV.
+    @Volatile
+    private var cfBootstrapRetryAfter: Long = 0L
+
     @Volatile
     private var homeDataCache: Pair<Long, AnimeLHDHomeData>? = null
 
@@ -443,17 +460,27 @@ class AnimeLHDProvider : MainAPI() {
             // reutilizan la sesión de CloudflareKiller y vuelven a ser paralelas.
             val bootstrapResponse = if (url.startsWith("$WEB/") && !cfSessionBootstrapped) {
                 cfBootstrapMutex.withLock {
-                    if (!cfSessionBootstrapped) {
+                    if (cfSessionBootstrapped) {
+                        null
+                    } else if (System.currentTimeMillis() < cfBootstrapRetryAfter) {
+                        log("CF BOOTSTRAP COOLDOWN | " + safeUrl(url))
+                        return null
+                    } else {
+                        // El cooldown se activa antes de la petición para que
+                        // las demás categorías que esperan el mutex no repitan
+                        // el mismo WebView challenge si el primer intento falla.
+                        cfBootstrapRetryAfter = System.currentTimeMillis() + 30_000L
                         log("CF BOOTSTRAP START | " + safeUrl(url))
                         val first = app.get(url, headers = headers, interceptor = cfKiller, timeout = 60)
                         if (first.isSuccessful) {
                             cfSessionBootstrapped = true
+                            cfBootstrapRetryAfter = 0L
                             log("CF BOOTSTRAP READY | " + safeUrl(url))
                         } else {
-                            log("CF BOOTSTRAP RETRY NEEDED | code=${first.code}")
+                            log("CF BOOTSTRAP FAILED | code=${first.code}; pausa de 30s")
                         }
                         first
-                    } else null
+                    }
                 }
             } else null
 
