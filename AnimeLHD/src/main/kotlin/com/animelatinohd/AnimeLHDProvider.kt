@@ -249,15 +249,32 @@ private class AnimeLHDCloudflareKiller(
                 return true
             }
 
+            // Solo observamos la navegación del documento solicitado. No debemos
+            // cerrar el WebView al primer recurso/subrecurso: Cloudflare puede
+            // establecer cf_clearance mientras todavía está ejecutando el challenge.
+            val targetPageRegex = Regex(
+                "^${Regex.escape(request.url.scheme)}://${Regex.escape(request.url.host)}" +
+                    "${Regex.escape(request.url.encodedPath)}(?:\\?.*)?$"
+            )
+            val targetPageRequests = java.util.concurrent.atomic.AtomicInteger(0)
+
             try {
                 val resolver = WebViewResolver(
                     interceptUrl = Regex(".^"),
-                    additionalUrls = listOf(Regex(".")),
+                    additionalUrls = listOf(targetPageRegex),
                     userAgent = null,
                     useOkhttp = false,
                     timeout = timeoutMs
                 )
-                resolver.resolveUsingWebView(request) { captureCookie() }
+                resolver.resolveUsingWebView(request) { webRequest ->
+                    val visit = targetPageRequests.incrementAndGet()
+                    if (visit < 2) {
+                        log("CF WEBVIEW CHALLENGE IN PROGRESS | ${request.url.encodedPath}")
+                        false
+                    } else {
+                        captureCookie()
+                    }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
