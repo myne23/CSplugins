@@ -54,7 +54,9 @@ private const val TAG_ANIMEAV = "AnimeAV"
 // Servidor local que adapta el MP4 cifrado de Abyss al reproductor de CloudStream.
 private val abyssMediaServer = AbyssMediaServer()
 
-private const val SECTION_RECENT = "Últimos episodios"
+private const val SECTION_RECENT_SITE = "Últimos episodios"
+private const val SECTION_RECENT_AV = "Últimos episodios AnimeAV"
+private const val SECTION_RECENT_YT = "Últimos episodios AnimeYT"
 private const val SECTION_RESUB = "Resubidos"
 private const val SECTION_EXPLORE = "Explorar"
 private const val SECTION_MOVIES = "Películas"
@@ -271,7 +273,8 @@ class AnimESProvider : MainAPI() {
     override var lang = "es"
     override val hasMainPage = true
     override val mainPage = mainPageOf(
-        "$mainUrl/?animes-home=recent" to SECTION_RECENT,
+        "$AV_BASE/" to SECTION_RECENT_AV,
+        "$mainUrl/?animes-home=recent" to SECTION_RECENT_YT,
         "$mainUrl/tag/resubido/" to SECTION_RESUB,
         "$mainUrl/tv/" to SECTION_EXPLORE,
         "$mainUrl/pelicula/" to SECTION_MOVIES
@@ -281,10 +284,11 @@ class AnimESProvider : MainAPI() {
             "Accept" to "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", "Referer" to "$mainUrl/")
     private val animeAvSlugCache = ConcurrentHashMap<String, String>()
 
-    // Cache corto para que la sección de recientes conserve el mismo orden al volver
-    // a la pantalla y no repita las peticiones mientras las carátulas terminan de cargar.
-    @Volatile private var recentCacheAt = 0L
-    @Volatile private var recentCacheItems: List<SearchResponse> = emptyList()
+    // Cachés independientes: cada catálogo conserva sus propios resultados.
+    @Volatile private var recentAvCacheAt = 0L
+    @Volatile private var recentAvCacheItems: List<SearchResponse> = emptyList()
+    @Volatile private var recentYtCacheAt = 0L
+    @Volatile private var recentYtCacheItems: List<SearchResponse> = emptyList()
 
     private fun cleanHtml(value: String): String = value.replace(HTML_TAG, " ")
         .replace("&nbsp;", " ", ignoreCase = true).replace("&#8211;", "–").replace("&#8212;", "—")
@@ -773,29 +777,42 @@ class AnimESProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (request.name == SECTION_RECENT) {
+        if (request.name == SECTION_RECENT_AV) {
             val now = System.currentTimeMillis()
-            val cached = recentCacheItems
-            if (cached.isNotEmpty() && now - recentCacheAt < HOME_CACHE_MS) {
+            val cached = recentAvCacheItems
+            if (cached.isNotEmpty() && now - recentAvCacheAt < HOME_CACHE_MS) {
                 return newHomePageResponse(request.name, cached)
             }
 
-            val (ytHtml, avHtml) = coroutineScope {
-                val yt = async { try { app.get("$mainUrl/", headers = apiHeaders).text } catch (_: Exception) { "" } }
-                val av = async { try { app.get("$AV_BASE/", headers = mapOf("User-Agent" to UA, "Accept-Language" to "es-ES,es;q=0.9", "Referer" to "$AV_BASE/")).text } catch (_: Exception) { "" } }
-                yt.await() to av.await()
+            val html = try {
+                app.get("$AV_BASE/", headers = mapOf(
+                    "User-Agent" to UA,
+                    "Accept-Language" to "es-ES,es;q=0.9",
+                    "Referer" to "$AV_BASE/"
+                )).text
+            } catch (_: Exception) { "" }
+
+            val items = extractAnimeAvLatestEpisodes(html)
+            if (items.isNotEmpty()) {
+                recentAvCacheItems = items
+                recentAvCacheAt = now
+            }
+            return newHomePageResponse(request.name, items)
+        }
+
+        if (request.name == SECTION_RECENT_YT) {
+            val now = System.currentTimeMillis()
+            val cached = recentYtCacheItems
+            if (cached.isNotEmpty() && now - recentYtCacheAt < HOME_CACHE_MS) {
+                return newHomePageResponse(request.name, cached)
             }
 
-            // Usar únicamente las carátulas incluidas en las páginas de inicio.
-            // No abrir fichas individuales: evita peticiones extra y reduce el retraso visual.
-            val ytItems = extractLatestEpisodes(sectionHtml(ytHtml, SECTION_RECENT).ifBlank { ytHtml })
-            val avItems = extractAnimeAvLatestEpisodes(avHtml)
-            // AnimeYT primero para conservar la fuente principal al inicio; AnimeAV se agrega después.
-            val items = (ytItems + avItems).distinctBy { it.url + "|" + it.name }
-
+            val html = try { app.get("$mainUrl/", headers = apiHeaders).text } catch (_: Exception) { "" }
+            // Recortar solo la sección de recientes de AnimeYT, sin mezclar datos de AnimeAV.
+            val items = extractLatestEpisodes(sectionHtml(html, SECTION_RECENT_SITE).ifBlank { html })
             if (items.isNotEmpty()) {
-                recentCacheItems = items
-                recentCacheAt = now
+                recentYtCacheItems = items
+                recentYtCacheAt = now
             }
             return newHomePageResponse(request.name, items)
         }
