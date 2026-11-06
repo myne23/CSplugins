@@ -266,7 +266,8 @@ class AnimeOnlineProvider : MainAPI() {
         title: String,
         url: String,
         poster: String?,
-        isMovie: Boolean
+        isMovie: Boolean,
+        episodeNumber: Int? = null
     ): SearchResponse {
         return if (isMovie) {
             newMovieSearchResponse(title, url, TvType.Movie) {
@@ -277,12 +278,18 @@ class AnimeOnlineProvider : MainAPI() {
             if (SEND_POSTER_HEADERS) {
                 newAnimeSearchResponse(title, url, TvType.Anime) {
                     this.posterUrl = poster
+                    if (episodeNumber != null && episodeNumber > 0) {
+                        addDubStatus(DubStatus.Subbed, episodeNumber)
+                    }
                     applyPosterHeaders(this)
                 }
             } else {
                 // Fuera de CloudStream (Kino) se usa el tipo serie, como Megadede.
                 newTvSeriesSearchResponse(title, url, TvType.Anime) {
                     this.posterUrl = poster
+                    if (episodeNumber != null && episodeNumber > 0) {
+                        addDubStatus(DubStatus.Subbed, episodeNumber)
+                    }
                     applyPosterHeaders(this)
                 }
             }
@@ -306,7 +313,12 @@ class AnimeOnlineProvider : MainAPI() {
         val title = article.selectFirst(".data h3")?.text()?.trim() ?: return null
         val episodeTitle = article.selectFirst(".epiposter h4")?.text()?.trim()
         val finalTitle = if (!episodeTitle.isNullOrBlank()) "$title - $episodeTitle" else title
-        return buildCard(finalTitle, fixUrl(link), article.cardPoster(), false)
+        val episodeNumber = episodeTitle
+            ?.let { Regex("""(?:episodio|cap[ií]tulo|ep\.?)\s*#?\s*(\d+)""", RegexOption.IGNORE_CASE).find(it) }
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+        return buildCard(finalTitle, fixUrl(link), article.cardPoster(), false, episodeNumber)
     }
 
     private fun parseGenericCard(article: Element): SearchResponse? {
