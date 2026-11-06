@@ -640,6 +640,7 @@ class AnimeLHDProvider : MainAPI() {
                                 TvType.Anime
                             ) {
                                 posterUrl = tmdb(ep.optString("anime_image"))
+                                if (number > 0) addDubStatus(DubStatus.Subbed, number)
                             }
                         }
                         .distinctBy { it.url }
