@@ -493,6 +493,7 @@ class AnimESProvider : MainAPI() {
                 ?: extractPosterNear(html, m.range.first, mainUrl)
             val item = newAnimeSearchResponse("${titleFromSlug(seriesSlug)} - Episodio $number", "$mainUrl/tv/$seriesSlug/", TvType.Anime) {
                 posterUrl = poster
+                addDubStatus(DubStatus.None, number)
             }
             val previous = found[path]
             if (previous == null) found[path] = item
@@ -560,6 +561,7 @@ class AnimESProvider : MainAPI() {
                 ?.let { posterFromImgTag(it, AV_BASE) }
             val item = newAnimeSearchResponse("$title - Episodio $number •AnimeAV", "$AV_BASE/media/$slug/", TvType.Anime) {
                 posterUrl = poster
+                addDubStatus(DubStatus.None, number)
             }
             val key = "$slug/$number"
             val previous = found[key]
