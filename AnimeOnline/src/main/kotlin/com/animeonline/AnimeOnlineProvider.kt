@@ -287,9 +287,6 @@ class AnimeOnlineProvider : MainAPI() {
                 // Fuera de CloudStream (Kino) se usa el tipo serie, como Megadede.
                 newTvSeriesSearchResponse(title, url, TvType.Anime) {
                     this.posterUrl = poster
-                    if (episodeNumber != null && episodeNumber > 0) {
-                        addDubStatus(DubStatus.Subbed, episodeNumber)
-                    }
                     applyPosterHeaders(this)
                 }
             }
