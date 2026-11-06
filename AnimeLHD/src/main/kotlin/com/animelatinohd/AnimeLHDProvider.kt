@@ -178,9 +178,7 @@ private fun MainAPI.toSearch(o: JSONObject): SearchResponse? {
  * Cloudflare resolver con timeout configurable
  * ==================================================================== */
 
-private class AnimeLHDCloudflareKiller(
-    private val timeoutMs: Long
-) : Interceptor {
+private class AnimeLHDCloudflareKiller : Interceptor {
     private val savedCookies = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
     private val bypassMutex = Mutex()
     private val cloudflareServers = setOf("cloudflare", "cloudflare-nginx")
@@ -207,7 +205,24 @@ private class AnimeLHDCloudflareKiller(
             // Otra petición pudo haber resuelto el challenge mientras esperábamos.
             val cachedCookies = savedCookies[host]
             if (cachedCookies != null) {
-                return@withLock proceed(request, cachedCookies)
+                val cachedResponse = proceed(request, cachedCookies)
+                val cachedServer = cachedResponse.header("Server").orEmpty()
+                val cachedMitigated = cachedResponse.header("cf-mitigated")
+                    .equals("challenge", ignoreCase = true)
+                val cachedIsCloudflare = cloudflareServers.any {
+                    cachedServer.contains(it, ignoreCase = true)
+                }
+                val cachedIsChallenge = cachedResponse.code in errorCodes &&
+                    (cachedMitigated || cachedIsCloudflare)
+
+                if (!cachedIsChallenge) {
+                    log("CF COOKIE CACHE HIT | ${request.url.encodedPath} | code=${cachedResponse.code}")
+                    return@withLock cachedResponse
+                }
+
+                cachedResponse.close()
+                savedCookies.remove(host)
+                log("CF COOKIE CACHE EXPIRED | ${request.url.encodedPath}")
             }
 
             // CookieManager conserva cookies entre instancias del plugin y sesiones
@@ -256,24 +271,25 @@ private class AnimeLHDCloudflareKiller(
                 "^${Regex.escape(request.url.scheme)}://${Regex.escape(request.url.host)}" +
                     "${Regex.escape(request.url.encodedPath)}(?:\\?.*)?$"
             )
-            val targetPageRequests = java.util.concurrent.atomic.AtomicInteger(0)
-
             try {
                 val resolver = WebViewResolver(
                     interceptUrl = Regex(".^"),
                     additionalUrls = listOf(targetPageRegex),
                     userAgent = null,
                     useOkhttp = false,
-                    timeout = timeoutMs
+                    // Sin timeout artificial: el challenge puede tardar más en Android TV.
+                    timeout = Long.MAX_VALUE
                 )
-                resolver.resolveUsingWebView(request) { webRequest ->
-                    val visit = targetPageRequests.incrementAndGet()
-                    if (visit < 2) {
-                        log("CF WEBVIEW CHALLENGE IN PROGRESS | ${request.url.encodedPath}")
-                        false
+                resolver.resolveUsingWebView(request) {
+                    // Capturamos en la primera navegación donde cf_clearance ya exista.
+                    // No esperamos una segunda carga completa de la misma página.
+                    val captured = captureCookie()
+                    if (captured) {
+                        log("CF WEBVIEW COOKIE READY | ${request.url.encodedPath}")
                     } else {
-                        captureCookie()
+                        log("CF WEBVIEW CHALLENGE IN PROGRESS | ${request.url.encodedPath}")
                     }
+                    captured
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -284,7 +300,7 @@ private class AnimeLHDCloudflareKiller(
 
             val cookies = savedCookies[host]
             if (cookies == null) {
-                log("CF BYPASS UNAVAILABLE | ${timeoutMs}ms | ${request.url.encodedPath}")
+                log("CF BYPASS UNAVAILABLE | cookie no capturada | ${request.url.encodedPath}")
                 return@withLock chain.proceed(request)
             }
 
@@ -380,9 +396,9 @@ class AnimeLHDProvider : MainAPI() {
         "added" to "Animes agregados"
     )
 
-    // Usamos el mismo margen de 60 segundos que el resolver estándar de CloudStream.
-    // En Android TV, Turnstile/PAT puede tardar más de 12 segundos en completar.
-    private val cfKiller = AnimeLHDCloudflareKiller(timeoutMs = 60_000L)
+    // El resolver no impone un límite artificial: en Android TV el challenge
+    // puede tardar más; la operación sigue siendo cancelable por CloudStream.
+    private val cfKiller = AnimeLHDCloudflareKiller()
 
     private val cfBootstrapMutex = Mutex()
 
