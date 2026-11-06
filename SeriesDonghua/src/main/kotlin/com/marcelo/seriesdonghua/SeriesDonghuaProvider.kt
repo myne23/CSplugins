@@ -359,6 +359,9 @@ class SeriesDonghuaProvider : MainAPI() {
             val seriesPath = episodeUrl.substringBeforeLast("-episodio-").trimEnd('/')
             if (seriesPath.isBlank()) return@mapNotNull null
 
+            val episodeNumber = EPISODE_SLUG.find(episodeUrl)
+                ?.groupValues?.getOrNull(2)?.toIntOrNull()
+
             val title = card.selectFirst(".card-title")?.text()?.trim()
                 ?: return@mapNotNull null
 
@@ -366,6 +369,9 @@ class SeriesDonghuaProvider : MainAPI() {
 
             newAnimeSearchResponse(title, fixUrl("$seriesPath/"), TvType.Anime) {
                 this.posterUrl = fixUrlNull(poster)
+                if (episodeNumber != null && episodeNumber > 0) {
+                    addDubStatus(DubStatus.Subbed, episodeNumber)
+                }
             }
         }.distinctBy { it.url }
 
