@@ -480,8 +480,11 @@ class AnimeLHDProvider : MainAPI() {
                     if (cfSessionBootstrapped) {
                         null
                     } else if (System.currentTimeMillis() < cfBootstrapRetryAfter) {
-                        log("CF BOOTSTRAP COOLDOWN | " + safeUrl(url))
-                        return null
+                        // No devolvemos null: las categorías deben poder pasar por
+                        // CloudflareKiller, que serializa la renovación y reutiliza
+                        // cualquier cookie que otra solicitud consiga validar.
+                        log("CF BOOTSTRAP COOLDOWN | se continúa con interceptor | " + safeUrl(url))
+                        null
                     } else {
                         // El cooldown se activa antes de la petición para que
                         // las demás categorías que esperan el mutex no repitan
@@ -601,7 +604,13 @@ class AnimeLHDProvider : MainAPI() {
                 ?: emptyList()
 
             val data = AnimeLHDHomeData(episodes, animes)
-            homeDataCache = System.currentTimeMillis() to data
+            if (episodes.isNotEmpty() || animes.isNotEmpty()) {
+                homeDataCache = System.currentTimeMillis() to data
+            } else {
+                // No conservar una portada vacía: podría ser una respuesta
+                // incompleta o una página que cambió su estructura RSC.
+                log("HOME DATA EMPTY | no se guarda en caché para permitir reintento")
+            }
             log("HOME DATA PARSED | htmlChars=${html.length} | rscChars=${flat.length} | episodes=${episodes.size} | animes=${animes.size} | elapsedMs=${System.currentTimeMillis() - startedAt}")
             data
         }
