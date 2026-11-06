@@ -188,9 +188,31 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         val request = chain.request()
         val host = request.url.host
 
-        // Siempre probamos primero la petición normal. El WebView solo se abre
-        // cuando la respuesta indica explícitamente un challenge de Cloudflare.
-        val response = chain.proceed(request)
+        // Si WebView ya resolvió Cloudflare en una sesión anterior, reutilizamos
+        // su cookie desde la primera petición y evitamos provocar otro 403/503.
+        val initialRequest = try {
+            val rawCookies = CookieManager.getInstance()?.getCookie(request.url.toString())
+            if (rawCookies.isNullOrBlank() || !rawCookies.contains("cf_clearance", ignoreCase = true)) {
+                request
+            } else {
+                val merged = LinkedHashMap<String, String>()
+                rawCookies.split(";").mapNotNull { part ->
+                    val pair = part.trim().split("=", limit = 2)
+                    if (pair.size == 2 && pair[0].isNotBlank()) pair[0] to pair[1] else null
+                }.forEach { (name, value) -> merged[name] = value }
+                request.cookies.forEach { (name, value) -> merged[name] = value }
+                savedCookies[host] = merged
+                request.newBuilder()
+                    .header("Cookie", merged.entries.joinToString("; ") { (name, value) -> "$name=$value" })
+                    .header("User-Agent", WebViewResolver.webViewUserAgent ?: request.header("User-Agent") ?: USER_AGENT)
+                    .build()
+            }
+        } catch (_: Exception) {
+            request
+        }
+
+        // Petición normal primero; solo se abre WebView ante un challenge real.
+        val response = chain.proceed(initialRequest)
         val server = response.header("Server").orEmpty()
         val mitigated = response.header("cf-mitigated").equals("challenge", ignoreCase = true)
         val isCloudflareServer = cloudflareServers.any { server.contains(it, ignoreCase = true) }
