@@ -553,9 +553,11 @@ class AnimESProvider : MainAPI() {
             val slug = match.groupValues[1]
             val number = match.groupValues[2].toIntOrNull() ?: continue
             val title = titleFromSlug(slug)
+            // En el listado de episodios, la imagen cercana al enlace puede pertenecer
+            // a la tarjeta anterior. Solo aceptar una imagen dentro del propio enlace;
+            // si no existe, recuperar el póster desde la ficha real del anime.
             val poster = Regex("""<img\b[^>]*>""", RegexOption.IGNORE_CASE).find(m.groupValues[2])?.value
                 ?.let { posterFromImgTag(it, AV_BASE) }
-                ?: extractPosterNear(html, m.range.first, AV_BASE)
             val item = newAnimeSearchResponse("$title - Episodio $number •AnimeAV", "$AV_BASE/media/$slug/", TvType.Anime) {
                 posterUrl = poster
             }
@@ -792,7 +794,10 @@ class AnimESProvider : MainAPI() {
                 )).text
             } catch (_: Exception) { "" }
 
-            val items = extractAnimeAvLatestEpisodes(html)
+            val parsedItems = extractAnimeAvLatestEpisodes(html)
+            // Completar/sobrescribir miniaturas usando la ficha del anime, no la
+            // imagen vecina del listado de episodios.
+            val items = fillMissingPosters(parsedItems, AV_BASE)
             if (items.isNotEmpty()) {
                 recentAvCacheItems = items
                 recentAvCacheAt = now
