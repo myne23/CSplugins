@@ -175,7 +175,7 @@ private fun MainAPI.toSearch(o: JSONObject): SearchResponse? {
 }
 
 /* ====================================================================
- * Cloudflare resolver con timeout configurable
+ * Cloudflare resolver sin timeout artificial
  * ==================================================================== */
 
 private class AnimeLHDCloudflareKiller : Interceptor {
