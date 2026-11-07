@@ -196,11 +196,13 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 request
             } else {
                 val merged = LinkedHashMap<String, String>()
+                // Las cookies del WebView tienen prioridad: request.cookies puede
+                // conservar el cf_clearance viejo del cliente NiceHttp.
+                request.cookies.forEach { (name, value) -> merged[name] = value }
                 rawCookies.split(";").mapNotNull { part ->
                     val pair = part.trim().split("=", limit = 2)
                     if (pair.size == 2 && pair[0].isNotBlank()) pair[0] to pair[1] else null
                 }.forEach { (name, value) -> merged[name] = value }
-                request.cookies.forEach { (name, value) -> merged[name] = value }
                 savedCookies[host] = merged
                 request.newBuilder()
                     .header("Cookie", merged.entries.joinToString("; ") { (name, value) -> "$name=$value" })
@@ -224,6 +226,10 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         response.close()
 
         bypassMutex.withLock {
+            // Conservamos el clearance rechazado para no confundirlo con una
+            // cookie nueva: CookieManager puede seguir mostrando la cookie vencida.
+            var rejectedClearance: String? = null
+
             // Otra petición pudo haber resuelto el challenge mientras esperábamos.
             val cachedCookies = savedCookies[host]
             if (cachedCookies != null) {
@@ -243,6 +249,9 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 }
 
                 cachedResponse.close()
+                rejectedClearance = cachedCookies.entries.firstOrNull {
+                    it.key.equals("cf_clearance", ignoreCase = true)
+                }?.value
                 savedCookies.remove(host)
                 log("CF COOKIE CACHE EXPIRED | ${request.url.encodedPath}")
             }
@@ -276,12 +285,25 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                     return@withLock retry
                 }
                 retry.close()
+                rejectedClearance = persistedCookies.entries.firstOrNull {
+                    it.key.equals("cf_clearance", ignoreCase = true)
+                }?.value ?: rejectedClearance
                 log("CF COOKIE EXPIRED | ${request.url.encodedPath} | se renueva con WebView")
                 savedCookies.remove(host)
             }
 
             fun captureCookie(): Boolean {
                 val parsed = readClearanceCookies() ?: return false
+                val clearance = parsed.entries.firstOrNull {
+                    it.key.equals("cf_clearance", ignoreCase = true)
+                }?.value ?: return false
+
+                // No aceptamos inmediatamente el mismo clearance que Cloudflare
+                // acaba de rechazar. Esperamos a que WebView obtenga uno renovado.
+                if (!rejectedClearance.isNullOrBlank() && clearance == rejectedClearance) {
+                    return false
+                }
+
                 savedCookies[host] = parsed
                 return true
             }
@@ -375,8 +397,9 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         // expose CloudStream's internal RequestsHelperKt.getHeaders().
         val userAgent = WebViewResolver.webViewUserAgent ?: USER_AGENT
         val mergedCookies = LinkedHashMap<String, String>().apply {
-            putAll(cookies)
+            // El clearance recién validado debe prevalecer sobre el jar HTTP viejo.
             putAll(request.cookies)
+            putAll(cookies)
         }
         val cookieHeader = mergedCookies.entries.joinToString("; ") { (name, value) ->
             "$name=$value"
