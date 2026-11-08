@@ -483,7 +483,8 @@ class AnimeLHDProvider : MainAPI() {
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
-        "recent" to "Últimos episodios latinos",
+        "recent" to "Últimos episodios",
+        "latinos" to "Latinos",
         "added" to "Animes agregados"
     )
 
