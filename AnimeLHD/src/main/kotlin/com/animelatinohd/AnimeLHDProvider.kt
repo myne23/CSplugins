@@ -564,7 +564,6 @@ class AnimeLHDProvider : MainAPI() {
                             // justo después de devolver el challenge. Repetimos aquí,
                             // sin exigir que el usuario pulse Recargar ni esperar el cooldown.
                             log("CF BOOTSTRAP RETRY | code=${first.code} | se reintenta automáticamente")
-                            first.close()
                             try {
                                 CookieManager.getInstance()?.flush()
                             } catch (_: Exception) {
