@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.*
 import android.webkit.CookieManager
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.network.WebViewResolver
+import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.nicehttp.Requests.Companion.await
 import com.lagradost.nicehttp.cookies
 import okhttp3.Interceptor
@@ -463,6 +464,9 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 // por renovar la misma cookie de Cloudflare.
 private object AnimeLHDCloudflareState {
     val killer = AnimeLHDCloudflareKiller()
+    // Usar el resolver oficial de CloudStream, igual que AnimeOnline.
+    // El helper propio se conserva solo para leer cookies compartidas del WebView.
+    val interceptor = CloudflareKiller()
     val bootstrapMutex = Mutex()
 
     @Volatile
@@ -614,7 +618,7 @@ class AnimeLHDProvider : MainAPI() {
                         // el mismo WebView challenge si el primer intento falla.
                         cfBootstrapRetryAfter = System.currentTimeMillis() + 30_000L
                         log("CF BOOTSTRAP START | " + safeUrl(url))
-                        var first = app.get(url, headers = headers, interceptor = cfKiller, timeout = 60)
+                        var first = app.get(url, headers = headers, interceptor = AnimeLHDCloudflareState.interceptor, timeout = 60)
                         if (!first.isSuccessful) {
                             // El primer WebView puede terminar de guardar cf_clearance
                             // justo después de devolver el challenge. Repetimos aquí,
