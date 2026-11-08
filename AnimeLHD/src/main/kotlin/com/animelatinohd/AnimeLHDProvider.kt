@@ -341,7 +341,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                     // consulta CookieManager y cierra el WebView apenas aparece
                     // un clearance nuevo. 20 s quedan como límite real de seguridad.
                     script = CF_COOKIE_PROBE_SCRIPT,
-                    timeout = 20_000
+                    timeout = 8_000
                 )
                 resolver.resolveUsingWebView(request) {
                     val captured = captureCookie()
