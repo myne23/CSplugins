@@ -59,6 +59,13 @@ private val VOE_CHALLENGE = Regex("""<altcha-widget[^>]+challenge=["']([^"']+)["
 private val VOE_SOURCE = Regex(""""source"\s*:\s*"([^"]+)"""")
 private val VOE_HEX_CHARS = "0123456789abcdef".toCharArray()
 
+/*
+ * WebViewResolver only checks CookieManager when a resource request is intercepted.
+ * Keep generating same-origin requests while the page is open so native code gets
+ * regular opportunities to observe a newly-issued HttpOnly cf_clearance cookie.
+ */
+private const val CF_COOKIE_PROBE_SCRIPT = """(function(){try{if(window.__animelhdCfProbe)return;window.__animelhdCfProbe=true;var n=0;var timer=setInterval(function(){if(++n>38){clearInterval(timer);return;}try{fetch('/favicon.ico?__animelhd_cf_probe='+Date.now(),{method:'GET',credentials:'include',cache:'no-store'}).catch(function(){});}catch(e){}},500);}catch(e){}})();"""
+
 private val LULU_HOSTS = listOf("luluvdoo.com", "luluvdo.com", "lulustream.com", "lulu.st")
 private const val BYSE_FALLBACK_HOST = "https://byse.sx"
 private val BYSE_EMBED = Regex("""^https?://(?:www\.)?byse[a-z0-9-]*\.[a-z]+/(.*)$""", RegexOption.IGNORE_CASE)
@@ -320,32 +327,42 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             // externos (por ejemplo analytics) y comprobamos CookieManager allí.
             // Así capturamos la cookie en cuanto aparece, sin esperar otra navegación.
             val cookieProbeRegex = Regex("^https?://")
+            val probeStartedAt = System.nanoTime()
+            val probeCount = AtomicInteger(0)
+            val lastProbeLogMs = AtomicInteger(0)
             try {
                 val resolver = WebViewResolver(
                     interceptUrl = Regex(".^"),
                     additionalUrls = listOf(cookieProbeRegex),
                     userAgent = null,
                     useOkhttp = false,
-                    // Límite de seguridad: suficiente para TV, pero evita dejar
-                    // la primera carga bloqueada indefinidamente si no hay WebView.
-                    timeout = 45_000L
+                    // El JS fuerza una petición liviana cada 500 ms; el callback
+                    // consulta CookieManager y cierra el WebView apenas aparece
+                    // un clearance nuevo. 20 s quedan como límite real de seguridad.
+                    script = CF_COOKIE_PROBE_SCRIPT,
+                    timeout = 20_000L
                 )
                 resolver.resolveUsingWebView(request) {
-                    // Capturamos en la primera navegación donde cf_clearance ya exista.
-                    // No esperamos una segunda carga completa de la misma página.
                     val captured = captureCookie()
                     if (captured) {
-                        log("CF WEBVIEW COOKIE READY | ${request.url.encodedPath}")
+                        val elapsedMs = (System.nanoTime() - probeStartedAt) / 1_000_000L
+                        log("CF WEBVIEW COOKIE READY | ${request.url.encodedPath} | elapsedMs=$elapsedMs | probes=${probeCount.get() + 1}")
                     } else {
-                        log("CF WEBVIEW CHALLENGE IN PROGRESS | ${request.url.encodedPath}")
+                        val attempts = probeCount.incrementAndGet()
+                        val elapsedMs = (System.nanoTime() - probeStartedAt) / 1_000_000L
+                        val previousLog = lastProbeLogMs.get()
+                        if (attempts == 1 || elapsedMs - previousLog >= 3_000L) {
+                            if (lastProbeLogMs.compareAndSet(previousLog, elapsedMs)) {
+                                log("CF WEBVIEW WAITING COOKIE | ${request.url.encodedPath} | elapsedMs=$elapsedMs | probes=$attempts")
+                            }
+                        }
                     }
                     captured
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                // En Android TV sin WebView (o si no puede iniciarse), seguimos
-                // con la petición normal sin propagar el error del resolver.
+            } catch (e: Exception) {
+                log("CF WEBVIEW ERROR | ${e.javaClass.simpleName}: ${e.message}")
             }
 
             val cookies = savedCookies[host]
