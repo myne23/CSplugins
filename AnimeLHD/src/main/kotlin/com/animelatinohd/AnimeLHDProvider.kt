@@ -337,11 +337,10 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                     additionalUrls = listOf(cookieProbeRegex),
                     userAgent = null,
                     useOkhttp = false,
-                    // El JS fuerza una petición liviana cada 500 ms; el callback
-                    // consulta CookieManager y cierra el WebView apenas aparece
-                    // un clearance nuevo. 20 s quedan como límite real de seguridad.
+                    // El desafío Turnstile tarda más de 8 s en algunos Android TV.
+                    // Darle hasta 20 s para completar la verificación y capturar cf_clearance.
                     script = CF_COOKIE_PROBE_SCRIPT,
-                    timeout = 8_000
+                    timeout = 20_000
                 )
                 resolver.resolveUsingWebView(request) {
                     val captured = captureCookie()
@@ -484,9 +483,7 @@ class AnimeLHDProvider : MainAPI() {
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
-        "recent" to "Episodios recientes",
-        "latinos" to "Latinos",
-        "castellanos" to "Castellanos",
+        "recent" to "Últimos episodios latinos",
         "added" to "Animes agregados"
     )
 
