@@ -60,12 +60,6 @@ private val VOE_CHALLENGE = Regex("""<altcha-widget[^>]+challenge=["']([^"']+)["
 private val VOE_SOURCE = Regex(""""source"\s*:\s*"([^"]+)"""")
 private val VOE_HEX_CHARS = "0123456789abcdef".toCharArray()
 
-/*
- * WebViewResolver only checks CookieManager when a resource request is intercepted.
- * Keep generating same-origin requests while the page is open so native code gets
- * regular opportunities to observe a newly-issued HttpOnly cf_clearance cookie.
- */
-private const val CF_COOKIE_PROBE_SCRIPT = """(function(){try{if(window.__animelhdCfProbe)return;window.__animelhdCfProbe=true;var n=0;var timer=setInterval(function(){if(++n>38){clearInterval(timer);return;}try{fetch('/favicon.ico?__animelhd_cf_probe='+Date.now(),{method:'GET',credentials:'include',cache:'no-store'}).catch(function(){});}catch(e){}},500);}catch(e){}})();"""
 
 private val LULU_HOSTS = listOf("luluvdoo.com", "luluvdo.com", "lulustream.com", "lulu.st")
 private const val BYSE_FALLBACK_HOST = "https://byse.sx"
@@ -330,24 +324,22 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 return true
             }
 
-            // Cloudflare puede guardar cf_clearance después de la última petición
-            // al propio dominio. WebViewResolver solo ejecuta el callback para URLs
-            // incluidas en additionalUrls; por eso también observamos subrecursos
-            // externos (por ejemplo analytics) y comprobamos CookieManager allí.
-            // Así capturamos la cookie en cuanto aparece, sin esperar otra navegación.
-            val cookieProbeRegex = Regex("^https?://")
+            // Mismo mecanismo de observación que usa CloudflareKiller de CloudStream:
+            // comprobar CookieManager en cada recurso que solicita el WebView.
+            // No inyectamos un bucle JS de favicon: el resolver ya observa las
+            // peticiones reales del desafío y así evitamos generar tráfico artificial.
             val probeStartedAt = System.nanoTime()
             val probeCount = AtomicInteger(0)
             val lastProbeLogMs = AtomicLong(0L)
             try {
                 val resolver = WebViewResolver(
                     interceptUrl = Regex(".^"),
-                    additionalUrls = listOf(cookieProbeRegex),
+                    additionalUrls = listOf(Regex(".")),
                     userAgent = null,
                     useOkhttp = false,
-                    // Límite estricto para que el catálogo no quede bloqueado en TV.
-                    script = CF_COOKIE_PROBE_SCRIPT,
-                    timeout = 12_000
+                    // Turnstile puede tardar más de 12 s en Android TV.
+                    // Un único WebView queda protegido por bypassMutex.
+                    timeout = 30_000
                 )
                 resolver.resolveUsingWebView(request) {
                     val captured = captureCookie()
