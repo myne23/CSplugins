@@ -396,6 +396,9 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             CloudflareCookieResult(freshLatestCookies ?: cookies)
         }
 
+        // Las rutas de caché y cooldown ya devuelven su Response directamente.
+        if (bypassResult is Response) return@runBlocking bypassResult
+
         // La comprobación HTTP no debe mantener bloqueada a la otra categoría.
         val retryCookies = (bypassResult as CloudflareCookieResult).cookies
         val bypassResponse = proceed(request, retryCookies)
