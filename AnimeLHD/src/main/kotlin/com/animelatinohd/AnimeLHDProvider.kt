@@ -308,21 +308,24 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 return true
             }
 
-            // Solo observamos la navegación del documento solicitado. No debemos
-            // cerrar el WebView al primer recurso/subrecurso: Cloudflare puede
-            // establecer cf_clearance mientras todavía está ejecutando el challenge.
-            val targetPageRegex = Regex(
-                "^${Regex.escape(request.url.scheme)}://${Regex.escape(request.url.host)}" +
-                    "${Regex.escape(request.url.encodedPath)}(?:\\?.*)?$"
+            // WebViewResolver no siempre notifica la navegación principal en todos
+            // los WebView/TV. Si esperamos solo la URL exacta del documento, podemos
+            // quedarnos esperando aunque Cloudflare ya esté resolviendo el challenge.
+            // Observamos cualquier recurso del mismo host: cada petición vuelve a
+            // consultar CookieManager y solo cerramos el WebView cuando el clearance
+            // nuevo realmente aparece.
+            val cookieProbeRegex = Regex(
+                "^https?://${Regex.escape(request.url.host)}(?::\\d+)?/"
             )
             try {
                 val resolver = WebViewResolver(
                     interceptUrl = Regex(".^"),
-                    additionalUrls = listOf(targetPageRegex),
+                    additionalUrls = listOf(cookieProbeRegex),
                     userAgent = null,
                     useOkhttp = false,
-                    // Sin timeout artificial: el challenge puede tardar más en Android TV.
-                    timeout = Long.MAX_VALUE
+                    // Límite de seguridad: suficiente para TV, pero evita dejar
+                    // la primera carga bloqueada indefinidamente si no hay WebView.
+                    timeout = 45_000L
                 )
                 resolver.resolveUsingWebView(request) {
                     // Capturamos en la primera navegación donde cf_clearance ya exista.
