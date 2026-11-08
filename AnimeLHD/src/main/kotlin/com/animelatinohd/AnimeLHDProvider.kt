@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.*
 import android.webkit.CookieManager
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.network.WebViewResolver
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.nicehttp.Requests.Companion.await
 import com.lagradost.nicehttp.cookies
 import okhttp3.Interceptor
@@ -192,6 +191,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private val bypassMutex = Mutex()
     private val cloudflareServers = setOf("cloudflare", "cloudflare-nginx")
     private val errorCodes = setOf(403, 503)
+    @Volatile private var lastFailedAt = 0L
 
     override fun intercept(chain: Interceptor.Chain): Response = runBlocking {
         val request = chain.request()
@@ -235,6 +235,13 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         response.close()
 
         bypassMutex.withLock {
+            // Si otra categoría acaba de fallar el desafío, no abrimos otro WebView.
+            // Así / y /latinos no pueden encadenar verificaciones de 60 s en la TV.
+            if (System.currentTimeMillis() - lastFailedAt < 30_000L) {
+                log("CF BYPASS COOLDOWN | se evita otro WebView | ${request.url.encodedPath}")
+                return@withLock chain.proceed(request)
+            }
+
             // Conservamos el clearance rechazado para no confundirlo con una
             // cookie nueva: CookieManager puede seguir mostrando la cookie vencida.
             var rejectedClearance: String? = null
@@ -338,10 +345,9 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                     additionalUrls = listOf(cookieProbeRegex),
                     userAgent = null,
                     useOkhttp = false,
-                    // El desafío Turnstile tarda más de 8 s en algunos Android TV.
-                    // Darle hasta 20 s para completar la verificación y capturar cf_clearance.
+                    // Límite estricto para que el catálogo no quede bloqueado en TV.
                     script = CF_COOKIE_PROBE_SCRIPT,
-                    timeout = 20_000
+                    timeout = 12_000
                 )
                 resolver.resolveUsingWebView(request) {
                     val captured = captureCookie()
@@ -381,6 +387,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             }
             val cookies = savedCookies[host] ?: freshLatestCookies
             if (cookies == null) {
+                lastFailedAt = System.currentTimeMillis()
                 log("CF BYPASS UNAVAILABLE | clearance ausente o rechazado | ${request.url.encodedPath}")
                 return@withLock chain.proceed(request)
             }
@@ -399,11 +406,13 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             val bypassIsCloudflare = cloudflareServers.any { bypassServer.contains(it, ignoreCase = true) }
             val bypassRejected = bypassResponse.code in errorCodes && (bypassMitigated || bypassIsCloudflare)
             if (bypassRejected) {
+                lastFailedAt = System.currentTimeMillis()
                 log("CF BYPASS REJECTED | code=${bypassResponse.code} | ${request.url.encodedPath}")
                 bypassResponse.close()
                 savedCookies.remove(host)
                 return@withLock chain.proceed(request)
             }
+            lastFailedAt = 0L
             log("CF BYPASS VERIFIED | code=${bypassResponse.code} | ${request.url.encodedPath}")
             bypassResponse
         }
@@ -464,9 +473,8 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 // por renovar la misma cookie de Cloudflare.
 private object AnimeLHDCloudflareState {
     val killer = AnimeLHDCloudflareKiller()
-    // Usar el resolver oficial de CloudStream, igual que AnimeOnline.
-    // El helper propio se conserva solo para leer cookies compartidas del WebView.
-    val interceptor = CloudflareKiller()
+    // Resolver propio con timeout corto y control de reintentos para Android TV.
+    val interceptor = killer
     val bootstrapMutex = Mutex()
 
     @Volatile
