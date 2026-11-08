@@ -32,7 +32,6 @@ import javax.crypto.spec.SecretKeySpec
 import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 
 /* ====================================================================
  * Config
@@ -305,12 +304,9 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             }
 
             fun captureCookie(): Boolean {
-                // Fuerza la persistencia de las cookies de WebView antes de leerlas;
-                // en algunos Android TV CookieManager las expone con retraso.
-                try {
-                    CookieManager.getInstance()?.flush()
-                } catch (_: Exception) {
-                }
+                // Este callback se ejecuta por cada recurso de WebView.
+                // No hacemos flush() aquí: es una operación de disco y repetirla
+                // durante Turnstile puede ralentizar toda la resolución.
                 val parsed = readClearanceCookies() ?: return false
                 val clearance = parsed.entries.firstOrNull {
                     it.key.equals("cf_clearance", ignoreCase = true)
@@ -331,8 +327,6 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             // No inyectamos un bucle JS de favicon: el resolver ya observa las
             // peticiones reales del desafío y así evitamos generar tráfico artificial.
             val probeStartedAt = System.nanoTime()
-            val probeCount = AtomicInteger(0)
-            val lastProbeLogMs = AtomicLong(0L)
             try {
                 val resolver = WebViewResolver(
                     interceptUrl = Regex(".^"),
@@ -347,16 +341,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                     val captured = captureCookie()
                     if (captured) {
                         val elapsedMs = (System.nanoTime() - probeStartedAt) / 1_000_000L
-                        log("CF WEBVIEW COOKIE READY | ${request.url.encodedPath} | elapsedMs=$elapsedMs | probes=${probeCount.get() + 1}")
-                    } else {
-                        val attempts = probeCount.incrementAndGet()
-                        val elapsedMs = (System.nanoTime() - probeStartedAt) / 1_000_000L
-                        val previousLog = lastProbeLogMs.get()
-                        if (attempts == 1 || elapsedMs - previousLog >= 3_000L) {
-                            if (lastProbeLogMs.compareAndSet(previousLog, elapsedMs)) {
-                                log("CF WEBVIEW WAITING COOKIE | ${request.url.encodedPath} | elapsedMs=$elapsedMs | probes=$attempts")
-                            }
-                        }
+                        log("CF WEBVIEW COOKIE READY | ${request.url.encodedPath} | elapsedMs=$elapsedMs")
                     }
                     captured
                 }
@@ -364,6 +349,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 throw e
             } catch (e: Exception) {
                 log("CF WEBVIEW ERROR | ${e.javaClass.simpleName}: ${e.message}")
+            }
+
+            // Persistimos una sola vez al terminar WebView, nunca por cada recurso.
+            try {
+                CookieManager.getInstance()?.flush()
+            } catch (_: Exception) {
             }
 
             // WebView puede no capturar el clearance aunque CookieManager lo actualice
