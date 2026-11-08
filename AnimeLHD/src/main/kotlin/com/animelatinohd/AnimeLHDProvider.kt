@@ -32,6 +32,7 @@ import javax.crypto.spec.SecretKeySpec
 import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /* ====================================================================
  * Config
@@ -329,7 +330,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             val cookieProbeRegex = Regex("^https?://")
             val probeStartedAt = System.nanoTime()
             val probeCount = AtomicInteger(0)
-            val lastProbeLogMs = AtomicInteger(0)
+            val lastProbeLogMs = AtomicLong(0L)
             try {
                 val resolver = WebViewResolver(
                     interceptUrl = Regex(".^"),
