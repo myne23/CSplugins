@@ -598,53 +598,14 @@ class AnimeLHDProvider : MainAPI() {
 
             log("HTTP START | " + safeUrl(url))
 
-            // La primera petición al dominio se ejecuta sola para evitar que
-            // varias instancias de WebView resuelvan el mismo challenge.
-            // Una vez obtenida una respuesta válida, las siguientes peticiones
-            // reutilizan la sesión de CloudflareKiller y vuelven a ser paralelas.
-            val bootstrapResponse = if (url.startsWith("$WEB/") && !cfSessionBootstrapped) {
-                cfBootstrapMutex.withLock {
-                    if (cfSessionBootstrapped) {
-                        null
-                    } else if (System.currentTimeMillis() < cfBootstrapRetryAfter) {
-                        // No devolvemos null: las categorías deben poder pasar por
-                        // CloudflareKiller, que serializa la renovación y reutiliza
-                        // cualquier cookie que otra solicitud consiga validar.
-                        log("CF BOOTSTRAP COOLDOWN | se continúa con interceptor | " + safeUrl(url))
-                        null
-                    } else {
-                        // El cooldown se activa antes de la petición para que
-                        // las demás categorías que esperan el mutex no repitan
-                        // el mismo WebView challenge si el primer intento falla.
-                        cfBootstrapRetryAfter = System.currentTimeMillis() + 30_000L
-                        log("CF BOOTSTRAP START | " + safeUrl(url))
-                        var first = app.get(url, headers = headers, interceptor = AnimeLHDCloudflareState.interceptor, timeout = 60)
-                        if (!first.isSuccessful) {
-                            // El primer WebView puede terminar de guardar cf_clearance
-                            // justo después de devolver el challenge. Repetimos aquí,
-                            // sin exigir que el usuario pulse Recargar ni esperar el cooldown.
-                            log("CF BOOTSTRAP RETRY | code=${first.code} | se reintenta automáticamente")
-                            try {
-                                CookieManager.getInstance()?.flush()
-                            } catch (_: Exception) {
-                            }
-                            delay(350L)
-                            first = app.get(url, headers = headers, interceptor = AnimeLHDCloudflareState.interceptor, timeout = 60)
-                        }
-                        if (first.isSuccessful) {
-                            cfSessionBootstrapped = true
-                            cfBootstrapRetryAfter = 0L
-                            log("CF BOOTSTRAP READY | " + safeUrl(url))
-                        } else {
-                            log("CF BOOTSTRAP FAILED | code=${first.code}; se podrá reintentar")
-                        }
-                        first
-                    }
-                }
-            } else null
-
-            val response = bootstrapResponse
-                ?: app.get(url, headers = headers, interceptor = AnimeLHDCloudflareState.interceptor, timeout = 60)
+            // Igual que AnimeOnline: una sola petición con el resolver oficial.
+            // No hacemos bootstrap/reintentos manuales: en Android TV podían
+            // encadenar dos WebViews de 20 s y seguir trabajando tras el timeout.
+            val response = app.get(
+                url,
+                headers = headers,
+                interceptor = AnimeLHDCloudflareState.interceptor
+            )
             val body = response.text
             log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | server=${response.headers["Server"].orEmpty()} | cfRay=${response.headers["cf-ray"].orEmpty()} | url=" + safeUrl(url))
 
