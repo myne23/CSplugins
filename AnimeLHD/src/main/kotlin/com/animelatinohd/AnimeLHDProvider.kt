@@ -293,6 +293,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             }
 
             fun captureCookie(): Boolean {
+                // Fuerza la persistencia de las cookies de WebView antes de leerlas;
+                // en algunos Android TV CookieManager las expone con retraso.
+                try {
+                    CookieManager.getInstance()?.flush()
+                } catch (_: Exception) {
+                }
                 val parsed = readClearanceCookies() ?: return false
                 val clearance = parsed.entries.firstOrNull {
                     it.key.equals("cf_clearance", ignoreCase = true)
@@ -552,13 +558,26 @@ class AnimeLHDProvider : MainAPI() {
                         // el mismo WebView challenge si el primer intento falla.
                         cfBootstrapRetryAfter = System.currentTimeMillis() + 30_000L
                         log("CF BOOTSTRAP START | " + safeUrl(url))
-                        val first = app.get(url, headers = headers, interceptor = cfKiller, timeout = 60)
+                        var first = app.get(url, headers = headers, interceptor = cfKiller, timeout = 60)
+                        if (!first.isSuccessful) {
+                            // El primer WebView puede terminar de guardar cf_clearance
+                            // justo después de devolver el challenge. Repetimos aquí,
+                            // sin exigir que el usuario pulse Recargar ni esperar el cooldown.
+                            log("CF BOOTSTRAP RETRY | code=${first.code} | se reintenta automáticamente")
+                            first.close()
+                            try {
+                                CookieManager.getInstance()?.flush()
+                            } catch (_: Exception) {
+                            }
+                            delay(350L)
+                            first = app.get(url, headers = headers, interceptor = cfKiller, timeout = 60)
+                        }
                         if (first.isSuccessful) {
                             cfSessionBootstrapped = true
                             cfBootstrapRetryAfter = 0L
                             log("CF BOOTSTRAP READY | " + safeUrl(url))
                         } else {
-                            log("CF BOOTSTRAP FAILED | code=${first.code}; pausa de 30s")
+                            log("CF BOOTSTRAP FAILED | code=${first.code}; se podrá reintentar")
                         }
                         first
                     }
