@@ -629,7 +629,7 @@ class AnimeLHDProvider : MainAPI() {
                             } catch (_: Exception) {
                             }
                             delay(350L)
-                            first = app.get(url, headers = headers, interceptor = cfKiller, timeout = 60)
+                            first = app.get(url, headers = headers, interceptor = AnimeLHDCloudflareState.interceptor, timeout = 60)
                         }
                         if (first.isSuccessful) {
                             cfSessionBootstrapped = true
@@ -644,7 +644,7 @@ class AnimeLHDProvider : MainAPI() {
             } else null
 
             val response = bootstrapResponse
-                ?: app.get(url, headers = headers, interceptor = cfKiller, timeout = 60)
+                ?: app.get(url, headers = headers, interceptor = AnimeLHDCloudflareState.interceptor, timeout = 60)
             val body = response.text
             log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | server=${response.headers["Server"].orEmpty()} | cfRay=${response.headers["cf-ray"].orEmpty()} | url=" + safeUrl(url))
 
