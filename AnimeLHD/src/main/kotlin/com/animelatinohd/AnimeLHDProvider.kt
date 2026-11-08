@@ -707,7 +707,19 @@ class AnimeLHDProvider : MainAPI() {
             }
 
             val startedAt = System.currentTimeMillis()
-            val html = fetch("$WEB/") ?: return@withLock null
+            var html = fetch("$WEB/")
+            if (html == null) {
+                // El primer intento puede terminar en 403 mientras Cloudflare
+                // renueva la sesión. Reintentar aquí evita devolver Últimos
+                // episodios vacío justo antes de que la sesión quede disponible.
+                log("HOME DATA RETRY | espera breve tras fallo inicial")
+                delay(1_200)
+                html = fetch("$WEB/")
+            }
+            if (html == null) {
+                log("HOME DATA FETCH FAIL | null tras reintento")
+                return@withLock null
+            }
             val flat = flattenRsc(html)
 
             // Deserializamos los dos bloques una sola vez para ambas secciones.
