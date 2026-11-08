@@ -366,14 +366,25 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 log("CF WEBVIEW ERROR | ${e.javaClass.simpleName}: ${e.message}")
             }
 
-            val cookies = savedCookies[host]
+            // WebView puede no capturar el clearance aunque CookieManager lo actualice
+            // durante la navegación. Antes de abandonar, releemos el jar y repetimos
+            // la petición con las cookies más recientes (igual que hace una recarga manual).
+            val latestCookies = readClearanceCookies()
+            val cookies = savedCookies[host] ?: latestCookies
             if (cookies == null) {
                 log("CF BYPASS UNAVAILABLE | cookie no capturada | ${request.url.encodedPath}")
                 return@withLock chain.proceed(request)
             }
 
+            if (latestCookies != null) {
+                savedCookies[host] = latestCookies
+            }
+
             log("CF BYPASS COOKIE CAPTURED | ${request.url.encodedPath}")
-            val bypassResponse = proceed(request, cookies)
+            // Priorizar el jar recién leído: puede ser distinto del clearance que
+            // rechazó el primer intento y es el que verá una recarga manual.
+            val retryCookies = latestCookies ?: cookies
+            val bypassResponse = proceed(request, retryCookies)
             val bypassServer = bypassResponse.header("Server").orEmpty()
             val bypassMitigated = bypassResponse.header("cf-mitigated").equals("challenge", ignoreCase = true)
             val bypassIsCloudflare = cloudflareServers.any { bypassServer.contains(it, ignoreCase = true) }
