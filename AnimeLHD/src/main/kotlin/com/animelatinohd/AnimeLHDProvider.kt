@@ -369,20 +369,29 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             // durante la navegación. Antes de abandonar, releemos el jar y repetimos
             // la petición con las cookies más recientes (igual que hace una recarga manual).
             val latestCookies = readClearanceCookies()
-            val cookies = savedCookies[host] ?: latestCookies
+            val latestClearance = latestCookies?.entries?.firstOrNull {
+                it.key.equals("cf_clearance", ignoreCase = true)
+            }?.value
+            // No reutilizar como "renovada" la misma cookie que Cloudflare
+            // rechazó antes de abrir WebView. CookieManager puede conservarla
+            // aunque el desafío no haya terminado correctamente.
+            val freshLatestCookies = latestCookies?.takeIf {
+                rejectedClearance.isNullOrBlank() || latestClearance != rejectedClearance
+            }
+            val cookies = savedCookies[host] ?: freshLatestCookies
             if (cookies == null) {
-                log("CF BYPASS UNAVAILABLE | cookie no capturada | ${request.url.encodedPath}")
+                log("CF BYPASS UNAVAILABLE | clearance ausente o rechazado | ${request.url.encodedPath}")
                 return@withLock chain.proceed(request)
             }
 
-            if (latestCookies != null) {
-                savedCookies[host] = latestCookies
+            if (freshLatestCookies != null) {
+                savedCookies[host] = freshLatestCookies
             }
 
             log("CF BYPASS COOKIE CAPTURED | ${request.url.encodedPath}")
-            // Priorizar el jar recién leído: puede ser distinto del clearance que
-            // rechazó el primer intento y es el que verá una recarga manual.
-            val retryCookies = latestCookies ?: cookies
+            // Solo se reintenta con un clearance distinto del que Cloudflare
+            // acaba de rechazar; nunca con el valor viejo que quedó en CookieManager.
+            val retryCookies = freshLatestCookies ?: cookies
             val bypassResponse = proceed(request, retryCookies)
             val bypassServer = bypassResponse.header("Server").orEmpty()
             val bypassMitigated = bypassResponse.header("cf-mitigated").equals("challenge", ignoreCase = true)
