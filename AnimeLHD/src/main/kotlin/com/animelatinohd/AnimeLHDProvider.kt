@@ -180,6 +180,8 @@ private fun MainAPI.toSearch(o: JSONObject): SearchResponse? {
  * Cloudflare resolver sin timeout artificial
  * ==================================================================== */
 
+private data class CloudflareCookieResult(val cookies: Map<String, String>)
+
 private class AnimeLHDCloudflareKiller : Interceptor {
     private val savedCookies = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
     private val bypassMutex = Mutex()
@@ -228,7 +230,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         // Cerramos el body original antes de cualquier reintento.
         response.close()
 
-        bypassMutex.withLock {
+        val bypassResult = bypassMutex.withLock {
             // Si otra categoría acaba de fallar el desafío, no abrimos otro WebView.
             // Así / y /latinos no pueden encadenar verificaciones de 60 s en la TV.
             if (System.currentTimeMillis() - lastFailedAt < 30_000L) {
@@ -389,25 +391,28 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             }
 
             log("CF BYPASS COOKIE CAPTURED | ${request.url.encodedPath}")
-            // Solo se reintenta con un clearance distinto del que Cloudflare
-            // acaba de rechazar; nunca con el valor viejo que quedó en CookieManager.
-            val retryCookies = freshLatestCookies ?: cookies
-            val bypassResponse = proceed(request, retryCookies)
-            val bypassServer = bypassResponse.header("Server").orEmpty()
-            val bypassMitigated = bypassResponse.header("cf-mitigated").equals("challenge", ignoreCase = true)
-            val bypassIsCloudflare = cloudflareServers.any { bypassServer.contains(it, ignoreCase = true) }
-            val bypassRejected = bypassResponse.code in errorCodes && (bypassMitigated || bypassIsCloudflare)
-            if (bypassRejected) {
-                lastFailedAt = System.currentTimeMillis()
-                log("CF BYPASS REJECTED | code=${bypassResponse.code} | ${request.url.encodedPath}")
-                bypassResponse.close()
-                savedCookies.remove(host)
-                return@withLock chain.proceed(request)
-            }
-            lastFailedAt = 0L
-            log("CF BYPASS VERIFIED | code=${bypassResponse.code} | ${request.url.encodedPath}")
-            bypassResponse
+            // La cookie ya está compartida. Liberamos el mutex antes de verificarla
+            // para que / y /latinos puedan reintentarse en paralelo.
+            CloudflareCookieResult(freshLatestCookies ?: cookies)
         }
+
+        // La comprobación HTTP no debe mantener bloqueada a la otra categoría.
+        val retryCookies = (bypassResult as CloudflareCookieResult).cookies
+        val bypassResponse = proceed(request, retryCookies)
+        val bypassServer = bypassResponse.header("Server").orEmpty()
+        val bypassMitigated = bypassResponse.header("cf-mitigated").equals("challenge", ignoreCase = true)
+        val bypassIsCloudflare = cloudflareServers.any { bypassServer.contains(it, ignoreCase = true) }
+        val bypassRejected = bypassResponse.code in errorCodes && (bypassMitigated || bypassIsCloudflare)
+        if (bypassRejected) {
+            lastFailedAt = System.currentTimeMillis()
+            log("CF BYPASS REJECTED | code=${bypassResponse.code} | ${request.url.encodedPath}")
+            bypassResponse.close()
+            savedCookies.remove(host)
+            return@runBlocking chain.proceed(request)
+        }
+        lastFailedAt = 0L
+        log("CF BYPASS VERIFIED | code=${bypassResponse.code} | ${request.url.encodedPath}")
+        bypassResponse
     }
 
     /**
