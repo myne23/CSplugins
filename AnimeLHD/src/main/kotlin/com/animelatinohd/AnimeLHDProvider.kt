@@ -480,6 +480,13 @@ private data class AnimeLHDHomeData(
     val animes: List<JSONObject>
 )
 
+private object AnimeLHDHomeState {
+    @Volatile
+    var cache: Pair<Long, AnimeLHDHomeData>? = null
+
+    val fetchMutex = Mutex()
+}
+
 /* ====================================================================
  * Provider
  * ==================================================================== */
@@ -520,12 +527,12 @@ class AnimeLHDProvider : MainAPI() {
             AnimeLHDCloudflareState.retryAfter = value
         }
 
-    @Volatile
-    private var homeDataCache: Pair<Long, AnimeLHDHomeData>? = null
-
-    // recent y added pueden solicitar la portada en paralelo desde CloudX.
-    // Un único vuelo evita dos desafíos Cloudflare simultáneos para el mismo HTML.
-    private val homeFetchMutex = Mutex()
+    // La portada se comparte entre instancias del proveedor: recent y added
+    // suelen ser solicitadas por separado al abrir el home, incluso en paralelo.
+    private val homeDataCache: Pair<Long, AnimeLHDHomeData>?
+        get() = AnimeLHDHomeState.cache
+    private val homeFetchMutex: Mutex
+        get() = AnimeLHDHomeState.fetchMutex
 
     // Caché breve para páginas HTML: evita repetir descargas cuando CloudX
     // solicita dos veces la misma categoría, búsqueda o ficha casi al mismo tiempo.
@@ -641,8 +648,17 @@ class AnimeLHDProvider : MainAPI() {
         // las páginas públicas de Next.js para categorías y búsqueda.
         log("API SKIP | se usa HTML directamente")
         log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)
-        val html = fetch(htmlUrl) ?: run {
-            log("HTML FALLBACK FAIL | fetch devolvió null")
+        var html = fetch(htmlUrl)
+        if (html == null) {
+            // Otra categoría puede haber conseguido una sesión válida justo
+            // después del primer 403. Reintentamos una vez sin abrir otro WebView
+            // durante el cooldown del interceptor.
+            log("HTML FALLBACK RETRY | espera breve tras fallo inicial")
+            delay(1_200)
+            html = fetch(htmlUrl)
+        }
+        if (html == null) {
+            log("HTML FALLBACK FAIL | fetch devolvió null tras reintento")
             return emptyList<JSONObject>() to 1
         }
         log("HTML FALLBACK BODY | chars=" + html.length + " | hasNext=" + html.contains("self.__next_f.push"))
@@ -704,7 +720,7 @@ class AnimeLHDProvider : MainAPI() {
 
             val data = AnimeLHDHomeData(episodes, animes)
             if (episodes.isNotEmpty() || animes.isNotEmpty()) {
-                homeDataCache = System.currentTimeMillis() to data
+                AnimeLHDHomeState.cache = System.currentTimeMillis() to data
             } else {
                 // No conservar una portada vacía: podría ser una respuesta
                 // incompleta o una página que cambió su estructura RSC.
