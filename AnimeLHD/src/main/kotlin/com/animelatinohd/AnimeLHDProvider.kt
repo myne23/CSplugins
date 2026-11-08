@@ -421,6 +421,20 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         ).await()
     }
 }
+// Estado compartido entre todas las instancias de AnimeLHD. Sin esto,
+// dos cargas simultáneas podían abrir WebViews independientes y competir
+// por renovar la misma cookie de Cloudflare.
+private object AnimeLHDCloudflareState {
+    val killer = AnimeLHDCloudflareKiller()
+    val bootstrapMutex = Mutex()
+
+    @Volatile
+    var sessionBootstrapped = false
+
+    @Volatile
+    var retryAfter: Long = 0L
+}
+
 private data class AnimeLHDHomeData(
     val episodes: List<JSONObject>,
     val animes: List<JSONObject>
@@ -447,19 +461,25 @@ class AnimeLHDProvider : MainAPI() {
         "added" to "Animes agregados"
     )
 
-    // El resolver no impone un límite artificial: en Android TV el challenge
-    // puede tardar más; la operación sigue siendo cancelable por CloudStream.
-    private val cfKiller = AnimeLHDCloudflareKiller()
+    // CloudStream puede crear más de una instancia del proveedor al abrir el home.
+    // Todas comparten el mismo interceptor, mutex y estado de bootstrap.
+    private val cfKiller: AnimeLHDCloudflareKiller
+        get() = AnimeLHDCloudflareState.killer
 
-    private val cfBootstrapMutex = Mutex()
+    private val cfBootstrapMutex: Mutex
+        get() = AnimeLHDCloudflareState.bootstrapMutex
 
-    @Volatile
-    private var cfSessionBootstrapped = false
+    private var cfSessionBootstrapped: Boolean
+        get() = AnimeLHDCloudflareState.sessionBootstrapped
+        set(value) {
+            AnimeLHDCloudflareState.sessionBootstrapped = value
+        }
 
-    // Evita que las categorías que esperan el primer bootstrap vuelvan a
-    // disparar el mismo desafío cuando Cloudflare no pudo resolverse en TV.
-    @Volatile
-    private var cfBootstrapRetryAfter: Long = 0L
+    private var cfBootstrapRetryAfter: Long
+        get() = AnimeLHDCloudflareState.retryAfter
+        set(value) {
+            AnimeLHDCloudflareState.retryAfter = value
+        }
 
     @Volatile
     private var homeDataCache: Pair<Long, AnimeLHDHomeData>? = null
