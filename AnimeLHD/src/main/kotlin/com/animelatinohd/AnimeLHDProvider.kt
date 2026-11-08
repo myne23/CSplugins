@@ -308,15 +308,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 return true
             }
 
-            // WebViewResolver no siempre notifica la navegación principal en todos
-            // los WebView/TV. Si esperamos solo la URL exacta del documento, podemos
-            // quedarnos esperando aunque Cloudflare ya esté resolviendo el challenge.
-            // Observamos cualquier recurso del mismo host: cada petición vuelve a
-            // consultar CookieManager y solo cerramos el WebView cuando el clearance
-            // nuevo realmente aparece.
-            val cookieProbeRegex = Regex(
-                "^https?://${Regex.escape(request.url.host)}(?::\\d+)?/"
-            )
+            // Cloudflare puede guardar cf_clearance después de la última petición
+            // al propio dominio. WebViewResolver solo ejecuta el callback para URLs
+            // incluidas en additionalUrls; por eso también observamos subrecursos
+            // externos (por ejemplo analytics) y comprobamos CookieManager allí.
+            // Así capturamos la cookie en cuanto aparece, sin esperar otra navegación.
+            val cookieProbeRegex = Regex("^https?://")
             try {
                 val resolver = WebViewResolver(
                     interceptUrl = Regex(".^"),
