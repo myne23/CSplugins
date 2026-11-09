@@ -6,7 +6,7 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.3.2")
 }
 
-version = 31
+version = 32
 
 cloudstream {
     description = "AnimeLHD (animelatinohd.com): anime sub, latino y castellano"
