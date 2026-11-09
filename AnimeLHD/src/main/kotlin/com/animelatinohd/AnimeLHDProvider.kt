@@ -199,11 +199,11 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         val ua = try {
             CloudStreamApp.context?.let { android.webkit.WebSettings.getDefaultUserAgent(it) }
         } catch (e: Exception) {
-            log("CF UA DEFAULT ERROR | \${e.javaClass.simpleName}: \${e.message}")
+            log("CF UA DEFAULT ERROR | ${e.javaClass.simpleName}: ${e.message}")
             null
         }?.takeIf { it.isNotBlank() } ?: WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: USER_AGENT
         try { CloudStreamApp.setKey("AnimeLHD_CF_UA", ua) } catch (e: Exception) {
-            log("CF UA SAVE ERROR | \${e.javaClass.simpleName}: \${e.message}")
+            log("CF UA SAVE ERROR | ${e.javaClass.simpleName}: ${e.message}")
         }
         return ua
     }
@@ -212,9 +212,9 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         val ua = WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: return
         try {
             CloudStreamApp.setKey("AnimeLHD_CF_UA", ua)
-            log("CF UA SAVED | \${ua.take(40)}")
+            log("CF UA SAVED | ${ua.take(40)}")
         } catch (e: Exception) {
-            log("CF UA SAVE ERROR | \${e.javaClass.simpleName}: \${e.message}")
+            log("CF UA SAVE ERROR | ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
@@ -283,10 +283,10 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         val response = try {
             chain.proceed(initialRequest)
         } catch (e: Exception) {
-            log("CF INITIAL ERROR | cookie=\${if (initialCookies != null) "sí" else "no"} | ua=\${ua.take(40)} | \${e.javaClass.simpleName}: \${e.message}")
+            log("CF INITIAL ERROR | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}")
             throw e
         }
-        log("CF INITIAL | cookie=\${if (initialCookies != null) "sí" else "no"} | ua=\${ua.take(40)} | code=\${response.code} | \${request.url.encodedPath}")
+        log("CF INITIAL | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | code=${response.code} | ${request.url.encodedPath}")
         if (!isChallenge(response)) return@runBlocking response
         response.close()
 
@@ -297,12 +297,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             if (!isChallenge(retry)) {
                 savedCookies[host] = available
                 lastFailedAt = 0L
-                log("CF COOKIE REUSE VERIFIED | \${request.url.encodedPath} | code=\${retry.code}")
+                log("CF COOKIE REUSE VERIFIED | ${request.url.encodedPath} | code=${retry.code}")
                 return@runBlocking retry
             }
             retry.close()
             rejectedCookies = available
-            log("CF COOKIE RETRY REJECTED | \${request.url.encodedPath} | ua=\${ua.take(40)}")
+            log("CF COOKIE RETRY REJECTED | ${request.url.encodedPath} | ua=${ua.take(40)}")
         }
 
         // Mutex solo para coordinar WebView. La verificación HTTP ocurre fuera.
@@ -310,11 +310,11 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             val latest = readClearanceCookies(url) ?: savedCookies[host]
             if (isNewClearance(latest, rejectedCookies)) {
                 savedCookies[host] = latest!!
-                log("CF COOKIE REFRESH FOUND | \${request.url.encodedPath}")
+                log("CF COOKIE REFRESH FOUND | ${request.url.encodedPath}")
                 return@withLock latest
             }
             if (System.currentTimeMillis() - lastFailedAt < 30_000L) {
-                log("CF BYPASS COOLDOWN | \${request.url.encodedPath}")
+                log("CF BYPASS COOLDOWN | ${request.url.encodedPath}")
                 return@withLock null
             }
 
@@ -333,14 +333,14 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                     val fresh = readClearanceCookies(url)
                     if (isNewClearance(fresh, rejectedCookies)) {
                         savedCookies[host] = fresh!!
-                        log("CF WEBVIEW COOKIE READY | \${request.url.encodedPath} | elapsedMs=\${(System.nanoTime() - started) / 1_000_000L}")
+                        log("CF WEBVIEW COOKIE READY | ${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - started) / 1_000_000L}")
                         true
                     } else false
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                log("CF WEBVIEW ERROR | \${e.javaClass.simpleName}: \${e.message}")
+                log("CF WEBVIEW ERROR | ${e.javaClass.simpleName}: ${e.message}")
             }
 
             var fresh = readClearanceCookies(url)
@@ -351,11 +351,11 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             }
             if (!isNewClearance(fresh, rejectedCookies)) {
                 lastFailedAt = System.currentTimeMillis()
-                log("CF BYPASS UNAVAILABLE | no apareció clearance nuevo | \${request.url.encodedPath}")
+                log("CF BYPASS UNAVAILABLE | no apareció clearance nuevo | ${request.url.encodedPath}")
                 return@withLock null
             }
             savedCookies[host] = fresh!!
-            log("CF BYPASS COOKIE CAPTURED | \${request.url.encodedPath} | elapsedMs=\${(System.nanoTime() - started) / 1_000_000L}")
+            log("CF BYPASS COOKIE CAPTURED | ${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - started) / 1_000_000L}")
             fresh
         }
 
@@ -368,11 +368,11 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             verified.close()
             savedCookies.remove(host)
             lastFailedAt = System.currentTimeMillis()
-            log("CF BYPASS REJECTED | code=403/503 | \${request.url.encodedPath}")
+            log("CF BYPASS REJECTED | code=403/503 | ${request.url.encodedPath}")
             return@runBlocking chain.proceed(withCookiesAndUa(withoutClearance(request), null, ua))
         }
         lastFailedAt = 0L
-        log("CF BYPASS VERIFIED | code=\${verified.code} | \${request.url.encodedPath}")
+        log("CF BYPASS VERIFIED | code=${verified.code} | ${request.url.encodedPath}")
         verified
     }
 
