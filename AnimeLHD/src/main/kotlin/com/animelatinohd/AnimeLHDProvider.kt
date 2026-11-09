@@ -198,8 +198,6 @@ private fun MainAPI.toSearch(o: JSONObject): SearchResponse? {
 
 private class AnimeLHDCloudflareKiller : Interceptor {
     private val savedCookies = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
-    @Volatile private var coldCookieTestDone = false
-
     private val bypassMutex = Mutex()
     private val cloudflareServers = setOf("cloudflare", "cloudflare-nginx")
     private val errorCodes = setOf(403, 503)
@@ -224,8 +222,10 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private fun persistWebViewUserAgent() {
         val ua = WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: return
         try {
+            val stored = CloudStreamApp.getKey("AnimeLHD_CF_UA", "")
+            if (stored == ua) return
             CloudStreamApp.setKey("AnimeLHD_CF_UA", ua)
-            log("CF UA SAVED | ${ua.take(40)}")
+            log("CF UA SAVED | changed=true | ${ua.take(40)}")
         } catch (e: Exception) {
             log("CF UA SAVE ERROR | ${e.javaClass.simpleName}: ${e.message}")
         }
@@ -286,6 +286,27 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         }
     }
 
+    /*
+     * Prefer the cookie captured and verified by this resolver over a stale
+     * CookieManager snapshot. Concurrent requests may have read the old jar
+     * before the WebView finished its challenge.
+     */
+    private fun latestClearance(
+        url: String,
+        host: String,
+        rejected: Map<String, String>?
+    ): Map<String, String>? {
+        val saved = savedCookies[host]
+        val jar = readClearanceCookies(url)
+        val rejectedValue = clearanceValue(rejected)
+        return when {
+            saved != null && clearanceValue(saved) != rejectedValue -> saved
+            jar != null && clearanceValue(jar) != rejectedValue -> jar
+            saved != null -> saved
+            else -> jar
+        }
+    }
+
     override fun intercept(chain: Interceptor.Chain): Response = runBlocking {
         val request = chain.request()
         val host = request.url.host
@@ -299,11 +320,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         } catch (e: CancellationException) {
             throw e
         } catch (e: IOException) {
-            // OkHttp suele cancelar las peticiones duplicadas al reconstruir el home.
-            // No convertir una cancelación esperada en ruido de error.
-            if (!e.message.orEmpty().contains("canceled", ignoreCase = true)) {
-                log("CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}")
+            // OkHttp puede cancelar requests duplicadas al reconstruir el home.
+            // Propagarlo como cancelación evita tratarlo como un fallo HTTP normal.
+            if (e.message.orEmpty().contains("canceled", ignoreCase = true)) {
+                throw CancellationException("AnimeLHD request canceled").apply { initCause(e) }
             }
+            log("CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}")
             throw e
         } catch (e: Exception) {
             log("CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}")
@@ -315,7 +337,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         response.close()
 
         var rejectedCookies = initialCookies
-        val available = readClearanceCookies(url) ?: savedCookies[host]
+        val available = latestClearance(url, host, initialCookies)
         if (available != null && clearanceValue(available) != clearanceValue(initialCookies)) {
             val retry = proceed(request, available, ua)
             if (!isChallenge(retry)) {
@@ -331,7 +353,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 
         // Mutex solo para coordinar WebView. La verificación HTTP ocurre fuera.
         val cookiesForRetry: Map<String, String>? = bypassMutex.withLock {
-            val latest = readClearanceCookies(url) ?: savedCookies[host]
+            val latest = latestClearance(url, host, rejectedCookies)
             if (isNewClearance(latest, rejectedCookies)) {
                 savedCookies[host] = latest!!
                 log("CF COOKIE REFRESH FOUND | ${request.url.encodedPath}")
@@ -367,11 +389,11 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 log("CF WEBVIEW ERROR | ${e.javaClass.simpleName}: ${e.message}")
             }
 
-            var fresh = readClearanceCookies(url)
+            var fresh = latestClearance(url, host, rejectedCookies)
             val until = System.nanoTime() + 6_000_000_000L
             while (!isNewClearance(fresh, rejectedCookies) && System.nanoTime() < until) {
                 delay(300)
-                fresh = readClearanceCookies(url)
+                fresh = latestClearance(url, host, rejectedCookies)
             }
             if (!isNewClearance(fresh, rejectedCookies)) {
                 lastFailedAt = System.currentTimeMillis()
