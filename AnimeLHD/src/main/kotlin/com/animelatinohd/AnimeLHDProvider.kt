@@ -11,6 +11,10 @@ import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -32,6 +36,7 @@ import javax.crypto.spec.SecretKeySpec
 import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
+import java.io.IOException
 
 /* ====================================================================
  * Config
@@ -44,7 +49,9 @@ private const val API = "https://website.animelatinohd.com"
 private const val TMDB = "https://image.tmdb.org/t/p"
 
 private const val HOME_CACHE_MS = 300_000L
-private const val PAGE_CACHE_MS = 60_000L
+private const val PAGE_CACHE_MS = 900_000L
+private const val HOME_DISK_KEY = "AnimeLHD_HOME_DISK_V1"
+private const val LATINOS_PAGE1_DISK_KEY = "AnimeLHD_LATINOS_PAGE1_DISK_V1"
 private const val PAGE_CACHE_MAX = 80
 private const val API_UNAUTHORIZED_COOLDOWN_MS = 10 * 60 * 1000L
 private const val BRIDGE_TIMEOUT_MS = 10_000L
@@ -280,13 +287,24 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         val ua = stableUserAgent()
         val initialCookies = readClearanceCookies(url)
         val initialRequest = withCookiesAndUa(request, initialCookies, ua)
+        val proceedStarted = System.nanoTime()
         val response = try {
             chain.proceed(initialRequest)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            // OkHttp suele cancelar las peticiones duplicadas al reconstruir el home.
+            // No convertir una cancelación esperada en ruido de error.
+            if (!e.message.orEmpty().contains("canceled", ignoreCase = true)) {
+                log("CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}")
+            }
+            throw e
         } catch (e: Exception) {
-            log("CF INITIAL ERROR | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}")
+            log("CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}")
             throw e
         }
-        log("CF INITIAL | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | code=${response.code} | ${request.url.encodedPath}")
+        val proceedMs = (System.nanoTime() - proceedStarted) / 1_000_000L
+        log("CF INITIAL | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | code=${response.code} | proceedMs=${proceedMs} | server=${response.header("Server").orEmpty()} | cf-cache-status=${response.header("cf-cache-status").orEmpty()} | age=${response.header("age").orEmpty()} | server-timing=${response.header("server-timing").orEmpty()} | ${request.url.encodedPath}")
         if (!isChallenge(response)) return@runBlocking response
         response.close()
 
@@ -451,6 +469,37 @@ private object AnimeLHDHomeState {
     val fetchMutex = Mutex()
 }
 
+private object AnimeLHDBackgroundRefresh {
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val homeMutex = Mutex()
+    val latinosMutex = Mutex()
+}
+
+private fun readHomeDiskCache(): AnimeLHDHomeData? = try {
+    val raw = CloudStreamApp.getKey(HOME_DISK_KEY, "")
+    if (raw.isNullOrBlank()) null else {
+        val json = JSONObject(raw)
+        AnimeLHDHomeData(
+            json.optJSONArray("episodes")?.objs() ?: emptyList(),
+            json.optJSONArray("animes")?.objs() ?: emptyList()
+        ).takeIf { it.episodes.isNotEmpty() || it.animes.isNotEmpty() }
+    }
+} catch (e: Exception) {
+    log("HOME DISK CACHE READ ERROR | ${e.javaClass.simpleName}")
+    null
+}
+
+private fun writeHomeDiskCache(data: AnimeLHDHomeData) {
+    try {
+        val json = JSONObject()
+            .put("episodes", JSONArray().apply { data.episodes.forEach { put(it) } })
+            .put("animes", JSONArray().apply { data.animes.forEach { put(it) } })
+        CloudStreamApp.setKey(HOME_DISK_KEY, json.toString())
+    } catch (e: Exception) {
+        log("HOME DISK CACHE WRITE ERROR | ${e.javaClass.simpleName}")
+    }
+}
+
 /* ====================================================================
  * Provider
  * ==================================================================== */
@@ -541,12 +590,34 @@ class AnimeLHDProvider : MainAPI() {
     private suspend fun fetch(
         url: String,
         json: Boolean = false,
-        extraHeaders: Map<String, String> = emptyMap()
+        extraHeaders: Map<String, String> = emptyMap(),
+        forceNetwork: Boolean = false
     ): String? {
         val cacheable = !json && url.startsWith("$WEB/")
-        if (cacheable) cachedPage(url)?.let {
+        if (cacheable && !forceNetwork) cachedPage(url)?.let {
             log("HTTP CACHE HIT | " + safeUrl(url))
             return it
+        }
+
+        // Caché persistente stale-while-revalidate solo para la primera página
+        // de Latinos: se muestra inmediatamente y se actualiza fuera del hilo UI.
+        if (cacheable && !forceNetwork && url == "$WEB/latinos?page=1") {
+            val diskHtml = try { CloudStreamApp.getKey(LATINOS_PAGE1_DISK_KEY, "") } catch (_: Exception) { "" }
+            if (!diskHtml.isNullOrBlank()) {
+                rememberPage(url, diskHtml)
+                if (AnimeLHDBackgroundRefresh.latinosMutex.tryLock()) {
+                    AnimeLHDBackgroundRefresh.scope.launch {
+                        try {
+                            log("LATINOS DISK CACHE HIT | refresco en segundo plano")
+                            fetch(url, forceNetwork = true)
+                        } finally {
+                            AnimeLHDBackgroundRefresh.latinosMutex.unlock()
+                        }
+                    }
+                }
+                log("HTTP DISK CACHE HIT | " + safeUrl(url))
+                return diskHtml
+            }
         }
 
         return try {
@@ -581,6 +652,10 @@ class AnimeLHDProvider : MainAPI() {
 
             if (response.isSuccessful) {
                 if (cacheable) rememberPage(url, body)
+                if (cacheable && url == "$WEB/latinos?page=1") {
+                    try { CloudStreamApp.setKey(LATINOS_PAGE1_DISK_KEY, body) }
+                    catch (e: Exception) { log("LATINOS DISK CACHE WRITE ERROR | ${e.javaClass.simpleName}") }
+                }
                 body
             } else {
                 log("HTTP ERROR BODY | " + body.take(180).replace("\n", " "))
@@ -651,12 +726,31 @@ class AnimeLHDProvider : MainAPI() {
         return (data?.objs() ?: emptyList()) to obj.optInt("last_page", 1)
     }
 
-    private suspend fun homeData(): AnimeLHDHomeData? {
+    private suspend fun homeData(forceRefresh: Boolean = false): AnimeLHDHomeData? {
         val now = System.currentTimeMillis()
         val cached = homeDataCache
-        if (cached != null && now - cached.first < HOME_CACHE_MS) {
+        if (!forceRefresh && cached != null && now - cached.first < HOME_CACHE_MS) {
             log("HOME DATA CACHE HIT | episodes=${cached.second.episodes.size} | animes=${cached.second.animes.size}")
             return cached.second
+        }
+
+        if (!forceRefresh) {
+            val diskData = readHomeDiskCache()
+            if (diskData != null) {
+                AnimeLHDHomeState.cache = System.currentTimeMillis() to diskData
+                if (AnimeLHDBackgroundRefresh.homeMutex.tryLock()) {
+                    AnimeLHDBackgroundRefresh.scope.launch {
+                        try {
+                            log("HOME DISK CACHE HIT | refresco en segundo plano")
+                            homeData(forceRefresh = true)
+                        } finally {
+                            AnimeLHDBackgroundRefresh.homeMutex.unlock()
+                        }
+                    }
+                }
+                log("HOME DATA DISK CACHE HIT | episodes=${diskData.episodes.size} | animes=${diskData.animes.size}")
+                return diskData
+            }
         }
 
         return homeFetchMutex.withLock {
@@ -664,7 +758,7 @@ class AnimeLHDProvider : MainAPI() {
             // suelen solicitar la misma portada en paralelo.
             val latest = homeDataCache
             val checkedAt = System.currentTimeMillis()
-            if (latest != null && checkedAt - latest.first < HOME_CACHE_MS) {
+            if (!forceRefresh && latest != null && checkedAt - latest.first < HOME_CACHE_MS) {
                 log("HOME DATA CACHE HIT (LOCK) | episodes=${latest.second.episodes.size} | animes=${latest.second.animes.size}")
                 return@withLock latest.second
             }
@@ -697,6 +791,7 @@ class AnimeLHDProvider : MainAPI() {
             val data = AnimeLHDHomeData(episodes, animes)
             if (episodes.isNotEmpty() || animes.isNotEmpty()) {
                 AnimeLHDHomeState.cache = System.currentTimeMillis() to data
+                writeHomeDiskCache(data)
             } else {
                 // No conservar una portada vacía: podría ser una respuesta
                 // incompleta o una página que cambió su estructura RSC.
