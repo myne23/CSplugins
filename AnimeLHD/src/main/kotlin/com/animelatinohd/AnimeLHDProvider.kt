@@ -59,6 +59,12 @@ private val VOE_CHALLENGE = Regex("""<altcha-widget[^>]+challenge=["']([^"']+)["
 private val VOE_SOURCE = Regex(""""source"\s*:\s*"([^"]+)"""")
 private val VOE_HEX_CHARS = "0123456789abcdef".toCharArray()
 
+/*
+ * Keep producing same-origin requests while Turnstile is open. WebViewResolver
+ * observes resource requests and can stop as soon as cf_clearance appears.
+ */
+private const val CF_COOKIE_PROBE_SCRIPT = """(function(){try{if(window.__animelhdCfProbe)return;window.__animelhdCfProbe=true;var n=0;var timer=setInterval(function(){if(++n>50){clearInterval(timer);return;}try{fetch('/favicon.ico?__animelhd_cf_probe='+Date.now(),{method:'GET',credentials:'include',cache:'no-store'}).catch(function(){});}catch(e){}},500);}catch(e){}})();"""
+
 
 private val LULU_HOSTS = listOf("luluvdoo.com", "luluvdo.com", "lulustream.com", "lulu.st")
 private const val BYSE_FALLBACK_HOST = "https://byse.sx"
@@ -179,8 +185,6 @@ private fun MainAPI.toSearch(o: JSONObject): SearchResponse? {
  * Cloudflare resolver sin timeout artificial
  * ==================================================================== */
 
-private data class CloudflareCookieResult(val cookies: Map<String, String>)
-
 private class AnimeLHDCloudflareKiller : Interceptor {
     private val savedCookies = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
     private val bypassMutex = Mutex()
@@ -188,195 +192,129 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private val errorCodes = setOf(403, 503)
     @Volatile private var lastFailedAt = 0L
 
+    private fun isChallenge(response: Response): Boolean {
+        val server = response.header("Server").orEmpty()
+        val mitigated = response.header("cf-mitigated").equals("challenge", ignoreCase = true)
+        return response.code in errorCodes &&
+            (mitigated || cloudflareServers.any { server.contains(it, ignoreCase = true) })
+    }
+
+    private fun readClearanceCookies(url: String): Map<String, String>? {
+        val raw = try {
+            CookieManager.getInstance()?.getCookie(url)
+        } catch (_: Exception) {
+            null
+        } ?: return null
+
+        val parsed = raw.split(";").mapNotNull { part ->
+            val pair = part.trim().split("=", limit = 2)
+            if (pair.size == 2 && pair[0].isNotBlank()) pair[0] to pair[1] else null
+        }.toMap()
+
+        return parsed.takeIf {
+            it.entries.any { entry ->
+                entry.key.equals("cf_clearance", ignoreCase = true) && entry.value.isNotBlank()
+            }
+        }
+    }
+
+    /**
+     * Elimina tanto la cookie host-only como las variantes Domain=www y
+     * Domain=.animelatinohd.com. Así el WebView no arranca con un clearance
+     * que Cloudflare ya rechazó.
+     */
+    private fun clearStaleClearance(url: String, host: String) {
+        try {
+            val cm = CookieManager.getInstance()
+            val rootDomain = host.removePrefix("www.")
+            val expiredCookies = listOf(
+                "cf_clearance=; Max-Age=0; Path=/; Secure",
+                "cf_clearance=; Max-Age=0; Domain=$host; Path=/; Secure",
+                "cf_clearance=; Max-Age=0; Domain=.$rootDomain; Path=/; Secure"
+            )
+            expiredCookies.forEach { cm.setCookie(url, it) }
+            cm.flush()
+            log("CF STALE CLEARANCE CLEARED | host=$host")
+        } catch (e: Exception) {
+            log("CF CLEARANCE CLEAR ERROR | ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
     override fun intercept(chain: Interceptor.Chain): Response = runBlocking {
         val request = chain.request()
         val host = request.url.host
+        val url = request.url.toString()
 
-        // Si WebView ya resolvió Cloudflare en una sesión anterior, reutilizamos
-        // su cookie desde la primera petición y evitamos provocar otro 403/503.
-        val initialRequest = try {
-            val rawCookies = CookieManager.getInstance()?.getCookie(request.url.toString())
-            if (rawCookies.isNullOrBlank() || !rawCookies.contains("cf_clearance", ignoreCase = true)) {
-                request
-            } else {
-                val merged = LinkedHashMap<String, String>()
-                // Las cookies del WebView tienen prioridad: request.cookies puede
-                // conservar el cf_clearance viejo del cliente NiceHttp.
-                request.cookies.forEach { (name, value) -> merged[name] = value }
-                rawCookies.split(";").mapNotNull { part ->
-                    val pair = part.trim().split("=", limit = 2)
-                    if (pair.size == 2 && pair[0].isNotBlank()) pair[0] to pair[1] else null
-                }.forEach { (name, value) -> merged[name] = value }
-                savedCookies[host] = merged
-                request.newBuilder()
-                    .header("Cookie", merged.entries.joinToString("; ") { (name, value) -> "$name=$value" })
-                    .header("User-Agent", WebViewResolver.webViewUserAgent ?: request.header("User-Agent") ?: USER_AGENT)
-                    .build()
+        // CookieManager prevalece sobre el jar HTTP: si ya hay clearance,
+        // lo enviamos desde el primer intento con el mismo User-Agent del WebView.
+        val initialCookies = readClearanceCookies(url)
+        val initialRequest = if (initialCookies != null) {
+            val merged = LinkedHashMap<String, String>().apply {
+                putAll(request.cookies)
+                putAll(initialCookies)
             }
-        } catch (_: Exception) {
+            request.newBuilder()
+                .header("Cookie", merged.entries.joinToString("; ") { (name, value) -> "$name=$value" })
+                .header("User-Agent", WebViewResolver.webViewUserAgent ?: request.header("User-Agent") ?: USER_AGENT)
+                .build()
+        } else {
             request
         }
 
-        // Petición normal primero; solo se abre WebView ante un challenge real.
         val response = chain.proceed(initialRequest)
-        val server = response.header("Server").orEmpty()
-        val mitigated = response.header("cf-mitigated").equals("challenge", ignoreCase = true)
-        val isCloudflareServer = cloudflareServers.any { server.contains(it, ignoreCase = true) }
-        val isChallenge = response.code in errorCodes && (mitigated || isCloudflareServer)
-
-        if (!isChallenge) {
-            return@runBlocking response
-        }
-
-        // Cerramos el body original antes de cualquier reintento.
+        if (!isChallenge(response)) return@runBlocking response
         response.close()
 
-        val bypassResult = bypassMutex.withLock {
-            // Si otra categoría acaba de fallar el desafío, no abrimos otro WebView.
-            // Así / y /latinos no pueden encadenar verificaciones de 60 s en la TV.
+        // Solo una petición resuelve Turnstile. Las demás esperan el mutex y,
+        // al entrar, prueban primero la cookie recién guardada en CookieManager.
+        bypassMutex.withLock {
+            val availableCookies = savedCookies[host] ?: readClearanceCookies(url)
+            if (availableCookies != null) {
+                val reuseResponse = proceed(request, availableCookies)
+                if (!isChallenge(reuseResponse)) {
+                    savedCookies[host] = availableCookies
+                    lastFailedAt = 0L
+                    log("CF COOKIE REUSE VERIFIED | ${request.url.encodedPath} | code=${reuseResponse.code}")
+                    return@withLock reuseResponse
+                }
+                reuseResponse.close()
+                savedCookies.remove(host)
+                clearStaleClearance(url, host)
+                log("CF COOKIE REJECTED | se limpia antes de renovar | ${request.url.encodedPath}")
+            }
+
+            // El cooldown solo se aplica después de un solve completo fallido.
+            // Nunca impide probar primero una cookie que haya aparecido mientras
+            // esta petición esperaba el mutex.
             if (System.currentTimeMillis() - lastFailedAt < 30_000L) {
-                log("CF BYPASS COOLDOWN | se evita otro WebView | ${request.url.encodedPath}")
+                log("CF BYPASS COOLDOWN | sin cookie válida | ${request.url.encodedPath}")
                 return@withLock chain.proceed(request)
             }
 
-            // Antes de abrir WebView, reintentamos una vez sin el cf_clearance
-            // viejo. En TV Cloudflare a veces rechaza esa cookie pero acepta una
-            // petición limpia unos cientos de milisegundos después.
-            delay(250)
-            val cleanCookies = request.cookies.filterKeys {
-                !it.equals("cf_clearance", ignoreCase = true)
-            }
-            val quickRequest = request.newBuilder().apply {
-                if (cleanCookies.isEmpty()) {
-                    removeHeader("Cookie")
-                } else {
-                    header("Cookie", cleanCookies.entries.joinToString("; ") { (name, value) -> "$name=$value" })
-                }
-            }.build()
-            val quickResponse = chain.proceed(quickRequest)
-            val quickServer = quickResponse.header("Server").orEmpty()
-            val quickMitigated = quickResponse.header("cf-mitigated").equals("challenge", ignoreCase = true)
-            val quickIsCloudflare = cloudflareServers.any { quickServer.contains(it, ignoreCase = true) }
-            val quickIsChallenge = quickResponse.code in errorCodes && (quickMitigated || quickIsCloudflare)
-            if (!quickIsChallenge) {
-                log("CF QUICK RETRY HIT | ${request.url.encodedPath} | code=${quickResponse.code}")
-                return@withLock quickResponse
-            }
-            log("CF QUICK RETRY MISS | ${request.url.encodedPath} | code=${quickResponse.code}")
-
-            // Si el reintento limpio también recibe el challenge, cerramos
-            // su respuesta y dejamos que el resolver WebView intente obtener
-            // cf_clearance. El cooldown global evita abrir dos WebViews a la vez
-            // cuando / y /latinos se cargan en paralelo.
-            quickResponse.close()
-
-            // Conservamos el clearance rechazado para no confundirlo con una
-            // cookie nueva: CookieManager puede seguir mostrando la cookie vencida.
-            var rejectedClearance: String? = null
-
-            // Otra petición pudo haber resuelto el challenge mientras esperábamos.
-            val cachedCookies = savedCookies[host]
-            if (cachedCookies != null) {
-                val cachedResponse = proceed(request, cachedCookies)
-                val cachedServer = cachedResponse.header("Server").orEmpty()
-                val cachedMitigated = cachedResponse.header("cf-mitigated")
-                    .equals("challenge", ignoreCase = true)
-                val cachedIsCloudflare = cloudflareServers.any {
-                    cachedServer.contains(it, ignoreCase = true)
-                }
-                val cachedIsChallenge = cachedResponse.code in errorCodes &&
-                    (cachedMitigated || cachedIsCloudflare)
-
-                if (!cachedIsChallenge) {
-                    log("CF COOKIE CACHE HIT | ${request.url.encodedPath} | code=${cachedResponse.code}")
-                    return@withLock cachedResponse
-                }
-
-                cachedResponse.close()
-                rejectedClearance = cachedCookies.entries.firstOrNull {
-                    it.key.equals("cf_clearance", ignoreCase = true)
-                }?.value
-                savedCookies.remove(host)
-                log("CF COOKIE CACHE EXPIRED | ${request.url.encodedPath}")
-            }
-
-            // CookieManager conserva cookies entre instancias del plugin y sesiones
-            // de navegación. Reutilizamos cf_clearance antes de abrir otro WebView.
-            fun readClearanceCookies(): Map<String, String>? {
-                val raw = try {
-                    CookieManager.getInstance()?.getCookie(request.url.toString())
-                } catch (_: Exception) {
-                    null
-                } ?: return null
-                if (!raw.contains("cf_clearance", ignoreCase = true)) return null
-                val parsed = raw.split(";").mapNotNull { part ->
-                    val pair = part.trim().split("=", limit = 2)
-                    if (pair.size == 2 && pair[0].isNotBlank()) pair[0] to pair[1] else null
-                }.toMap()
-                return parsed.takeIf { it.isNotEmpty() }
-            }
-
-            val persistedCookies = readClearanceCookies()
-            if (persistedCookies != null) {
-                savedCookies[host] = persistedCookies
-                val retry = proceed(request, persistedCookies)
-                val retryServer = retry.header("Server").orEmpty()
-                val retryMitigated = retry.header("cf-mitigated").equals("challenge", ignoreCase = true)
-                val retryIsCloudflare = cloudflareServers.any { retryServer.contains(it, ignoreCase = true) }
-                val retryIsChallenge = retry.code in errorCodes && (retryMitigated || retryIsCloudflare)
-                if (!retryIsChallenge) {
-                    log("CF COOKIE REUSE | ${request.url.encodedPath} | code=${retry.code}")
-                    return@withLock retry
-                }
-                retry.close()
-                rejectedClearance = persistedCookies.entries.firstOrNull {
-                    it.key.equals("cf_clearance", ignoreCase = true)
-                }?.value ?: rejectedClearance
-                log("CF COOKIE EXPIRED | ${request.url.encodedPath} | se renueva con WebView")
-                savedCookies.remove(host)
-            }
-
-            fun captureCookie(): Boolean {
-                // Este callback se ejecuta por cada recurso de WebView.
-                // No hacemos flush() aquí: es una operación de disco y repetirla
-                // durante Turnstile puede ralentizar toda la resolución.
-                val parsed = readClearanceCookies() ?: return false
-                val clearance = parsed.entries.firstOrNull {
-                    it.key.equals("cf_clearance", ignoreCase = true)
-                }?.value ?: return false
-
-                // No aceptamos inmediatamente el mismo clearance que Cloudflare
-                // acaba de rechazar. Esperamos a que WebView obtenga uno renovado.
-                if (!rejectedClearance.isNullOrBlank() && clearance == rejectedClearance) {
-                    return false
-                }
-
-                savedCookies[host] = parsed
-                return true
-            }
-
-            // Mismo mecanismo de observación que usa CloudflareKiller de CloudStream:
-            // comprobar CookieManager en cada recurso que solicita el WebView.
-            // No inyectamos un bucle JS de favicon: el resolver ya observa las
-            // peticiones reales del desafío y así evitamos generar tráfico artificial.
+            // También limpiamos cualquier clearance residual antes de abrir WebView.
+            clearStaleClearance(url, host)
             val probeStartedAt = System.nanoTime()
             try {
                 val resolver = WebViewResolver(
                     interceptUrl = Regex(".^"),
-                    additionalUrls = listOf(Regex("^https://www\\.animelatinohd\\.com/")),
+                    additionalUrls = listOf(Regex("^https?://")),
                     userAgent = null,
                     useOkhttp = false,
-                    // El WebView es el último recurso. En TV el intento anterior de 10 s
-                    // no consiguió clearance; limitar la espera evita bloquear el catálogo.
-                    timeout = 4_000
+                    script = CF_COOKIE_PROBE_SCRIPT,
+                    // En TV el solve en frío puede tardar 10–12 s. 25 s es
+                    // el límite de seguridad; si aparece la cookie, el callback corta antes.
+                    timeout = 25_000
                 )
                 resolver.resolveUsingWebView(request) {
-                    val captured = captureCookie()
-                    if (captured) {
+                    val fresh = readClearanceCookies(url)
+                    if (fresh != null) {
+                        savedCookies[host] = fresh
                         val elapsedMs = (System.nanoTime() - probeStartedAt) / 1_000_000L
                         log("CF WEBVIEW COOKIE READY | ${request.url.encodedPath} | elapsedMs=$elapsedMs")
+                        true
+                    } else {
+                        false
                     }
-                    captured
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -384,62 +322,39 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 log("CF WEBVIEW ERROR | ${e.javaClass.simpleName}: ${e.message}")
             }
 
-            // Persistimos una sola vez al terminar WebView, nunca por cada recurso.
-            try {
-                CookieManager.getInstance()?.flush()
-            } catch (_: Exception) {
+            // Algunos Android TV exponen cf_clearance en CookieManager unos
+            // instantes después de que WebView termina: esperamos hasta 6 s.
+            var fresh = readClearanceCookies(url)
+            val pollEnd = System.nanoTime() + 6_000_000_000L
+            while (fresh == null && System.nanoTime() < pollEnd) {
+                delay(300)
+                fresh = readClearanceCookies(url)
             }
 
-            // WebView puede no capturar el clearance aunque CookieManager lo actualice
-            // durante la navegación. Antes de abandonar, releemos el jar y repetimos
-            // la petición con las cookies más recientes (igual que hace una recarga manual).
-            val latestCookies = readClearanceCookies()
-            val latestClearance = latestCookies?.entries?.firstOrNull {
-                it.key.equals("cf_clearance", ignoreCase = true)
-            }?.value
-            // No reutilizar como "renovada" la misma cookie que Cloudflare
-            // rechazó antes de abrir WebView. CookieManager puede conservarla
-            // aunque el desafío no haya terminado correctamente.
-            val freshLatestCookies = latestCookies?.takeIf {
-                rejectedClearance.isNullOrBlank() || latestClearance != rejectedClearance
-            }
-            val cookies = savedCookies[host] ?: freshLatestCookies
-            if (cookies == null) {
+            if (fresh == null) {
                 lastFailedAt = System.currentTimeMillis()
-                log("CF BYPASS UNAVAILABLE | clearance ausente o rechazado | ${request.url.encodedPath}")
+                log("CF BYPASS UNAVAILABLE | cookie ausente tras WebView + polling | ${request.url.encodedPath}")
                 return@withLock chain.proceed(request)
             }
 
-            if (freshLatestCookies != null) {
-                savedCookies[host] = freshLatestCookies
+            savedCookies[host] = fresh
+            val elapsedMs = (System.nanoTime() - probeStartedAt) / 1_000_000L
+            log("CF BYPASS COOKIE CAPTURED | ${request.url.encodedPath} | elapsedMs=$elapsedMs")
+
+            val verified = proceed(request, fresh)
+            if (isChallenge(verified)) {
+                verified.close()
+                savedCookies.remove(host)
+                clearStaleClearance(url, host)
+                lastFailedAt = System.currentTimeMillis()
+                log("CF BYPASS REJECTED | code=403/503 | ${request.url.encodedPath}")
+                return@withLock chain.proceed(request)
             }
 
-            log("CF BYPASS COOKIE CAPTURED | ${request.url.encodedPath}")
-            // La cookie ya está compartida. Liberamos el mutex antes de verificarla
-            // para que / y /latinos puedan reintentarse en paralelo.
-            CloudflareCookieResult(freshLatestCookies ?: cookies)
+            lastFailedAt = 0L
+            log("CF BYPASS VERIFIED | code=${verified.code} | ${request.url.encodedPath}")
+            verified
         }
-
-        // Las rutas de caché y cooldown ya devuelven su Response directamente.
-        if (bypassResult is Response) return@runBlocking bypassResult
-
-        // La comprobación HTTP no debe mantener bloqueada a la otra categoría.
-        val retryCookies = (bypassResult as CloudflareCookieResult).cookies
-        val bypassResponse = proceed(request, retryCookies)
-        val bypassServer = bypassResponse.header("Server").orEmpty()
-        val bypassMitigated = bypassResponse.header("cf-mitigated").equals("challenge", ignoreCase = true)
-        val bypassIsCloudflare = cloudflareServers.any { bypassServer.contains(it, ignoreCase = true) }
-        val bypassRejected = bypassResponse.code in errorCodes && (bypassMitigated || bypassIsCloudflare)
-        if (bypassRejected) {
-            lastFailedAt = System.currentTimeMillis()
-            log("CF BYPASS REJECTED | code=${bypassResponse.code} | ${request.url.encodedPath}")
-            bypassResponse.close()
-            savedCookies.remove(host)
-            return@runBlocking chain.proceed(request)
-        }
-        lastFailedAt = 0L
-        log("CF BYPASS VERIFIED | code=${bypassResponse.code} | ${request.url.encodedPath}")
-        bypassResponse
     }
 
     /**
@@ -683,9 +598,14 @@ class AnimeLHDProvider : MainAPI() {
         log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)
         // El interceptor gestiona el único reintento limpio y limita WebView
         // a 4 s; repetir la página completa solo amplificaba el bloqueo de Cloudflare.
-        val html = fetch(htmlUrl)
+        var html = fetch(htmlUrl)
         if (html == null) {
-            log("HTML FALLBACK FAIL | una petición agotada")
+            log("HTML FALLBACK RETRY | espera 2500ms | " + safeUrl(htmlUrl))
+            delay(2_500)
+            html = fetch(htmlUrl)
+        }
+        if (html == null) {
+            log("HTML FALLBACK FAIL | dos intentos agotados")
             return emptyList<JSONObject>() to 1
         }
         log("HTML FALLBACK BODY | chars=" + html.length + " | hasNext=" + html.contains("self.__next_f.push"))
@@ -735,11 +655,17 @@ class AnimeLHDProvider : MainAPI() {
 
             val startedAt = System.currentTimeMillis()
             var html: String? = null
-            // Una sola petición: el interceptor ya hace un reintento HTTP limpio
-            // y, como máximo, un WebView de 4 s. Evitamos multiplicar la espera.
+            // Un único reintento de provider cubre fallos transitorios.
+            // El interceptor comparte y reutiliza la cookie; no abre otro WebView
+            // durante el cooldown si el solve anterior realmente falló.
             html = fetch("$WEB/")
             if (html == null) {
-                log("HOME DATA FETCH FAIL | una petición agotada")
+                log("HOME DATA RETRY | espera 2500ms")
+                delay(2_500)
+                html = fetch("$WEB/")
+            }
+            if (html == null) {
+                log("HOME DATA FETCH FAIL | dos intentos agotados")
                 return@withLock null
             }
             val flat = flattenRsc(html)
