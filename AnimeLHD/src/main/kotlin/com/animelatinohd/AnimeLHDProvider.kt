@@ -768,11 +768,11 @@ class AnimeLHDProvider : MainAPI() {
             // Un único reintento de provider cubre fallos transitorios.
             // El interceptor comparte y reutiliza la cookie; no abre otro WebView
             // durante el cooldown si el solve anterior realmente falló.
-            html = fetch("$WEB/")
+            html = fetch("$WEB/", forceNetwork = forceRefresh)
             if (html == null) {
                 log("HOME DATA RETRY | espera 2500ms")
                 delay(2_500)
-                html = fetch("$WEB/")
+                html = fetch("$WEB/", forceNetwork = forceRefresh)
             }
             if (html == null) {
                 log("HOME DATA FETCH FAIL | dos intentos agotados")
