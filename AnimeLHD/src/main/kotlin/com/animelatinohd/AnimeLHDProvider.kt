@@ -259,7 +259,6 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             val quickIsCloudflare = cloudflareServers.any { quickServer.contains(it, ignoreCase = true) }
             val quickIsChallenge = quickResponse.code in errorCodes && (quickMitigated || quickIsCloudflare)
             if (!quickIsChallenge) {
-                deferredHomeRetryAt = 0L
                 log("CF QUICK RETRY HIT | ${request.url.encodedPath} | code=${quickResponse.code}")
                 return@withLock quickResponse
             }
