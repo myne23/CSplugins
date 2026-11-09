@@ -200,21 +200,6 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private val savedCookies = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
     @Volatile private var coldCookieTestDone = false
 
-    /**
-     * TEMPORAL: activa una prueba HTTP sin enviar cf_clearance.
-     * No modifica las cookies persistentes de WebView.
-     */
-    @Volatile private var coldCookieTestLogged = false
-
-    private fun logColdCookieTestOnce() {
-        if (coldCookieTestLogged) return
-        synchronized(this) {
-            if (coldCookieTestLogged) return
-            savedCookies.clear()
-            log("CF COLD TEST | primera petición HTTP sin enviar cf_clearance | cookie persistente de WebView no modificada")
-            coldCookieTestLogged = true
-        }
-    }
     private val bypassMutex = Mutex()
     private val cloudflareServers = setOf("cloudflare", "cloudflare-nginx")
     private val errorCodes = setOf(403, 503)
@@ -306,15 +291,8 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         val host = request.url.host
         val url = request.url.toString()
         val ua = stableUserAgent()
-        val isAnimeLhdHost = host == "www.animelatinohd.com" || host == "animelatinohd.com"
-        if (isAnimeLhdHost) logColdCookieTestOnce()
-        // Prueba controlada: no adjuntar cf_clearance al HTTP inicial, aunque WebView aún la conserve.
-        val initialCookies = if (isAnimeLhdHost) null else readClearanceCookies(url)
-        val initialRequest = withCookiesAndUa(
-            if (isAnimeLhdHost) withoutClearance(request) else request,
-            initialCookies,
-            ua
-        )
+        val initialCookies = readClearanceCookies(url)
+        val initialRequest = withCookiesAndUa(request, initialCookies, ua)
         val proceedStarted = System.nanoTime()
         val response = try {
             chain.proceed(initialRequest)
