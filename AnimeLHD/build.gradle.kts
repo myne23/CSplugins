@@ -23,13 +23,18 @@ cloudstream {
 }
 
 android {
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+
     buildFeatures {
         buildConfig = true
     }
 }
 
 // AnimeLHD uses CloudStream APIs compiled for JVM 11.
-// Keep this override local to this plugin; the repository defaults to JVM 1.8.
+// Keep both compiler targets aligned, local to this plugin.
 tasks.withType<KotlinJvmCompile>().configureEach {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_11)
