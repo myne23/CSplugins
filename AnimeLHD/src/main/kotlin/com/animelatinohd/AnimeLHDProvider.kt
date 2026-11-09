@@ -1,6 +1,8 @@
 package com.animelatinohd
 
 import android.util.Log
+import android.os.Handler
+import android.os.Looper
 import com.lagradost.cloudstream3.*
 import android.webkit.CookieManager
 import com.lagradost.cloudstream3.USER_AGENT
@@ -200,7 +202,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 
     /**
      * TEMPORAL: elimina únicamente cf_clearance de AnimeLHD para una prueba
-     * real en frío. Se ejecuta una vez por proceso y debe retirarse después.
+     * real en frío. CookieManager.setCookie debe ejecutarse en el hilo principal.
      */
     private fun clearAnimeLhdClearanceForColdTest() {
         if (coldCookieTestDone) return
@@ -208,18 +210,29 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             if (coldCookieTestDone) return
             try {
                 val manager = CookieManager.getInstance()
-                val latch = CountDownLatch(3)
+                val latch = CountDownLatch(1)
                 val expired = "cf_clearance=; Max-Age=0; Path=/; Secure; SameSite=None"
-                manager.setCookie("https://www.animelatinohd.com/", expired) { latch.countDown() }
-                manager.setCookie("https://animelatinohd.com/", expired) { latch.countDown() }
-                manager.setCookie(
-                    "https://www.animelatinohd.com/",
-                    "cf_clearance=; Max-Age=0; Path=/; Domain=.animelatinohd.com; Secure; SameSite=None"
-                ) { latch.countDown() }
-                latch.await(2, TimeUnit.SECONDS)
-                manager.flush()
-                savedCookies.clear()
-                log("CF COLD TEST COOKIE RESET | solo cf_clearance de animelatinohd.com")
+                val mainHandler = Handler(Looper.getMainLooper())
+                val posted = mainHandler.post {
+                    try {
+                        manager.setCookie("https://www.animelatinohd.com/", expired)
+                        manager.setCookie("https://animelatinohd.com/", expired)
+                        manager.setCookie(
+                            "https://www.animelatinohd.com/",
+                            "cf_clearance=; Max-Age=0; Path=/; Domain=.animelatinohd.com; Secure; SameSite=None"
+                        )
+                        manager.flush()
+                        savedCookies.clear()
+                        log("CF COLD TEST COOKIE RESET | solicitado en hilo principal | solo cf_clearance de animelatinohd.com")
+                    } catch (e: Exception) {
+                        log("CF COLD TEST COOKIE RESET ERROR | ${e.javaClass.simpleName}: ${e.message}")
+                    } finally {
+                        latch.countDown()
+                    }
+                }
+                if (!posted || !latch.await(3, TimeUnit.SECONDS)) {
+                    throw IllegalStateException("No se pudo completar el reset en el hilo principal")
+                }
             } catch (e: Exception) {
                 log("CF COLD TEST COOKIE RESET ERROR | ${e.javaClass.simpleName}: ${e.message}")
             } finally {
