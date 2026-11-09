@@ -199,6 +199,17 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             (mitigated || cloudflareServers.any { server.contains(it, ignoreCase = true) })
     }
 
+    private fun withoutClearance(request: Request): Request {
+        val cleanCookies = request.cookies.filterKeys { !it.equals("cf_clearance", ignoreCase = true) }
+        return request.newBuilder().apply {
+            if (cleanCookies.isEmpty()) {
+                removeHeader("Cookie")
+            } else {
+                header("Cookie", cleanCookies.entries.joinToString("; ") { (name, value) -> "$name=$value" })
+            }
+        }.build()
+    }
+
     private fun readClearanceCookies(url: String): Map<String, String>? {
         val raw = try {
             CookieManager.getInstance()?.getCookie(url)
@@ -288,7 +299,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             // esta petición esperaba el mutex.
             if (System.currentTimeMillis() - lastFailedAt < 30_000L) {
                 log("CF BYPASS COOLDOWN | sin cookie válida | ${request.url.encodedPath}")
-                return@withLock chain.proceed(request)
+                return@withLock chain.proceed(withoutClearance(request))
             }
 
             // También limpiamos cualquier clearance residual antes de abrir WebView.
@@ -334,7 +345,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             if (fresh == null) {
                 lastFailedAt = System.currentTimeMillis()
                 log("CF BYPASS UNAVAILABLE | cookie ausente tras WebView + polling | ${request.url.encodedPath}")
-                return@withLock chain.proceed(request)
+                return@withLock chain.proceed(withoutClearance(request))
             }
 
             savedCookies[host] = fresh
@@ -348,7 +359,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 clearStaleClearance(url, host)
                 lastFailedAt = System.currentTimeMillis()
                 log("CF BYPASS REJECTED | code=403/503 | ${request.url.encodedPath}")
-                return@withLock chain.proceed(request)
+                return@withLock chain.proceed(withoutClearance(request))
             }
 
             lastFailedAt = 0L
@@ -596,8 +607,8 @@ class AnimeLHDProvider : MainAPI() {
         // las páginas públicas de Next.js para categorías y búsqueda.
         log("API SKIP | se usa HTML directamente")
         log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)
-        // El interceptor gestiona el único reintento limpio y limita WebView
-        // a 4 s; repetir la página completa solo amplificaba el bloqueo de Cloudflare.
+        // El interceptor resuelve el challenge una sola vez y comparte la cookie
+        // con las categorías que esperan; aquí solo repetimos ante un fallo transitorio.
         var html = fetch(htmlUrl)
         if (html == null) {
             log("HTML FALLBACK RETRY | espera 2500ms | " + safeUrl(htmlUrl))
