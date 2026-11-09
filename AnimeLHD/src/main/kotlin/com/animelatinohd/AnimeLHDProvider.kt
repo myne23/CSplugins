@@ -264,18 +264,10 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             }
             log("CF QUICK RETRY MISS | ${request.url.encodedPath} | code=${quickResponse.code}")
 
-            // La portada y /latinos no deben abrir WebView: en TV consume
-            // varios segundos, no obtiene cf_clearance y bloquea las demás
-            // peticiones por el cooldown. Sus funciones llamadoras hacen
-            // reintentos HTTP escalonados y el log ya mostró respuestas 200
-            // posteriores sin que WebView completara el desafío.
-            val isHomeRequest = request.url.encodedPath == "/" ||
-                request.url.encodedPath == "/latinos"
-            if (isHomeRequest) {
-                log("CF HOME HTTP RETRY | ${request.url.encodedPath} | WebView omitido; reintenta HTTP")
-                return@withLock quickResponse
-            }
-
+            // Si el reintento limpio también recibe el challenge, cerramos
+            // su respuesta y dejamos que el resolver WebView intente obtener
+            // cf_clearance. El cooldown global evita abrir dos WebViews a la vez
+            // cuando / y /latinos se cargan en paralelo.
             quickResponse.close()
 
             // Conservamos el clearance rechazado para no confundirlo con una
