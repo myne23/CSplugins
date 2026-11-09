@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.*
 import android.webkit.CookieManager
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.network.WebViewResolver
+import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.nicehttp.Requests.Companion.await
 import com.lagradost.nicehttp.cookies
 import okhttp3.Interceptor
@@ -496,9 +497,10 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 // dos cargas simultáneas podían abrir WebViews independientes y competir
 // por renovar la misma cookie de Cloudflare.
 private object AnimeLHDCloudflareState {
+    // Usamos el mismo resolver oficial que AnimeOnline: evita el interceptor
+    // personalizado que serializaba las peticiones y retenía el home tras un 403.
     val killer = AnimeLHDCloudflareKiller()
-    // Resolver propio con timeout corto y control de reintentos para Android TV.
-    val interceptor = killer
+    val interceptor = CloudflareKiller()
     val bootstrapMutex = Mutex()
 
     @Volatile
@@ -536,6 +538,7 @@ class AnimeLHDProvider : MainAPI() {
 
     override val mainPage = mainPageOf(
         "recent" to "Últimos episodios",
+        "latinos" to "Latinos",
         "added" to "Animes agregados"
     )
 
