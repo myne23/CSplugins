@@ -37,6 +37,8 @@ import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /* ====================================================================
  * Config
@@ -194,6 +196,37 @@ private fun MainAPI.toSearch(o: JSONObject): SearchResponse? {
 
 private class AnimeLHDCloudflareKiller : Interceptor {
     private val savedCookies = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
+    @Volatile private var coldCookieTestDone = false
+
+    /**
+     * TEMPORAL: elimina únicamente cf_clearance de AnimeLHD para una prueba
+     * real en frío. Se ejecuta una vez por proceso y debe retirarse después.
+     */
+    private fun clearAnimeLhdClearanceForColdTest() {
+        if (coldCookieTestDone) return
+        synchronized(this) {
+            if (coldCookieTestDone) return
+            try {
+                val manager = CookieManager.getInstance()
+                val latch = CountDownLatch(3)
+                val expired = "cf_clearance=; Max-Age=0; Path=/; Secure; SameSite=None"
+                manager.setCookie("https://www.animelatinohd.com/", expired) { latch.countDown() }
+                manager.setCookie("https://animelatinohd.com/", expired) { latch.countDown() }
+                manager.setCookie(
+                    "https://www.animelatinohd.com/",
+                    "cf_clearance=; Max-Age=0; Path=/; Domain=.animelatinohd.com; Secure; SameSite=None"
+                ) { latch.countDown() }
+                latch.await(2, TimeUnit.SECONDS)
+                manager.flush()
+                savedCookies.clear()
+                log("CF COLD TEST COOKIE RESET | solo cf_clearance de animelatinohd.com")
+            } catch (e: Exception) {
+                log("CF COLD TEST COOKIE RESET ERROR | ${e.javaClass.simpleName}: ${e.message}")
+            } finally {
+                coldCookieTestDone = true
+            }
+        }
+    }
     private val bypassMutex = Mutex()
     private val cloudflareServers = setOf("cloudflare", "cloudflare-nginx")
     private val errorCodes = setOf(403, 503)
@@ -285,6 +318,9 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         val host = request.url.host
         val url = request.url.toString()
         val ua = stableUserAgent()
+        if (host == "www.animelatinohd.com" || host == "animelatinohd.com") {
+            clearAnimeLhdClearanceForColdTest()
+        }
         val initialCookies = readClearanceCookies(url)
         val initialRequest = withCookiesAndUa(request, initialCookies, ua)
         val proceedStarted = System.nanoTime()
