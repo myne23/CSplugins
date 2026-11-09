@@ -237,6 +237,32 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 return@withLock chain.proceed(request)
             }
 
+            // Antes de abrir WebView, reintentamos una vez sin el cf_clearance
+            // viejo. En TV Cloudflare a veces rechaza esa cookie pero acepta una
+            // petición limpia unos cientos de milisegundos después.
+            delay(250)
+            val cleanCookies = request.cookies.filterKeys {
+                !it.equals("cf_clearance", ignoreCase = true)
+            }
+            val quickRequest = request.newBuilder().apply {
+                if (cleanCookies.isEmpty()) {
+                    removeHeader("Cookie")
+                } else {
+                    header("Cookie", cleanCookies.entries.joinToString("; ") { (name, value) -> "$name=$value" })
+                }
+            }.build()
+            val quickResponse = chain.proceed(quickRequest)
+            val quickServer = quickResponse.header("Server").orEmpty()
+            val quickMitigated = quickResponse.header("cf-mitigated").equals("challenge", ignoreCase = true)
+            val quickIsCloudflare = cloudflareServers.any { quickServer.contains(it, ignoreCase = true) }
+            val quickIsChallenge = quickResponse.code in errorCodes && (quickMitigated || quickIsCloudflare)
+            if (!quickIsChallenge) {
+                log("CF QUICK RETRY HIT | ${request.url.encodedPath} | code=${quickResponse.code}")
+                return@withLock quickResponse
+            }
+            log("CF QUICK RETRY MISS | ${request.url.encodedPath} | code=${quickResponse.code}")
+            quickResponse.close()
+
             // Conservamos el clearance rechazado para no confundirlo con una
             // cookie nueva: CookieManager puede seguir mostrando la cookie vencida.
             var rejectedClearance: String? = null
@@ -330,12 +356,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             try {
                 val resolver = WebViewResolver(
                     interceptUrl = Regex(".^"),
-                    additionalUrls = listOf(Regex(".")),
+                    additionalUrls = listOf(Regex("^https://www\\.animelatinohd\\.com/")),
                     userAgent = null,
                     useOkhttp = false,
-                    // Turnstile puede tardar más de 12 s en Android TV.
-                    // Un único WebView queda protegido por bypassMutex.
-                    timeout = 30_000
+                    // El WebView es el último recurso. En los TV probados no
+                    // consiguió clearance ni tras 30 s; no bloquear el catálogo tanto tiempo.
+                    timeout = 10_000
                 )
                 resolver.resolveUsingWebView(request) {
                     val captured = captureCookie()
