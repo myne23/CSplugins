@@ -222,8 +222,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private fun persistWebViewUserAgent() {
         val ua = WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: return
         try {
-            val stored = CloudStreamApp.getKey("AnimeLHD_CF_UA", "")
-            if (stored == ua) return
+            if (stableUserAgent() == ua) return
             CloudStreamApp.setKey("AnimeLHD_CF_UA", ua)
             log("CF UA SAVED | changed=true | ${ua.take(40)}")
         } catch (e: Exception) {
