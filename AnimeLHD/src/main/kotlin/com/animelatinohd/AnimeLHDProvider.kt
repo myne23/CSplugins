@@ -476,7 +476,8 @@ private object AnimeLHDBackgroundRefresh {
 }
 
 private fun readHomeDiskCache(): AnimeLHDHomeData? = try {
-    val raw = CloudStreamApp.getKey(HOME_DISK_KEY, "") as? String ?: ""
+    val raw = CloudStreamApp.getKey("AnimeLHD", HOME_DISK_KEY, "") as? String ?: ""
+    log("HOME DISK CACHE READ | context=${CloudStreamApp.context != null} | chars=${raw.length}")
     if (raw.isBlank()) null else {
         val json = JSONObject(raw)
         AnimeLHDHomeData(
@@ -494,7 +495,9 @@ private fun writeHomeDiskCache(data: AnimeLHDHomeData) {
         val json = JSONObject()
             .put("episodes", JSONArray().apply { data.episodes.forEach { put(it) } })
             .put("animes", JSONArray().apply { data.animes.forEach { put(it) } })
-        CloudStreamApp.setKey(HOME_DISK_KEY, json.toString())
+        CloudStreamApp.setKey("AnimeLHD", HOME_DISK_KEY, json.toString())
+        val saved = CloudStreamApp.getKey("AnimeLHD", HOME_DISK_KEY, "") as? String ?: ""
+        log("HOME DISK CACHE WRITE | context=${CloudStreamApp.context != null} | chars=${saved.length} | verified=${saved == json.toString()}")
     } catch (e: Exception) {
         log("HOME DISK CACHE WRITE ERROR | ${e.javaClass.simpleName}")
     }
@@ -602,7 +605,7 @@ class AnimeLHDProvider : MainAPI() {
         // Caché persistente stale-while-revalidate solo para la primera página
         // de Latinos: se muestra inmediatamente y se actualiza fuera del hilo UI.
         if (cacheable && !forceNetwork && url == "$WEB/latinos?page=1") {
-            val diskHtml = try { CloudStreamApp.getKey(LATINOS_PAGE1_DISK_KEY, "") } catch (_: Exception) { "" }
+            val diskHtml = try { CloudStreamApp.getKey("AnimeLHD", LATINOS_PAGE1_DISK_KEY, "") as? String ?: "" } catch (_: Exception) { "" }
             if (!diskHtml.isNullOrBlank()) {
                 rememberPage(url, diskHtml)
                 if (AnimeLHDBackgroundRefresh.latinosMutex.tryLock()) {
@@ -653,7 +656,9 @@ class AnimeLHDProvider : MainAPI() {
             if (response.isSuccessful) {
                 if (cacheable) rememberPage(url, body)
                 if (cacheable && url == "$WEB/latinos?page=1") {
-                    try { CloudStreamApp.setKey(LATINOS_PAGE1_DISK_KEY, body) }
+                    try { CloudStreamApp.setKey("AnimeLHD", LATINOS_PAGE1_DISK_KEY, body)
+                    val saved = CloudStreamApp.getKey("AnimeLHD", LATINOS_PAGE1_DISK_KEY, "") as? String ?: ""
+                    log("LATINOS DISK CACHE WRITE | context=${CloudStreamApp.context != null} | chars=${saved.length} | verified=${saved == body}") }
                     catch (e: Exception) { log("LATINOS DISK CACHE WRITE ERROR | ${e.javaClass.simpleName}") }
                 }
                 body
