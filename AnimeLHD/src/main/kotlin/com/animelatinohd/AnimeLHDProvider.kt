@@ -7,7 +7,6 @@ import com.lagradost.cloudstream3.*
 import android.webkit.CookieManager
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.network.WebViewResolver
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.nicehttp.Requests.Companion.await
 import com.lagradost.nicehttp.cookies
 import okhttp3.Interceptor
@@ -473,10 +472,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 // dos cargas simultáneas podían abrir WebViews independientes y competir
 // por renovar la misma cookie de Cloudflare.
 private object AnimeLHDCloudflareState {
-    // Usar el mismo resolver oficial de CloudStream que ya funciona en AnimeOnline.
-    // Se comparte entre instancias para evitar WebViews simultáneos.
-    val officialKiller = CloudflareKiller()
-    // Se conserva solo para leer cookies del WebView en la API del subdominio.
+    // Resolver Cloudflare personalizado de AnimeLHD, compartido entre instancias.
     val killer = AnimeLHDCloudflareKiller()
     val bootstrapMutex = Mutex()
 
@@ -709,11 +705,10 @@ class AnimeLHDProvider : MainAPI() {
             log("HTTP START | " + safeUrl(url))
 
             // Resolver oficial de CloudStream, igual que AnimeOnline.
-            // El bypass personalizado anterior no completaba Turnstile ni en móvil ni en TV.
             val response = app.get(
                 url,
                 headers = headers,
-                interceptor = AnimeLHDCloudflareState.officialKiller
+                interceptor = AnimeLHDCloudflareState.killer
             )
             val body = response.text
             log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | server=${response.headers["Server"].orEmpty()} | cfRay=${response.headers["cf-ray"].orEmpty()} | url=" + safeUrl(url))
