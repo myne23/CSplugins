@@ -202,7 +202,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 
     /**
      * TEMPORAL: elimina únicamente cf_clearance de AnimeLHD para una prueba
-     * real en frío. CookieManager.setCookie debe ejecutarse en el hilo principal.
+     * real en frío. Se verifica el resultado antes de continuar la petición.
      */
     private fun clearAnimeLhdClearanceForColdTest() {
         if (coldCookieTestDone) return
@@ -211,27 +211,43 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             try {
                 val manager = CookieManager.getInstance()
                 val latch = CountDownLatch(1)
-                val expired = "cf_clearance=; Max-Age=0; Path=/; Secure; SameSite=None"
                 val mainHandler = Handler(Looper.getMainLooper())
+                val expiredHost = "cf_clearance=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; Path=/; Secure; SameSite=None"
+                val expiredDomain = "$expiredHost; Domain=.animelatinohd.com"
                 val posted = mainHandler.post {
                     try {
-                        manager.setCookie("https://www.animelatinohd.com/", expired)
-                        manager.setCookie("https://animelatinohd.com/", expired)
-                        manager.setCookie(
-                            "https://www.animelatinohd.com/",
-                            "cf_clearance=; Max-Age=0; Path=/; Domain=.animelatinohd.com; Secure; SameSite=None"
-                        )
-                        manager.flush()
-                        savedCookies.clear()
-                        log("CF COLD TEST COOKIE RESET | solicitado en hilo principal | solo cf_clearance de animelatinohd.com")
+                        var callbacks = 0
+                        var accepted = 0
+                        fun completed(ok: Boolean) {
+                            if (ok) accepted++
+                            callbacks++
+                            if (callbacks == 3) {
+                                manager.flush()
+                                val wwwHasClearance = manager.getCookie("https://www.animelatinohd.com/")
+                                    .orEmpty().split(";").any {
+                                        it.trim().startsWith("cf_clearance=", ignoreCase = true) &&
+                                            it.trim().substringAfter("=").isNotBlank()
+                                    }
+                                val apexHasClearance = manager.getCookie("https://animelatinohd.com/")
+                                    .orEmpty().split(";").any {
+                                        it.trim().startsWith("cf_clearance=", ignoreCase = true) &&
+                                            it.trim().substringAfter("=").isNotBlank()
+                                    }
+                                savedCookies.clear()
+                                log("CF COLD TEST COOKIE RESET | callbacks=$accepted/3 | remainingWww=$wwwHasClearance | remainingApex=$apexHasClearance")
+                                latch.countDown()
+                            }
+                        }
+                        manager.setCookie("https://www.animelatinohd.com/", expiredHost) { completed(it) }
+                        manager.setCookie("https://animelatinohd.com/", expiredHost) { completed(it) }
+                        manager.setCookie("https://www.animelatinohd.com/", expiredDomain) { completed(it) }
                     } catch (e: Exception) {
                         log("CF COLD TEST COOKIE RESET ERROR | ${e.javaClass.simpleName}: ${e.message}")
-                    } finally {
                         latch.countDown()
                     }
                 }
-                if (!posted || !latch.await(3, TimeUnit.SECONDS)) {
-                    throw IllegalStateException("No se pudo completar el reset en el hilo principal")
+                if (!posted || !latch.await(4, TimeUnit.SECONDS)) {
+                    throw IllegalStateException("Timeout esperando confirmación de CookieManager")
                 }
             } catch (e: Exception) {
                 log("CF COLD TEST COOKIE RESET ERROR | ${e.javaClass.simpleName}: ${e.message}")
