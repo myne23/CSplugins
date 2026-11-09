@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.*
 import android.webkit.CookieManager
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.network.WebViewResolver
+import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.nicehttp.Requests.Companion.await
 import com.lagradost.nicehttp.cookies
 import okhttp3.Interceptor
@@ -472,8 +473,10 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 // dos cargas simultáneas podían abrir WebViews independientes y competir
 // por renovar la misma cookie de Cloudflare.
 private object AnimeLHDCloudflareState {
-    // Un único interceptor compartido para que las secciones no abran
-    // desafíos Turnstile simultáneos. WebView limitado a 4 s en TV.
+    // Usar el mismo resolver oficial de CloudStream que ya funciona en AnimeOnline.
+    // Se comparte entre instancias para evitar WebViews simultáneos.
+    val officialKiller = CloudflareKiller()
+    // Se conserva solo para leer cookies del WebView en la API del subdominio.
     val killer = AnimeLHDCloudflareKiller()
     val bootstrapMutex = Mutex()
 
@@ -705,13 +708,12 @@ class AnimeLHDProvider : MainAPI() {
 
             log("HTTP START | " + safeUrl(url))
 
-            // Igual que AnimeOnline: una sola petición con el resolver oficial.
-            // No hacemos bootstrap/reintentos manuales: en Android TV podían
-            // encadenar dos WebViews de 20 s y seguir trabajando tras el timeout.
+            // Resolver oficial de CloudStream, igual que AnimeOnline.
+            // El bypass personalizado anterior no completaba Turnstile ni en móvil ni en TV.
             val response = app.get(
                 url,
                 headers = headers,
-                interceptor = AnimeLHDCloudflareState.killer
+                interceptor = AnimeLHDCloudflareState.officialKiller
             )
             val body = response.text
             log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | server=${response.headers["Server"].orEmpty()} | cfRay=${response.headers["cf-ray"].orEmpty()} | url=" + safeUrl(url))
