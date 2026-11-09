@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.*
 import android.webkit.CookieManager
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.network.WebViewResolver
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.nicehttp.Requests.Companion.await
 import com.lagradost.nicehttp.cookies
 import okhttp3.Interceptor
@@ -497,10 +496,9 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 // dos cargas simultáneas podían abrir WebViews independientes y competir
 // por renovar la misma cookie de Cloudflare.
 private object AnimeLHDCloudflareState {
-    // Usamos el mismo resolver oficial que AnimeOnline: evita el interceptor
-    // personalizado que serializaba las peticiones y retenía el home tras un 403.
+    // Un único interceptor compartido para que las secciones no abran
+    // desafíos Turnstile simultáneos. WebView limitado a 4 s en TV.
     val killer = AnimeLHDCloudflareKiller()
-    val interceptor = CloudflareKiller()
     val bootstrapMutex = Mutex()
 
     @Volatile
@@ -645,7 +643,7 @@ class AnimeLHDProvider : MainAPI() {
             val response = app.get(
                 url,
                 headers = headers,
-                interceptor = AnimeLHDCloudflareState.interceptor
+                interceptor = AnimeLHDCloudflareState.killer
             )
             val body = response.text
             log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | server=${response.headers["Server"].orEmpty()} | cfRay=${response.headers["cf-ray"].orEmpty()} | url=" + safeUrl(url))
@@ -683,18 +681,11 @@ class AnimeLHDProvider : MainAPI() {
         // las páginas públicas de Next.js para categorías y búsqueda.
         log("API SKIP | se usa HTML directamente")
         log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)
-        var html: String? = null
-        val retryDelays = longArrayOf(0L, 650L, 1_200L, 1_800L)
-        for ((index, waitMs) in retryDelays.withIndex()) {
-            if (waitMs > 0L) delay(waitMs)
-            html = fetch(htmlUrl)
-            if (html != null) break
-            if (index < retryDelays.lastIndex) {
-                log("HTML FALLBACK RETRY | intento=${index + 2}/${retryDelays.size} | espera=${retryDelays[index + 1]}ms")
-            }
-        }
+        // El interceptor gestiona el único reintento limpio y limita WebView
+        // a 4 s; repetir la página completa solo amplificaba el bloqueo de Cloudflare.
+        val html = fetch(htmlUrl)
         if (html == null) {
-            log("HTML FALLBACK FAIL | agotados ${retryDelays.size} intentos HTTP")
+            log("HTML FALLBACK FAIL | una petición agotada")
             return emptyList<JSONObject>() to 1
         }
         log("HTML FALLBACK BODY | chars=" + html.length + " | hasNext=" + html.contains("self.__next_f.push"))
@@ -744,20 +735,11 @@ class AnimeLHDProvider : MainAPI() {
 
             val startedAt = System.currentTimeMillis()
             var html: String? = null
-            // Una sola portada alimenta Últimos episodios y Animes agregados.
-            // Seis intentos breves evitan que la primera sección quede vacía
-            // justo antes de que la segunda consiga una respuesta 200.
-            val retryDelays = longArrayOf(0L, 350L, 500L, 750L, 1_000L, 1_400L)
-            for ((index, waitMs) in retryDelays.withIndex()) {
-                if (waitMs > 0L) delay(waitMs)
-                html = fetch("$WEB/")
-                if (html != null) break
-                if (index < retryDelays.lastIndex) {
-                    log("HOME DATA RETRY | intento=${index + 2}/${retryDelays.size} | espera=${retryDelays[index + 1]}ms")
-                }
-            }
+            // Una sola petición: el interceptor ya hace un reintento HTTP limpio
+            // y, como máximo, un WebView de 4 s. Evitamos multiplicar la espera.
+            html = fetch("$WEB/")
             if (html == null) {
-                log("HOME DATA FETCH FAIL | agotados ${retryDelays.size} intentos HTTP")
+                log("HOME DATA FETCH FAIL | una petición agotada")
                 return@withLock null
             }
             val flat = flattenRsc(html)
