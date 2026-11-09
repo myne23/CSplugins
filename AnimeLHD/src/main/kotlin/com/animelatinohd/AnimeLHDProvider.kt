@@ -507,6 +507,17 @@ private fun writeHomeDiskCache(data: AnimeLHDHomeData) {
  * Provider
  * ==================================================================== */
 
+// Compartida entre instancias del plugin: CloudStream puede pedir la misma
+// página desde más de una instancia al reconstruir el home.
+private object AnimeLHDPageState {
+    val cacheLock = Any()
+    val cache = LinkedHashMap<String, Pair<Long, String>>(16, 0.75f, true)
+    private val requestLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+
+    fun requestMutex(url: String): Mutex =
+        requestLocks.computeIfAbsent(url) { Mutex() }
+}
+
 class AnimeLHDProvider : MainAPI() {
 
     override var mainUrl = WEB
@@ -552,8 +563,10 @@ class AnimeLHDProvider : MainAPI() {
 
     // Caché breve para páginas HTML: evita repetir descargas cuando CloudX
     // solicita dos veces la misma categoría, búsqueda o ficha casi al mismo tiempo.
-    private val pageCacheLock = Any()
-    private val pageCache = LinkedHashMap<String, Pair<Long, String>>(16, 0.75f, true)
+    private val pageCacheLock: Any
+        get() = AnimeLHDPageState.cacheLock
+    private val pageCache: LinkedHashMap<String, Pair<Long, String>>
+        get() = AnimeLHDPageState.cache
 
     private fun cachedPage(url: String): String? = synchronized(pageCacheLock) {
         val entry = pageCache[url] ?: return@synchronized null
@@ -591,6 +604,29 @@ class AnimeLHDProvider : MainAPI() {
      * interviene si recibe una respuesta 403/503 reconocida como Cloudflare.
      */
     private suspend fun fetch(
+        url: String,
+        json: Boolean = false,
+        extraHeaders: Map<String, String> = emptyMap(),
+        forceNetwork: Boolean = false
+    ): String? {
+        val cacheable = !json && url.startsWith("$WEB/")
+        if (!cacheable) return fetchUncoalesced(url, json, extraHeaders, forceNetwork)
+
+        // Si dos instancias solicitan la misma URL al abrir el home, una sola
+        // descarga; la segunda reutiliza la caché que dejó la primera.
+        val mutex = AnimeLHDPageState.requestMutex(url)
+        return mutex.withLock {
+            if (!forceNetwork) {
+                cachedPage(url)?.let {
+                    log("HTTP REQUEST COALESCED | " + safeUrl(url))
+                    return@withLock it
+                }
+            }
+            fetchUncoalesced(url, json, extraHeaders, forceNetwork)
+        }
+    }
+
+    private suspend fun fetchUncoalesced(
         url: String,
         json: Boolean = false,
         extraHeaders: Map<String, String> = emptyMap(),
