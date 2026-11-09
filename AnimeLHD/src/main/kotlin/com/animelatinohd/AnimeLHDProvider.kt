@@ -187,6 +187,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private val cloudflareServers = setOf("cloudflare", "cloudflare-nginx")
     private val errorCodes = setOf(403, 503)
     @Volatile private var lastFailedAt = 0L
+    @Volatile private var deferredHomeRetryAt = 0L
 
     override fun intercept(chain: Interceptor.Chain): Response = runBlocking {
         val request = chain.request()
@@ -224,7 +225,10 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         val isCloudflareServer = cloudflareServers.any { server.contains(it, ignoreCase = true) }
         val isChallenge = response.code in errorCodes && (mitigated || isCloudflareServer)
 
-        if (!isChallenge) return@runBlocking response
+        if (!isChallenge) {
+            deferredHomeRetryAt = 0L
+            return@runBlocking response
+        }
 
         // Cerramos el body original antes de cualquier reintento.
         response.close()
@@ -257,10 +261,31 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             val quickIsCloudflare = cloudflareServers.any { quickServer.contains(it, ignoreCase = true) }
             val quickIsChallenge = quickResponse.code in errorCodes && (quickMitigated || quickIsCloudflare)
             if (!quickIsChallenge) {
+                deferredHomeRetryAt = 0L
                 log("CF QUICK RETRY HIT | ${request.url.encodedPath} | code=${quickResponse.code}")
                 return@withLock quickResponse
             }
             log("CF QUICK RETRY MISS | ${request.url.encodedPath} | code=${quickResponse.code}")
+
+            // En el home y /latinos, los logs muestran que Cloudflare vuelve a
+            // aceptar HTTP tras el reintento externo de 1.2 s. No gastamos WebView
+            // en el primer fallo: devolvemos este 403 para que homeData/fetchList
+            // hagan su retry normal. Si el siguiente intento sigue bloqueado,
+            // recién entonces usamos WebView como respaldo.
+            val isHomeRequest = request.url.encodedPath == "/" ||
+                request.url.encodedPath == "/latinos"
+            if (isHomeRequest) {
+                val now = System.currentTimeMillis()
+                val previousDeferredAt = deferredHomeRetryAt
+                if (previousDeferredAt == 0L || now - previousDeferredAt < 900L) {
+                    if (previousDeferredAt == 0L) deferredHomeRetryAt = now
+                    log("CF HOME HTTP RETRY FIRST | ${request.url.encodedPath} | se omite WebView hasta el siguiente intento")
+                    return@withLock quickResponse
+                }
+                deferredHomeRetryAt = 0L
+                log("CF HOME HTTP RETRY STILL BLOCKED | ${request.url.encodedPath} | se habilita WebView")
+            }
+
             quickResponse.close()
 
             // Conservamos el clearance rechazado para no confundirlo con una
