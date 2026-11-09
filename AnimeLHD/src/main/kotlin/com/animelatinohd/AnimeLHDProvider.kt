@@ -319,12 +319,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         } catch (e: CancellationException) {
             throw e
         } catch (e: IOException) {
-            // OkHttp puede cancelar requests duplicadas al reconstruir el home.
-            // Propagarlo como cancelación evita tratarlo como un fallo HTTP normal.
-            if (e.message.orEmpty().contains("canceled", ignoreCase = true)) {
-                throw CancellationException("AnimeLHD request canceled").apply { initCause(e) }
+            // OkHttp cancela algunas peticiones paralelas al reconstruir el home.
+            // No convertir IOException("canceled") en CancellationException propia:
+            // NiceHttp puede propagarla como error fatal fuera del ciclo normal.
+            if (!e.message.orEmpty().contains("canceled", ignoreCase = true)) {
+                log("CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}")
             }
-            log("CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}")
             throw e
         } catch (e: Exception) {
             log("CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}")
