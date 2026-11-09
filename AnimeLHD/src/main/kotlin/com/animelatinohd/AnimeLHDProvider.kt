@@ -187,7 +187,6 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private val cloudflareServers = setOf("cloudflare", "cloudflare-nginx")
     private val errorCodes = setOf(403, 503)
     @Volatile private var lastFailedAt = 0L
-    @Volatile private var deferredHomeRetryAt = 0L
 
     override fun intercept(chain: Interceptor.Chain): Response = runBlocking {
         val request = chain.request()
@@ -226,7 +225,6 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         val isChallenge = response.code in errorCodes && (mitigated || isCloudflareServer)
 
         if (!isChallenge) {
-            deferredHomeRetryAt = 0L
             return@runBlocking response
         }
 
@@ -267,23 +265,16 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             }
             log("CF QUICK RETRY MISS | ${request.url.encodedPath} | code=${quickResponse.code}")
 
-            // En el home y /latinos, los logs muestran que Cloudflare vuelve a
-            // aceptar HTTP tras el reintento externo de 1.2 s. No gastamos WebView
-            // en el primer fallo: devolvemos este 403 para que homeData/fetchList
-            // hagan su retry normal. Si el siguiente intento sigue bloqueado,
-            // recién entonces usamos WebView como respaldo.
+            // La portada y /latinos no deben abrir WebView: en TV consume
+            // varios segundos, no obtiene cf_clearance y bloquea las demás
+            // peticiones por el cooldown. Sus funciones llamadoras hacen
+            // reintentos HTTP escalonados y el log ya mostró respuestas 200
+            // posteriores sin que WebView completara el desafío.
             val isHomeRequest = request.url.encodedPath == "/" ||
                 request.url.encodedPath == "/latinos"
             if (isHomeRequest) {
-                val now = System.currentTimeMillis()
-                val previousDeferredAt = deferredHomeRetryAt
-                if (previousDeferredAt == 0L || now - previousDeferredAt < 900L) {
-                    if (previousDeferredAt == 0L) deferredHomeRetryAt = now
-                    log("CF HOME HTTP RETRY FIRST | ${request.url.encodedPath} | se omite WebView hasta el siguiente intento")
-                    return@withLock quickResponse
-                }
-                deferredHomeRetryAt = 0L
-                log("CF HOME HTTP RETRY STILL BLOCKED | ${request.url.encodedPath} | se habilita WebView")
+                log("CF HOME HTTP RETRY | ${request.url.encodedPath} | WebView omitido; reintenta HTTP")
+                return@withLock quickResponse
             }
 
             quickResponse.close()
@@ -699,17 +690,18 @@ class AnimeLHDProvider : MainAPI() {
         // las páginas públicas de Next.js para categorías y búsqueda.
         log("API SKIP | se usa HTML directamente")
         log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)
-        var html = fetch(htmlUrl)
-        if (html == null) {
-            // Otra categoría puede haber conseguido una sesión válida justo
-            // después del primer 403. Reintentamos una vez sin abrir otro WebView
-            // durante el cooldown del interceptor.
-            log("HTML FALLBACK RETRY | espera breve tras fallo inicial")
-            delay(1_200)
+        var html: String? = null
+        val retryDelays = longArrayOf(0L, 650L, 1_200L, 1_800L)
+        for ((index, waitMs) in retryDelays.withIndex()) {
+            if (waitMs > 0L) delay(waitMs)
             html = fetch(htmlUrl)
+            if (html != null) break
+            if (index < retryDelays.lastIndex) {
+                log("HTML FALLBACK RETRY | intento=${index + 2}/${retryDelays.size} | espera=${retryDelays[index + 1]}ms")
+            }
         }
         if (html == null) {
-            log("HTML FALLBACK FAIL | fetch devolvió null tras reintento")
+            log("HTML FALLBACK FAIL | agotados ${retryDelays.size} intentos HTTP")
             return emptyList<JSONObject>() to 1
         }
         log("HTML FALLBACK BODY | chars=" + html.length + " | hasNext=" + html.contains("self.__next_f.push"))
@@ -758,17 +750,18 @@ class AnimeLHDProvider : MainAPI() {
             }
 
             val startedAt = System.currentTimeMillis()
-            var html = fetch("$WEB/")
-            if (html == null) {
-                // El primer intento puede terminar en 403 mientras Cloudflare
-                // renueva la sesión. Reintentar aquí evita devolver Últimos
-                // episodios vacío justo antes de que la sesión quede disponible.
-                log("HOME DATA RETRY | espera breve tras fallo inicial")
-                delay(1_200)
+            var html: String? = null
+            val retryDelays = longArrayOf(0L, 650L, 1_200L, 1_800L)
+            for ((index, waitMs) in retryDelays.withIndex()) {
+                if (waitMs > 0L) delay(waitMs)
                 html = fetch("$WEB/")
+                if (html != null) break
+                if (index < retryDelays.lastIndex) {
+                    log("HOME DATA RETRY | intento=${index + 2}/${retryDelays.size} | espera=${retryDelays[index + 1]}ms")
+                }
             }
             if (html == null) {
-                log("HOME DATA FETCH FAIL | null tras reintento")
+                log("HOME DATA FETCH FAIL | agotados ${retryDelays.size} intentos HTTP")
                 return@withLock null
             }
             val flat = flattenRsc(html)
