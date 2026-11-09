@@ -74,7 +74,7 @@ private val VOE_HEX_CHARS = "0123456789abcdef".toCharArray()
  * Keep producing same-origin requests while Turnstile is open. WebViewResolver
  * observes resource requests and can stop as soon as cf_clearance appears.
  */
-private const val CF_COOKIE_PROBE_SCRIPT = """(function(){try{if(window.__animelhdCfProbe)return;window.__animelhdCfProbe=true;var n=0;var timer=setInterval(function(){if(++n>50){clearInterval(timer);return;}try{fetch('/favicon.ico?__animelhd_cf_probe='+Date.now(),{method:'GET',credentials:'include',cache:'no-store'}).catch(function(){});}catch(e){}},500);}catch(e){}})();"""
+private const val CF_COOKIE_PROBE_SCRIPT = """(function(){try{if(window.__animelhdCfProbe)return;window.__animelhdCfProbe=true;var n=0;var timer=setInterval(function(){if(++n>120){clearInterval(timer);return;}try{fetch('/favicon.ico?__animelhd_cf_probe='+Date.now(),{method:'GET',credentials:'include',cache:'no-store'}).catch(function(){});}catch(e){}},500);}catch(e){}})();"""
 
 
 private val LULU_HOSTS = listOf("luluvdoo.com", "luluvdo.com", "lulustream.com", "lulu.st")
@@ -367,11 +367,11 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             try {
                 val resolver = WebViewResolver(
                     interceptUrl = Regex(".^"),
-                    additionalUrls = listOf(Regex("^https?://")),
+                    additionalUrls = listOf(Regex("^https?://(?:www\\.)?animelatinohd\\.com(?:/|$)")),
                     userAgent = null,
                     useOkhttp = false,
                     script = CF_COOKIE_PROBE_SCRIPT,
-                    timeout = 25_000
+                    timeout = 60_000
                 )
                 resolver.resolveUsingWebView(withCookiesAndUa(request, null, ua)) {
                     persistWebViewUserAgent()
@@ -497,8 +497,7 @@ private object AnimeLHDHomeState {
 
 private object AnimeLHDBackgroundRefresh {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    val homeMutex = Mutex()
-    val latinosMutex = Mutex()
+    val homeMutex = Mutex()    val latinosMutex = Mutex()
 }
 
 private fun readHomeDiskCache(): AnimeLHDHomeData? = try {
@@ -997,8 +996,7 @@ class AnimeLHDProvider : MainAPI() {
             }
             ?.let { rel ->
                 listOf("prequel", "sequel", "related")
-                    .flatMap { k -> rel.optJSONArray(k)?.objs() ?: emptyList() }
-                    .mapNotNull { toSearch(it) }
+                    .flatMap { k -> rel.optJSONArray(k)?.objs() ?: emptyList() }                    .mapNotNull { toSearch(it) }
                     .distinctBy { it.url }
             }
 
@@ -1497,8 +1495,7 @@ class AnimeLHDProvider : MainAPI() {
                 if (encrypted != null && parts != null && parts.length() > 0) {
                     var keys = (0 until parts.length()).mapNotNull { parts.optString(it).takeIf(String::isNotBlank) }
                     val version = encrypted.optInt("version", 0)
-                    if (version in 1..keys.size) keys = listOf(keys[version - 1], keys[keys.size - version])
-                    val key = keys.flatMap { byseB64Decode(it).toList() }.toByteArray()
+                    if (version in 1..keys.size) keys = listOf(keys[version - 1], keys[keys.size - version])                    val key = keys.flatMap { byseB64Decode(it).toList() }.toByteArray()
                     val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
                     cipher.init(javax.crypto.Cipher.DECRYPT_MODE, javax.crypto.spec.SecretKeySpec(key, "AES"),
                         javax.crypto.spec.GCMParameterSpec(128, byseB64Decode(encrypted.optString("iv"))))
