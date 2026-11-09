@@ -359,9 +359,9 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                     additionalUrls = listOf(Regex("^https://www\\.animelatinohd\\.com/")),
                     userAgent = null,
                     useOkhttp = false,
-                    // El WebView es el último recurso. En los TV probados no
-                    // consiguió clearance ni tras 30 s; no bloquear el catálogo tanto tiempo.
-                    timeout = 10_000
+                    // El WebView es el último recurso. En TV el intento anterior de 10 s
+                    // no consiguió clearance; limitar la espera evita bloquear el catálogo.
+                    timeout = 4_000
                 )
                 resolver.resolveUsingWebView(request) {
                     val captured = captureCookie()
