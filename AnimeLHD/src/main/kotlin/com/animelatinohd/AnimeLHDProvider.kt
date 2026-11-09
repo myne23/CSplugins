@@ -74,7 +74,7 @@ private val VOE_HEX_CHARS = "0123456789abcdef".toCharArray()
  * Keep producing same-origin requests while Turnstile is open. WebViewResolver
  * observes resource requests and can stop as soon as cf_clearance appears.
  */
-private const val CF_COOKIE_PROBE_SCRIPT = """(function(){try{if(window.__animelhdCfProbe)return;window.__animelhdCfProbe=true;var n=0;var timer=setInterval(function(){if(++n>120){clearInterval(timer);return;}try{fetch('/favicon.ico?__animelhd_cf_probe='+Date.now(),{method:'GET',credentials:'include',cache:'no-store'}).catch(function(){});}catch(e){}},500);}catch(e){}})();"""
+private const val CF_COOKIE_PROBE_SCRIPT = """(function(){try{if(window.__animelhdCfProbe)return;window.__animelhdCfProbe=true;var n=0;var timer=setInterval(function(){if(++n>300){clearInterval(timer);return;}try{fetch('/favicon.ico?__animelhd_cf_probe='+Date.now(),{method:'GET',credentials:'include',cache:'no-store'}).catch(function(){});}catch(e){}},200);}catch(e){}})();"""
 
 
 private val LULU_HOSTS = listOf("luluvdoo.com", "luluvdo.com", "lulustream.com", "lulu.st")
@@ -500,15 +500,23 @@ private object AnimeLHDBackgroundRefresh {
     val homeMutex = Mutex()
     val latinosMutex = Mutex()}
 
-private fun readHomeDiskCache(): AnimeLHDHomeData? = try {
+private fun readHomeDiskCache(): Pair<Long, AnimeLHDHomeData>? = try {
     val raw = CloudStreamApp.getKey("AnimeLHD", HOME_DISK_KEY, "") as? String ?: ""
     log("HOME DISK CACHE READ | context=${CloudStreamApp.context != null} | chars=${raw.length}")
     if (raw.isBlank()) null else {
         val json = JSONObject(raw)
-        AnimeLHDHomeData(
+        val data = AnimeLHDHomeData(
             json.optJSONArray("episodes")?.objs() ?: emptyList(),
             json.optJSONArray("animes")?.objs() ?: emptyList()
-        ).takeIf { it.episodes.isNotEmpty() || it.animes.isNotEmpty() }
+        )
+        // Una portada parcial no es válida: podría dejar una sección vacía
+        // hasta el siguiente reinicio de CloudStream.
+        if (data.episodes.isEmpty() || data.animes.isEmpty()) {
+            log("HOME DISK CACHE INVALID | episodes=${data.episodes.size} | animes=${data.animes.size}")
+            null
+        } else {
+            json.optLong("savedAt", 0L) to data
+        }
     }
 } catch (e: Exception) {
     log("HOME DISK CACHE READ ERROR | ${e.javaClass.simpleName}")
@@ -518,6 +526,7 @@ private fun readHomeDiskCache(): AnimeLHDHomeData? = try {
 private fun writeHomeDiskCache(data: AnimeLHDHomeData) {
     try {
         val json = JSONObject()
+            .put("savedAt", System.currentTimeMillis())
             .put("episodes", JSONArray().apply { data.episodes.forEach { put(it) } })
             .put("animes", JSONArray().apply { data.animes.forEach { put(it) } })
         CloudStreamApp.setKey("AnimeLHD", HOME_DISK_KEY, json.toString())
@@ -793,76 +802,105 @@ class AnimeLHDProvider : MainAPI() {
     private suspend fun homeData(forceRefresh: Boolean = false): AnimeLHDHomeData? {
         val now = System.currentTimeMillis()
         val cached = homeDataCache
-        if (!forceRefresh && cached != null && now - cached.first < HOME_CACHE_MS) {
+        if (!forceRefresh && cached != null &&
+            now - cached.first < HOME_CACHE_MS &&
+            cached.second.episodes.isNotEmpty() && cached.second.animes.isNotEmpty()
+        ) {
             log("HOME DATA CACHE HIT | episodes=${cached.second.episodes.size} | animes=${cached.second.animes.size}")
             return cached.second
         }
 
         if (!forceRefresh) {
-            val diskData = readHomeDiskCache()
-            if (diskData != null) {
-                AnimeLHDHomeState.cache = System.currentTimeMillis() to diskData
+            val diskEntry = readHomeDiskCache()
+            if (diskEntry != null) {
+                val (savedAt, diskData) = diskEntry
+                val age = if (savedAt > 0L) (now - savedAt).coerceAtLeast(0L) else Long.MAX_VALUE
+                AnimeLHDHomeState.cache = (if (savedAt > 0L) savedAt else now - HOME_CACHE_MS - 1L) to diskData
+
+                if (age < HOME_CACHE_MS) {
+                    log("HOME DATA DISK CACHE FRESH | ageMs=$age | episodes=${diskData.episodes.size} | animes=${diskData.animes.size}")
+                    return diskData
+                }
+
+                // La caché vencida solo se usa como respaldo visual si está completa.
+                // La actualización se dispara en background sin bloquear la portada.
                 if (AnimeLHDBackgroundRefresh.homeMutex.tryLock()) {
                     AnimeLHDBackgroundRefresh.scope.launch {
                         try {
-                            log("HOME DISK CACHE HIT | refresco en segundo plano")
-                            homeData(forceRefresh = true)
+                            log("HOME DISK CACHE STALE | refresh background | ageMs=$age")
+                            val refreshed = homeData(forceRefresh = true)
+                            if (refreshed == null) {
+                                delay(3_000)
+                                log("HOME DISK CACHE RETRY | segundo intento automático")
+                                homeData(forceRefresh = true)
+                            }
                         } finally {
                             AnimeLHDBackgroundRefresh.homeMutex.unlock()
                         }
                     }
                 }
-                log("HOME DATA DISK CACHE HIT | episodes=${diskData.episodes.size} | animes=${diskData.animes.size}")
+                log("HOME DATA DISK CACHE STALE HIT | episodes=${diskData.episodes.size} | animes=${diskData.animes.size}")
                 return diskData
             }
         }
 
         return homeFetchMutex.withLock {
-            // Revisa nuevamente la caché después de esperar: recent y added
-            // suelen solicitar la misma portada en paralelo.
             val latest = homeDataCache
             val checkedAt = System.currentTimeMillis()
-            if (!forceRefresh && latest != null && checkedAt - latest.first < HOME_CACHE_MS) {
+            if (!forceRefresh && latest != null &&
+                checkedAt - latest.first < HOME_CACHE_MS &&
+                latest.second.episodes.isNotEmpty() && latest.second.animes.isNotEmpty()
+            ) {
                 log("HOME DATA CACHE HIT (LOCK) | episodes=${latest.second.episodes.size} | animes=${latest.second.animes.size}")
                 return@withLock latest.second
             }
 
             val startedAt = System.currentTimeMillis()
-            var html: String? = null
-            // Un único reintento de provider cubre fallos transitorios.
-            // El interceptor comparte y reutiliza la cookie; no abre otro WebView
-            // durante el cooldown si el solve anterior realmente falló.
-            html = fetch("$WEB/", forceNetwork = forceRefresh)
-            if (html == null) {
-                log("HOME DATA RETRY | espera 2500ms")
-                delay(2_500)
-                html = fetch("$WEB/", forceNetwork = forceRefresh)
+            var html = fetch("$WEB/", forceNetwork = forceRefresh)
+            var data: AnimeLHDHomeData? = null
+
+            // Una respuesta HTML parcial no se considera éxito: se fuerza una
+            // segunda descarga para no guardar ni mostrar catálogos incompletos.
+            for (attempt in 0..1) {
+                if (html.isNullOrBlank()) {
+                    log("HOME DATA RETRY | attempt=${attempt + 1} | espera 1200ms")
+                    if (attempt == 0) {
+                        delay(1_200)
+                        html = fetch("$WEB/", forceNetwork = true)
+                    }
+                    continue
+                }
+
+                val flat = flattenRsc(html)
+                val episodes = jsonAfter(flat, "\"episodes\":")
+                    ?.let { runCatching { JSONArray(it).objs() }.getOrDefault(emptyList()) }
+                    ?: emptyList()
+                val animes = jsonAfter(flat, "\"animes\":")
+                    ?.let { runCatching { JSONArray(it).objs() }.getOrDefault(emptyList()) }
+                    ?: emptyList()
+
+                if (episodes.isNotEmpty() && animes.isNotEmpty()) {
+                    data = AnimeLHDHomeData(episodes, animes)
+                    break
+                }
+
+                log("HOME DATA PARTIAL | attempt=${attempt + 1} | episodes=${episodes.size} | animes=${animes.size}")
+                if (attempt == 0) {
+                    delay(700)
+                    html = fetch("$WEB/", forceNetwork = true)
+                }
             }
-            if (html == null) {
-                log("HOME DATA FETCH FAIL | dos intentos agotados")
+
+            val result = data
+            if (result == null) {
+                log("HOME DATA FAIL | no se obtuvo portada completa tras dos intentos")
                 return@withLock null
             }
-            val flat = flattenRsc(html)
 
-            // Deserializamos los dos bloques una sola vez para ambas secciones.
-            val episodes = jsonAfter(flat, "\"episodes\":")
-                ?.let { runCatching { JSONArray(it).objs() }.getOrDefault(emptyList()) }
-                ?: emptyList()
-            val animes = jsonAfter(flat, "\"animes\":")
-                ?.let { runCatching { JSONArray(it).objs() }.getOrDefault(emptyList()) }
-                ?: emptyList()
-
-            val data = AnimeLHDHomeData(episodes, animes)
-            if (episodes.isNotEmpty() || animes.isNotEmpty()) {
-                AnimeLHDHomeState.cache = System.currentTimeMillis() to data
-                writeHomeDiskCache(data)
-            } else {
-                // No conservar una portada vacía: podría ser una respuesta
-                // incompleta o una página que cambió su estructura RSC.
-                log("HOME DATA EMPTY | no se guarda en caché para permitir reintento")
-            }
-            log("HOME DATA PARSED | htmlChars=${html.length} | rscChars=${flat.length} | episodes=${episodes.size} | animes=${animes.size} | elapsedMs=${System.currentTimeMillis() - startedAt}")
-            data
+            AnimeLHDHomeState.cache = System.currentTimeMillis() to result
+            writeHomeDiskCache(result)
+            log("HOME DATA PARSED | episodes=${result.episodes.size} | animes=${result.animes.size} | elapsedMs=${System.currentTimeMillis() - startedAt}")
+            result
         }
     }
     /* ------------------------------------------------------------     * Main page / search
