@@ -497,8 +497,8 @@ private object AnimeLHDHomeState {
 
 private object AnimeLHDBackgroundRefresh {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    val homeMutex = Mutex()    val latinosMutex = Mutex()
-}
+    val homeMutex = Mutex()
+    val latinosMutex = Mutex()}
 
 private fun readHomeDiskCache(): AnimeLHDHomeData? = try {
     val raw = CloudStreamApp.getKey("AnimeLHD", HOME_DISK_KEY, "") as? String ?: ""
@@ -997,8 +997,7 @@ class AnimeLHDProvider : MainAPI() {
             ?.let { rel ->
                 listOf("prequel", "sequel", "related")
                     .flatMap { k -> rel.optJSONArray(k)?.objs() ?: emptyList() }                    .mapNotNull { toSearch(it) }
-                    .distinctBy { it.url }
-            }
+                    .distinctBy { it.url }            }
 
         // Película: un solo "episodio" -> mejor como Movie
         if (type == "Movie" && episodeNumbers.size <= 1) {
@@ -1495,10 +1494,10 @@ class AnimeLHDProvider : MainAPI() {
                 if (encrypted != null && parts != null && parts.length() > 0) {
                     var keys = (0 until parts.length()).mapNotNull { parts.optString(it).takeIf(String::isNotBlank) }
                     val version = encrypted.optInt("version", 0)
-                    if (version in 1..keys.size) keys = listOf(keys[version - 1], keys[keys.size - version])                    val key = keys.flatMap { byseB64Decode(it).toList() }.toByteArray()
+                    if (version in 1..keys.size) keys = listOf(keys[version - 1], keys[keys.size - version])
+                    val key = keys.flatMap { byseB64Decode(it).toList() }.toByteArray()
                     val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
-                    cipher.init(javax.crypto.Cipher.DECRYPT_MODE, javax.crypto.spec.SecretKeySpec(key, "AES"),
-                        javax.crypto.spec.GCMParameterSpec(128, byseB64Decode(encrypted.optString("iv"))))
+                    cipher.init(javax.crypto.Cipher.DECRYPT_MODE, javax.crypto.spec.SecretKeySpec(key, "AES"),                        javax.crypto.spec.GCMParameterSpec(128, byseB64Decode(encrypted.optString("iv"))))
                     sources = JSONObject(String(cipher.doFinal(byseB64Decode(encrypted.optString("payload"))), Charsets.UTF_8)).optJSONArray("sources")
                 }
             }
