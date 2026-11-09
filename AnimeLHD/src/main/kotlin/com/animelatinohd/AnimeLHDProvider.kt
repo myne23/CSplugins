@@ -476,8 +476,8 @@ private object AnimeLHDBackgroundRefresh {
 }
 
 private fun readHomeDiskCache(): AnimeLHDHomeData? = try {
-    val raw = CloudStreamApp.getKey(HOME_DISK_KEY, "")
-    if (raw.isNullOrBlank()) null else {
+    val raw = CloudStreamApp.getKey(HOME_DISK_KEY, "") as? String ?: ""
+    if (raw.isBlank()) null else {
         val json = JSONObject(raw)
         AnimeLHDHomeData(
             json.optJSONArray("episodes")?.objs() ?: emptyList(),
