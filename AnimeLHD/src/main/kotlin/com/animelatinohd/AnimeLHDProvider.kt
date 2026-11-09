@@ -536,7 +536,6 @@ class AnimeLHDProvider : MainAPI() {
 
     override val mainPage = mainPageOf(
         "recent" to "Últimos episodios",
-        "latinos" to "Latinos",
         "added" to "Animes agregados"
     )
 
@@ -742,7 +741,10 @@ class AnimeLHDProvider : MainAPI() {
 
             val startedAt = System.currentTimeMillis()
             var html: String? = null
-            val retryDelays = longArrayOf(0L, 650L, 1_200L, 1_800L)
+            // Una sola portada alimenta Últimos episodios y Animes agregados.
+            // Seis intentos breves evitan que la primera sección quede vacía
+            // justo antes de que la segunda consiga una respuesta 200.
+            val retryDelays = longArrayOf(0L, 350L, 500L, 750L, 1_000L, 1_400L)
             for ((index, waitMs) in retryDelays.withIndex()) {
                 if (waitMs > 0L) delay(waitMs)
                 html = fetch("$WEB/")
