@@ -664,11 +664,26 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 
         val retryUa = WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: ua
         val verified = proceed(request, cookiesForRetry, retryUa)
+        log { "CF RETRY | code=${verified.code} | server-timing=${verified.header("Server-Timing").orEmpty()} | ${request.url.encodedPath}"}
         if (isChallenge(verified)) {
             verified.close()
             savedCookies.remove(host)
             lastFailedAt[host] = System.currentTimeMillis()
             log { "CF BYPASS FAIL | reason=clearance rechazada por Cloudflare | ${request.url.encodedPath}"}
+            if (mode == "auto_manual") {
+                val manual = manualClearance(url, host, cookiesForRetry)
+                if (manual != null) {
+                    val manualRetry = proceed(request, manual, retryUa)
+                    if (!isChallenge(manualRetry)) {
+                        lastFailedAt.remove(host)
+                        log { "CF BYPASS VERIFIED | code=${manualRetry.code} | manual=true | ${request.url.encodedPath}"}
+                        log { "CF BYPASS TOTAL | path=${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - interceptStarted) / 1_000_000L}"}
+                        return@runBlocking manualRetry
+                    }
+                    manualRetry.close()
+                    log { "CF BYPASS FAIL | reason=manual rechazado | ${request.url.encodedPath}"}
+                }
+            }
             return@runBlocking chain.proceed(initialRequest)
         }
         lastFailedAt.remove(host)
