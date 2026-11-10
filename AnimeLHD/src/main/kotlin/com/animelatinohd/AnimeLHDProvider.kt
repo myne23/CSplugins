@@ -56,7 +56,8 @@ private const val HOME_CACHE_MS = 300_000L
 private const val PAGE_CACHE_MS = 900_000L
 private const val HOME_DISK_KEY = "AnimeLHD_HOME_DISK_V1"
 private const val LATINOS_PAGE1_DISK_KEY = "AnimeLHD_LATINOS_PAGE1_DISK_V1"
-private const val PAGE_CACHE_MAX = 80
+// Las páginas Next.js pueden ocupar 0,5–2 MB; 80 entradas disparaban la RAM en TV.
+private const val PAGE_CACHE_MAX = 12
 private const val API_UNAUTHORIZED_COOLDOWN_MS = 10 * 60 * 1000L
 private const val BRIDGE_TIMEOUT_MS = 10_000L
 private const val EXTRACTOR_TIMEOUT_MS = 9_000L
