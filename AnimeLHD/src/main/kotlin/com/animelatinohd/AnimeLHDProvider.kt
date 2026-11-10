@@ -201,20 +201,23 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private val bypassMutex = Mutex()
     private val cloudflareServers = setOf("cloudflare", "cloudflare-nginx")
     private val errorCodes = setOf(403, 503)
-    @Volatile private var lastFailedAt = 0L
-
+    private val lastFailedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    @Volatile private var cachedUa: String? = null
 
     private fun stableUserAgent(): String {
+        cachedUa?.let { return it }
         val stored = try { CloudStreamApp.getKey("AnimeLHD_CF_UA", "") } catch (_: Exception) { "" }
-        if (!stored.isNullOrBlank()) return stored
-        val ua = try {
+        val ua = if (!stored.isNullOrBlank()) stored else try {
             CloudStreamApp.context?.let { android.webkit.WebSettings.getDefaultUserAgent(it) }
         } catch (e: Exception) {
             log("CF UA DEFAULT ERROR | ${e.javaClass.simpleName}: ${e.message}")
             null
         }?.takeIf { it.isNotBlank() } ?: WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: USER_AGENT
-        try { CloudStreamApp.setKey("AnimeLHD_CF_UA", ua) } catch (e: Exception) {
-            log("CF UA SAVE ERROR | ${e.javaClass.simpleName}: ${e.message}")
+        cachedUa = ua
+        if (stored.isNullOrBlank()) {
+            try { CloudStreamApp.setKey("AnimeLHD_CF_UA", ua) } catch (e: Exception) {
+                log("CF UA SAVE ERROR | ${e.javaClass.simpleName}: ${e.message}")
+            }
         }
         return ua
     }
@@ -224,6 +227,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         try {
             if (stableUserAgent() == ua) return
             CloudStreamApp.setKey("AnimeLHD_CF_UA", ua)
+            cachedUa = ua
             log("CF UA SAVED | changed=true | ${ua.take(40)}")
         } catch (e: Exception) {
             log("CF UA SAVE ERROR | ${e.javaClass.simpleName}: ${e.message}")
