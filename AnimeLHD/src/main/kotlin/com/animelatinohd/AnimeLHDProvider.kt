@@ -9,7 +9,6 @@ import com.lagradost.cloudstream3.*
 import android.webkit.CookieManager
 import com.lagradost.cloudstream3.USER_AGENT
 import com.lagradost.cloudstream3.network.WebViewResolver
-import com.lagradost.nicehttp.Requests.Companion.await
 import com.lagradost.nicehttp.cookies
 import okhttp3.Interceptor
 import okhttp3.Request
@@ -434,7 +433,10 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 handler.postDelayed(poll, 500L)
             }
 
-            result = withTimeoutOrNull(90_000L) { deferred.await() } ?: false
+            // El home de CloudStream corta a los 120s. El WebView invisible
+            // puede tardar ~30s y después viene el manual, así que el diálogo
+            // no puede quedarse 90s o la carga ya está cancelada al aprobar.
+            result = withTimeoutOrNull(60_000L) { deferred.await() } ?: false
             if (!result && cancelReason == "cerrado") cancelReason = "timeout"
             return result
         } catch (e: CancellationException) {
@@ -539,7 +541,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         var rejectedCookies = initialCookies
         val available = latestClearance(url, host, initialCookies)
         if (available != null && clearanceValue(available) != clearanceValue(initialCookies)) {
-            val retry = proceed(request, available, WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: ua)
+            val retry = retryWithCookies(
+                chain,
+                request,
+                available,
+                WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: ua
+            )
             if (!isChallenge(retry)) {
                 savedCookies[host] = available
                 lastFailedAt.remove(host)
@@ -663,17 +670,18 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         }
 
         val retryUa = WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: ua
-        val verified = proceed(request, cookiesForRetry, retryUa)
-        log { "CF RETRY | code=${verified.code} | server-timing=${verified.header("Server-Timing").orEmpty()} | ${request.url.encodedPath}"}
+        val verified = retryWithCookies(chain, request, cookiesForRetry, retryUa)
         if (isChallenge(verified)) {
             verified.close()
             savedCookies.remove(host)
             lastFailedAt[host] = System.currentTimeMillis()
             log { "CF BYPASS FAIL | reason=clearance rechazada por Cloudflare | ${request.url.encodedPath}"}
             if (mode == "auto_manual") {
-                val manual = manualClearance(url, host, cookiesForRetry)
+                // El mutex evita que varias peticiones abran su propio diálogo
+                // manual al mismo tiempo.
+                val manual = bypassMutex.withLock { manualClearance(url, host, cookiesForRetry) }
                 if (manual != null) {
-                    val manualRetry = proceed(request, manual, retryUa)
+                    val manualRetry = retryWithCookies(chain, request, manual, retryUa)
                     if (!isChallenge(manualRetry)) {
                         lastFailedAt.remove(host)
                         log { "CF BYPASS VERIFIED | code=${manualRetry.code} | manual=true | ${request.url.encodedPath}"}
@@ -719,24 +727,23 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             ?.joinToString("; ") { (name, value) -> "$name=$value" }
     }
 
-    private suspend fun proceed(request: Request, cookies: Map<String, String>, userAgent: String): Response {
-        val mergedCookies = LinkedHashMap<String, String>().apply {
-            // El clearance recién validado debe prevalecer sobre el jar HTTP viejo.
-            putAll(request.cookies)
-            putAll(cookies)
-        }
-        val cookieHeader = mergedCookies.entries.joinToString("; ") { (name, value) ->
-            "$name=$value"
-        }
-        val headers = request.headers.newBuilder()
-            .set("User-Agent", userAgent)
-            .apply {
-                if (cookieHeader.isNotBlank()) set("Cookie", cookieHeader)
-            }
-            .build()
-        return com.lagradost.cloudstream3.app.baseClient.newCall(
-            request.newBuilder().headers(headers).build()
-        ).await()
+    /*
+     * El reintento debe usar chain.proceed y no baseClient.newCall().await().
+     * El dispatcher de OkHttp permite 5 llamadas simultáneas por host y estas
+     * peticiones ya ocupan esos cupos mientras esperan la clearance dentro del
+     * interceptor. Pedir un cupo nuevo desde aquí agota el dispatcher: ningún
+     * reintento llega a ejecutarse y el home se congela 120s sin logs.
+     */
+    private fun retryWithCookies(
+        chain: Interceptor.Chain,
+        request: Request,
+        cookies: Map<String, String>,
+        userAgent: String
+    ): Response {
+        val started = System.nanoTime()
+        val response = chain.proceed(withCookiesAndUa(request, cookies, userAgent))
+        log { "CF RETRY | code=${response.code} | ms=${(System.nanoTime() - started) / 1_000_000L} | server-timing=${response.header("Server-Timing").orEmpty()} | ${request.url.encodedPath}"}
+        return response
     }
 }
 // Estado compartido entre todas las instancias de AnimeLHD. Sin esto,
@@ -958,11 +965,14 @@ class AnimeLHDProvider : MainAPI() {
             log { "HTTP START | " + safeUrl(url)}
 
             // Resolver oficial de CloudStream, igual que AnimeOnline.
+            // timeout cubre TODO el call, incluido el tiempo del interceptor
+            // (WebView invisible + fallback manual). Con 40s el diálogo manual
+            // se cancelaba justo antes de que el usuario pudiera aprobarlo.
             val response = app.get(
                 url,
                 headers = headers,
                 interceptor = AnimeLHDCloudflareState.killer,
-                timeout = 40
+                timeout = 100
             )
             val body = response.text
             log { "HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | server=${response.headers["Server"].orEmpty()} | cfRay=${response.headers["cf-ray"].orEmpty()} | url=" + safeUrl(url)}
