@@ -261,17 +261,6 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         )
     }
 
-    private fun withoutClearance(request: Request): Request {
-        val cleanCookies = request.cookies.filterKeys { !it.equals("cf_clearance", ignoreCase = true) }
-        return request.newBuilder().apply {
-            if (cleanCookies.isEmpty()) {
-                removeHeader("Cookie")
-            } else {
-                header("Cookie", cleanCookies.entries.joinToString("; ") { (name, value) -> "$name=$value" })
-            }
-        }.build()
-    }
-
     private fun readClearanceCookies(url: String): Map<String, String>? {
         val raw = try {
             CookieManager.getInstance()?.getCookie(url)
@@ -414,7 +403,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         }
 
         if (cookiesForRetry == null) {
-            return@runBlocking chain.proceed(withCookiesAndUa(withoutClearance(request), null, ua))
+            return@runBlocking chain.proceed(initialRequest)
         }
 
         val verified = proceed(request, cookiesForRetry, ua)
@@ -423,7 +412,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             savedCookies.remove(host)
             lastFailedAt[host] = System.currentTimeMillis()
             log("CF BYPASS REJECTED | code=403/503 | ${request.url.encodedPath}")
-            return@runBlocking chain.proceed(withCookiesAndUa(withoutClearance(request), null, ua))
+            return@runBlocking chain.proceed(initialRequest)
         }
         lastFailedAt.remove(host)
         log("CF BYPASS VERIFIED | code=${verified.code} | ${request.url.encodedPath}")
