@@ -74,7 +74,7 @@ private val VOE_HEX_CHARS = "0123456789abcdef".toCharArray()
  * Keep producing same-origin requests while Turnstile is open. WebViewResolver
  * observes resource requests and can stop as soon as cf_clearance appears.
  */
-private const val CF_COOKIE_PROBE_SCRIPT = """(function(){try{if(window.__animelhdCfProbe)return;window.__animelhdCfProbe=true;var n=0;var timer=setInterval(function(){if(++n>300){clearInterval(timer);return;}try{fetch('/favicon.ico?__animelhd_cf_probe='+Date.now(),{method:'GET',credentials:'include',cache:'no-store'}).catch(function(){});}catch(e){}},200);}catch(e){}})();"""
+private const val CF_COOKIE_PROBE_SCRIPT = """(function(){try{if(window.__animelhdCfProbe)return;window.__animelhdCfProbe=true;var n=0;var timer=setInterval(function(){if(++n>60){clearInterval(timer);return;}try{fetch('/__cf_probe.png?__animelhd_cf_probe='+Date.now(),{method:'GET',credentials:'include',cache:'no-store'}).catch(function(){});}catch(e){}},1000);}catch(e){}})();"""
 
 
 private val LULU_HOSTS = listOf("luluvdoo.com", "luluvdo.com", "lulustream.com", "lulu.st")
