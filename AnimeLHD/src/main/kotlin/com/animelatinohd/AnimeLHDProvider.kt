@@ -80,8 +80,8 @@ private val IFRAME_SRC = Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOpti
 private val M3U8_FILE = Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']""")
 private val M3U8_ANY = Regex("""https?://[^"'\s\\]+\.m3u8[^"'\s\\]*""")
 
-private fun log(msg: String) {
-    if (DEBUG) Log.d("AnimeLHD", msg)
+private inline fun log(message: () -> String) {
+    if (DEBUG) Log.d("AnimeLHD", message())
 }
 
 private fun safeUrl(url: String?): String {
@@ -112,7 +112,7 @@ private fun flattenRsc(html: String): String {
         try {
             sb.append(JSONArray("[1,\"" + html.substring(start, i) + "\"]").getString(1))
         } catch (e: Exception) {
-            log("flattenRsc chunk inválido: ${e.message}")
+            log { "flattenRsc chunk inválido: ${e.message}"}
         }
         idx = html.indexOf(marker, i)
     }
@@ -273,13 +273,13 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         val ua = if (!stored.isNullOrBlank()) stored else try {
             CloudStreamApp.context?.let { android.webkit.WebSettings.getDefaultUserAgent(it) }
         } catch (e: Exception) {
-            log("CF UA DEFAULT ERROR | ${e.javaClass.simpleName}: ${e.message}")
+            log { "CF UA DEFAULT ERROR | ${e.javaClass.simpleName}: ${e.message}"}
             null
         }?.takeIf { it.isNotBlank() } ?: WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: USER_AGENT
         cachedUa = ua
         if (stored.isNullOrBlank()) {
             try { CloudStreamApp.setKey("AnimeLHD_CF_UA", ua) } catch (e: Exception) {
-                log("CF UA SAVE ERROR | ${e.javaClass.simpleName}: ${e.message}")
+                log { "CF UA SAVE ERROR | ${e.javaClass.simpleName}: ${e.message}"}
             }
         }
         return ua
@@ -291,9 +291,9 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             if (stableUserAgent() == ua) return
             CloudStreamApp.setKey("AnimeLHD_CF_UA", ua)
             cachedUa = ua
-            log("CF UA SAVED | changed=true | ${ua.take(40)}")
+            log { "CF UA SAVED | changed=true | ${ua.take(40)}"}
         } catch (e: Exception) {
-            log("CF UA SAVE ERROR | ${e.javaClass.simpleName}: ${e.message}")
+            log { "CF UA SAVE ERROR | ${e.javaClass.simpleName}: ${e.message}"}
         }
     }
 
@@ -383,18 +383,18 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             // No convertir IOException("canceled") en CancellationException propia:
             // NiceHttp puede propagarla como error fatal fuera del ciclo normal.
             if (!e.message.orEmpty().contains("canceled", ignoreCase = true)) {
-                log("CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}")
+                log { "CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}"}
             }
             throw e
         } catch (e: Exception) {
-            log("CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}")
+            log { "CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}"}
             throw e
         }
         val proceedMs = (System.nanoTime() - proceedStarted) / 1_000_000L
-        log("CF INITIAL | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | code=${response.code} | proceedMs=${proceedMs} | server=${response.header("Server").orEmpty()} | cf-cache-status=${response.header("cf-cache-status").orEmpty()} | age=${response.header("age").orEmpty()} | server-timing=${response.header("server-timing").orEmpty()} | ${request.url.encodedPath}")
+        log { "CF INITIAL | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | code=${response.code} | proceedMs=${proceedMs} | server=${response.header("Server").orEmpty()} | cf-cache-status=${response.header("cf-cache-status").orEmpty()} | age=${response.header("age").orEmpty()} | server-timing=${response.header("server-timing").orEmpty()} | ${request.url.encodedPath}"}
         if (!isChallenge(response)) {
             if (response.code == 403 || response.code == 503) {
-                log("CF NO-CHALLENGE | code=${response.code} | ctype=${response.header("Content-Type").orEmpty()} | path=${request.url.encodedPath}")
+                log { "CF NO-CHALLENGE | code=${response.code} | ctype=${response.header("Content-Type").orEmpty()} | path=${request.url.encodedPath}"}
             }
             return@runBlocking response
         }
@@ -407,12 +407,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             if (!isChallenge(retry)) {
                 savedCookies[host] = available
                 lastFailedAt.remove(host)
-                log("CF COOKIE REUSE VERIFIED | ${request.url.encodedPath} | code=${retry.code}")
+                log { "CF COOKIE REUSE VERIFIED | ${request.url.encodedPath} | code=${retry.code}"}
                 return@runBlocking retry
             }
             retry.close()
             rejectedCookies = available
-            log("CF COOKIE RETRY REJECTED | ${request.url.encodedPath} | ua=${ua.take(40)}")
+            log { "CF COOKIE RETRY REJECTED | ${request.url.encodedPath} | ua=${ua.take(40)}"}
         }
 
         // Mutex solo para coordinar WebView. La verificación HTTP ocurre fuera.
@@ -420,11 +420,11 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             val latest = latestClearance(url, host, rejectedCookies)
             if (isNewClearance(latest, rejectedCookies)) {
                 savedCookies[host] = latest!!
-                log("CF COOKIE REFRESH FOUND | ${request.url.encodedPath}")
+                log { "CF COOKIE REFRESH FOUND | ${request.url.encodedPath}"}
                 return@withLock latest
             }
             if (System.currentTimeMillis() - (lastFailedAt[host] ?: 0L) < 30_000L) {
-                log("CF BYPASS COOLDOWN | ${request.url.encodedPath}")
+                log { "CF BYPASS COOLDOWN | ${request.url.encodedPath}"}
                 return@withLock null
             }
 
@@ -444,14 +444,14 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                         val captured = readClearanceCookies(url)
                         if (isNewClearance(captured, rejectedCookies)) {
                             savedCookies[host] = captured!!
-                            log("CF WEBVIEW COOKIE READY | ${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - started) / 1_000_000L}")
+                            log { "CF WEBVIEW COOKIE READY | ${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - started) / 1_000_000L}"}
                             true
                         } else false
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    log("CF WEBVIEW ERROR | ${e.javaClass.simpleName}: ${e.message}")
+                    log { "CF WEBVIEW ERROR | ${e.javaClass.simpleName}: ${e.message}"}
                 }
 
                 var captured = latestClearance(url, host, rejectedCookies)
@@ -464,11 +464,11 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             }
             if (fresh == null) {
                 lastFailedAt[host] = System.currentTimeMillis()
-                log("CF BYPASS UNAVAILABLE | timeout o clearance ausente | ${request.url.encodedPath}")
+                log { "CF BYPASS UNAVAILABLE | timeout o clearance ausente | ${request.url.encodedPath}"}
                 return@withLock null
             }
             savedCookies[host] = fresh
-            log("CF BYPASS COOKIE CAPTURED | ${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - started) / 1_000_000L}")
+            log { "CF BYPASS COOKIE CAPTURED | ${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - started) / 1_000_000L}"}
             fresh
         }
 
@@ -481,12 +481,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             verified.close()
             savedCookies.remove(host)
             lastFailedAt[host] = System.currentTimeMillis()
-            log("CF BYPASS REJECTED | code=403/503 | ${request.url.encodedPath}")
+            log { "CF BYPASS REJECTED | code=403/503 | ${request.url.encodedPath}"}
             return@runBlocking chain.proceed(initialRequest)
         }
         lastFailedAt.remove(host)
-        log("CF BYPASS VERIFIED | code=${verified.code} | ${request.url.encodedPath}")
-        log("CF BYPASS TOTAL | path=${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - interceptStarted) / 1_000_000L}")
+        log { "CF BYPASS VERIFIED | code=${verified.code} | ${request.url.encodedPath}"}
+        log { "CF BYPASS TOTAL | path=${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - interceptStarted) / 1_000_000L}"}
         verified
     }
 
@@ -565,7 +565,7 @@ private object AnimeLHDBackgroundRefresh {
 
 private fun readHomeDiskCache(): Pair<Long, AnimeLHDHomeData>? = try {
     val raw = CloudStreamApp.getKey("AnimeLHD", HOME_DISK_KEY, "") as? String ?: ""
-    log("HOME DISK CACHE READ | context=${CloudStreamApp.context != null} | chars=${raw.length}")
+    log { "HOME DISK CACHE READ | context=${CloudStreamApp.context != null} | chars=${raw.length}"}
     if (raw.isBlank()) null else {
         val json = JSONObject(raw)
         val data = AnimeLHDHomeData(
@@ -575,14 +575,14 @@ private fun readHomeDiskCache(): Pair<Long, AnimeLHDHomeData>? = try {
         // Una portada parcial no es válida: podría dejar una sección vacía
         // hasta el siguiente reinicio de CloudStream.
         if (data.episodes.isEmpty() || data.animes.isEmpty()) {
-            log("HOME DISK CACHE INVALID | episodes=${data.episodes.size} | animes=${data.animes.size}")
+            log { "HOME DISK CACHE INVALID | episodes=${data.episodes.size} | animes=${data.animes.size}"}
             null
         } else {
             json.optLong("savedAt", 0L) to data
         }
     }
 } catch (e: Exception) {
-    log("HOME DISK CACHE READ ERROR | ${e.javaClass.simpleName}")
+    log { "HOME DISK CACHE READ ERROR | ${e.javaClass.simpleName}"}
     null
 }
 
@@ -594,9 +594,9 @@ private fun writeHomeDiskCache(data: AnimeLHDHomeData) {
             .put("animes", JSONArray().apply { data.animes.forEach { put(it) } })
         CloudStreamApp.setKey("AnimeLHD", HOME_DISK_KEY, json.toString())
         val saved = CloudStreamApp.getKey("AnimeLHD", HOME_DISK_KEY, "") as? String ?: ""
-        log("HOME DISK CACHE WRITE | context=${CloudStreamApp.context != null} | chars=${saved.length} | verified=${saved == json.toString()}")
+        log { "HOME DISK CACHE WRITE | context=${CloudStreamApp.context != null} | chars=${saved.length} | verified=${saved == json.toString()}"}
     } catch (e: Exception) {
-        log("HOME DISK CACHE WRITE ERROR | ${e.javaClass.simpleName}")
+        log { "HOME DISK CACHE WRITE ERROR | ${e.javaClass.simpleName}"}
     }
 }
 
@@ -695,7 +695,7 @@ class AnimeLHDProvider : MainAPI() {
         return mutex.withLock {
             if (!forceNetwork) {
                 cachedPage(url)?.let {
-                    log("HTTP REQUEST COALESCED | " + safeUrl(url))
+                    log { "HTTP REQUEST COALESCED | " + safeUrl(url)}
                     return@withLock it
                 }
             }
@@ -711,7 +711,7 @@ class AnimeLHDProvider : MainAPI() {
     ): String? {
         val cacheable = !json && url.startsWith("$WEB/")
         if (cacheable && !forceNetwork) cachedPage(url)?.let {
-            log("HTTP CACHE HIT | " + safeUrl(url))
+            log { "HTTP CACHE HIT | " + safeUrl(url)}
             return it
         }
 
@@ -724,14 +724,14 @@ class AnimeLHDProvider : MainAPI() {
                 if (AnimeLHDBackgroundRefresh.latinosRunning.compareAndSet(false, true)) {
                     AnimeLHDBackgroundRefresh.scope.launch {
                         try {
-                            log("LATINOS DISK CACHE HIT | refresco en segundo plano")
+                            log { "LATINOS DISK CACHE HIT | refresco en segundo plano"}
                             fetch(url, forceNetwork = true)
                         } finally {
                             AnimeLHDBackgroundRefresh.latinosRunning.set(false)
                         }
                     }
                 }
-                log("HTTP DISK CACHE HIT | " + safeUrl(url))
+                log { "HTTP DISK CACHE HIT | " + safeUrl(url)}
                 return diskHtml
             }
         }
@@ -753,7 +753,7 @@ class AnimeLHDProvider : MainAPI() {
                 }
             }
 
-            log("HTTP START | " + safeUrl(url))
+            log { "HTTP START | " + safeUrl(url)}
 
             // Resolver oficial de CloudStream, igual que AnimeOnline.
             val response = app.get(
@@ -763,32 +763,32 @@ class AnimeLHDProvider : MainAPI() {
                 timeout = 40
             )
             val body = response.text
-            log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | server=${response.headers["Server"].orEmpty()} | cfRay=${response.headers["cf-ray"].orEmpty()} | url=" + safeUrl(url))
+            log { "HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | server=${response.headers["Server"].orEmpty()} | cfRay=${response.headers["cf-ray"].orEmpty()} | url=" + safeUrl(url)}
 
             if (response.isSuccessful) {
                 val cloudflareInterstitial = body.contains("Just a moment", ignoreCase = true) ||
                     body.contains("cf-chl-", ignoreCase = true) ||
                     body.contains("cf-challenge", ignoreCase = true)
                 if (cloudflareInterstitial) {
-                    log("HTTP CHALLENGE BODY | no se guarda en caché | " + safeUrl(url))
+                    log { "HTTP CHALLENGE BODY | no se guarda en caché | " + safeUrl(url)}
                     return null
                 }
                 if (cacheable) rememberPage(url, body)
                 if (cacheable && url == "$WEB/latinos?page=1") {
                     try { CloudStreamApp.setKey("AnimeLHD", LATINOS_PAGE1_DISK_KEY, body)
                     val saved = CloudStreamApp.getKey("AnimeLHD", LATINOS_PAGE1_DISK_KEY, "") as? String ?: ""
-                    log("LATINOS DISK CACHE WRITE | context=${CloudStreamApp.context != null} | chars=${saved.length} | verified=${saved == body}") }
-                    catch (e: Exception) { log("LATINOS DISK CACHE WRITE ERROR | ${e.javaClass.simpleName}") }
+                    log { "LATINOS DISK CACHE WRITE | context=${CloudStreamApp.context != null} | chars=${saved.length} | verified=${saved == body}"} }
+                    catch (e: Exception) { log { "LATINOS DISK CACHE WRITE ERROR | ${e.javaClass.simpleName}"} }
                 }
                 body
             } else {
-                log("HTTP ERROR BODY | " + body.take(180).replace("\n", " "))
+                log { "HTTP ERROR BODY | " + body.take(180).replace("\n", " ")}
                 null
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            log("FETCH EXCEPTION " + safeUrl(url) + " -> " + e.javaClass.simpleName + ": " + e.message)
+            log { "FETCH EXCEPTION " + safeUrl(url) + " -> " + e.javaClass.simpleName + ": " + e.message}
             null
         }
     }
@@ -802,34 +802,34 @@ class AnimeLHDProvider : MainAPI() {
         // quedarse esperando sin completar la respuesta. Usamos directamente
         // las páginas públicas de Next.js para categorías y búsqueda.
 
-        log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)
+        log { "HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey}
         // El interceptor resuelve el challenge una sola vez y comparte la cookie
         // con las categorías que esperan; aquí solo repetimos ante un fallo transitorio.
         var html = fetch(htmlUrl)
         if (html == null) {
-            log("HTML FALLBACK RETRY | espera 2500ms | " + safeUrl(htmlUrl))
+            log { "HTML FALLBACK RETRY | espera 2500ms | " + safeUrl(htmlUrl)}
             delay(2_500)
             html = fetch(htmlUrl)
         }
         if (html == null) {
-            log("HTML FALLBACK FAIL | dos intentos agotados")
+            log { "HTML FALLBACK FAIL | dos intentos agotados"}
             return emptyList<JSONObject>() to 1
         }
-        log("HTML FALLBACK BODY | chars=" + html.length + " | hasNext=" + html.contains("self.__next_f.push"))
+        log { "HTML FALLBACK BODY | chars=" + html.length + " | hasNext=" + html.contains("self.__next_f.push")}
         val flat = flattenRsc(html)
-        log("HTML FALLBACK RSC | chars=" + flat.length +
+        log { "HTML FALLBACK RSC | chars=" + flat.length +
             " | hasInitialAnimes=" + flat.contains("\"initialAnimes\":") +
             " | hasInitialData=" + flat.contains("\"initialData\":") +
             " | hasData=" + flat.contains("\"data\":") +
-            " | hasSearch=" + flat.contains("search", ignoreCase = true))
+            " | hasSearch=" + flat.contains("search", ignoreCase = true)}
         val parsed = rscListAfterMarkers(flat)
         if (parsed == null) {
             val markers = listOf("\"initialAnimes\":", "\"initialData\":", "\"animes\":", "\"data\":")
                 .filter { flat.contains(it) }
-            log("HTML FALLBACK PARSE MISS | requestedKey=" + htmlKey + " | foundMarkers=" + markers.joinToString())
+            log { "HTML FALLBACK PARSE MISS | requestedKey=" + htmlKey + " | foundMarkers=" + markers.joinToString()}
             return emptyList<JSONObject>() to 1
         }
-        log("HTML FALLBACK PARSED | dataCount=" + parsed.first.size + " | lastPage=" + parsed.second)
+        log { "HTML FALLBACK PARSED | dataCount=" + parsed.first.size + " | lastPage=" + parsed.second}
         return parsed
     }
 
@@ -840,7 +840,7 @@ class AnimeLHDProvider : MainAPI() {
             now - cached.first < HOME_CACHE_MS &&
             cached.second.episodes.isNotEmpty() && cached.second.animes.isNotEmpty()
         ) {
-            log("HOME DATA CACHE HIT | episodes=${cached.second.episodes.size} | animes=${cached.second.animes.size}")
+            log { "HOME DATA CACHE HIT | episodes=${cached.second.episodes.size} | animes=${cached.second.animes.size}"}
             return cached.second
         }
 
@@ -852,7 +852,7 @@ class AnimeLHDProvider : MainAPI() {
                 AnimeLHDHomeState.cache = (if (savedAt > 0L) savedAt else now - HOME_CACHE_MS - 1L) to diskData
 
                 if (age < HOME_CACHE_MS) {
-                    log("HOME DATA DISK CACHE FRESH | ageMs=$age | episodes=${diskData.episodes.size} | animes=${diskData.animes.size}")
+                    log { "HOME DATA DISK CACHE FRESH | ageMs=$age | episodes=${diskData.episodes.size} | animes=${diskData.animes.size}"}
                     return diskData
                 }
 
@@ -861,11 +861,11 @@ class AnimeLHDProvider : MainAPI() {
                 if (AnimeLHDBackgroundRefresh.homeRunning.compareAndSet(false, true)) {
                     AnimeLHDBackgroundRefresh.scope.launch {
                         try {
-                            log("HOME DISK CACHE STALE | refresh background | ageMs=$age")
+                            log { "HOME DISK CACHE STALE | refresh background | ageMs=$age"}
                             val refreshed = homeData(forceRefresh = true)
                             if (refreshed == null) {
                                 delay(3_000)
-                                log("HOME DISK CACHE RETRY | segundo intento automático")
+                                log { "HOME DISK CACHE RETRY | segundo intento automático"}
                                 homeData(forceRefresh = true)
                             }
                         } finally {
@@ -873,7 +873,7 @@ class AnimeLHDProvider : MainAPI() {
                         }
                     }
                 }
-                log("HOME DATA DISK CACHE STALE HIT | episodes=${diskData.episodes.size} | animes=${diskData.animes.size}")
+                log { "HOME DATA DISK CACHE STALE HIT | episodes=${diskData.episodes.size} | animes=${diskData.animes.size}"}
                 return diskData
             }
         }
@@ -885,7 +885,7 @@ class AnimeLHDProvider : MainAPI() {
                 checkedAt - latest.first < HOME_CACHE_MS &&
                 latest.second.episodes.isNotEmpty() && latest.second.animes.isNotEmpty()
             ) {
-                log("HOME DATA CACHE HIT (LOCK) | episodes=${latest.second.episodes.size} | animes=${latest.second.animes.size}")
+                log { "HOME DATA CACHE HIT (LOCK) | episodes=${latest.second.episodes.size} | animes=${latest.second.animes.size}"}
                 return@withLock latest.second
             }
 
@@ -897,7 +897,7 @@ class AnimeLHDProvider : MainAPI() {
             // segunda descarga para no guardar ni mostrar catálogos incompletos.
             for (attempt in 0..1) {
                 if (html.isNullOrBlank()) {
-                    log("HOME DATA RETRY | attempt=${attempt + 1} | espera 1200ms")
+                    log { "HOME DATA RETRY | attempt=${attempt + 1} | espera 1200ms"}
                     if (attempt == 0) {
                         delay(1_200)
                         html = fetch("$WEB/", forceNetwork = true)
@@ -918,7 +918,7 @@ class AnimeLHDProvider : MainAPI() {
                     break
                 }
 
-                log("HOME DATA PARTIAL | attempt=${attempt + 1} | episodes=${episodes.size} | animes=${animes.size}")
+                log { "HOME DATA PARTIAL | attempt=${attempt + 1} | episodes=${episodes.size} | animes=${animes.size}"}
                 if (attempt == 0) {
                     delay(700)
                     html = fetch("$WEB/", forceNetwork = true)
@@ -927,13 +927,13 @@ class AnimeLHDProvider : MainAPI() {
 
             val result = data
             if (result == null) {
-                log("HOME DATA FAIL | no se obtuvo portada completa tras dos intentos")
+                log { "HOME DATA FAIL | no se obtuvo portada completa tras dos intentos"}
                 return@withLock null
             }
 
             AnimeLHDHomeState.cache = System.currentTimeMillis() to result
             writeHomeDiskCache(result)
-            log("HOME DATA PARSED | episodes=${result.episodes.size} | animes=${result.animes.size} | elapsedMs=${System.currentTimeMillis() - startedAt}")
+            log { "HOME DATA PARSED | episodes=${result.episodes.size} | animes=${result.animes.size} | elapsedMs=${System.currentTimeMillis() - startedAt}"}
             result
         }
     }
@@ -948,7 +948,7 @@ class AnimeLHDProvider : MainAPI() {
                 if (page > 1) emptyList<SearchResponse>() to false
                 else {
                     val rawEpisodes = homeData()?.episodes ?: emptyList()
-                    log("RECENT RESULT DATA | rawEpisodes=${rawEpisodes.size}")
+                    log { "RECENT RESULT DATA | rawEpisodes=${rawEpisodes.size}"}
                     val list = rawEpisodes
                         .mapNotNull { ep ->
                             val title = ep.optString("anime_title")
@@ -966,7 +966,7 @@ class AnimeLHDProvider : MainAPI() {
                             }
                         }
                         .distinctBy { it.url }
-                    log("RECENT RESULT | mapped=${list.size}")
+                    log { "RECENT RESULT | mapped=${list.size}"}
                     list to false
                 }
             }
@@ -995,13 +995,13 @@ class AnimeLHDProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse>? {
         val q = URLEncoder.encode(query, "UTF-8")
-        log("SEARCH START | query=" + query + " | encoded=" + q)
+        log { "SEARCH START | query=" + query + " | encoded=" + q}
         val (raw, _) = fetchList(
             "$WEB/directorio?search=$q",
             "\"initialAnimes\":"
         )
         val mapped = raw.mapNotNull { toSearch(it) }
-        log("SEARCH END | raw=" + raw.size + " | mapped=" + mapped.size)
+        log { "SEARCH END | raw=" + raw.size + " | mapped=" + mapped.size}
         return mapped
     }
 
@@ -1137,29 +1137,29 @@ class AnimeLHDProvider : MainAPI() {
             .ifBlank { rawSlug }
         val episode = parts[1].trim().toIntOrNull() ?: return false
 
-        log("LOADLINKS START | rawSlug=" + rawSlug + " | slug=" + slug + " | episodio=" + episode + " | casting=" + isCasting)
+        log { "LOADLINKS START | rawSlug=" + rawSlug + " | slug=" + slug + " | episodio=" + episode + " | casting=" + isCasting}
         val html = fetch("$WEB/ver/$slug/$episode") ?: run {
-            log("LOADLINKS ABORT | no se pudo descargar la página")
+            log { "LOADLINKS ABORT | no se pudo descargar la página"}
             return false
         }
-        log("WATCH HTML | chars=" + html.length + " | next_f_push=" + html.contains("self.__next_f.push"))
+        log { "WATCH HTML | chars=" + html.length + " | next_f_push=" + html.contains("self.__next_f.push")}
         val flat = flattenRsc(html)
-        log("WATCH RSC | chars=" + flat.length + " | players_marker=" + flat.contains("\"players\":"))
+        log { "WATCH RSC | chars=" + flat.length + " | players_marker=" + flat.contains("\"players\":")}
 
         val playersJson = jsonAfter(flat, "\"players\":")
         if (playersJson == null) {
-            log("LOADLINKS ABORT | no se encontró el bloque players")
+            log { "LOADLINKS ABORT | no se encontró el bloque players"}
             return false
         }
         val players = try {
             JSONArray(playersJson).objs()
         } catch (e: Exception) {
-            log("LOADLINKS ABORT | JSON players inválido: " + e.javaClass.simpleName + ": " + e.message)
+            log { "LOADLINKS ABORT | JSON players inválido: " + e.javaClass.simpleName + ": " + e.message}
             return false
         }
 
-        log("PLAYERS FOUND | count=" + players.size)
-        players.forEachIndexed { index, p -> log("PLAYER[" + index + "] | lang=" + p.optString("language") + " | server=" + p.optString("server_name") + " | bridge=" + safeUrl(p.optString("bridge_url"))) }
+        log { "PLAYERS FOUND | count=" + players.size}
+        players.forEachIndexed { index, p -> log { "PLAYER[" + index + "] | lang=" + p.optString("language") + " | server=" + p.optString("server_name") + " | bridge=" + safeUrl(p.optString("bridge_url"))} }
 
         data class OrderedLink(val languageRank: Int, val sequence: Int, val link: ExtractorLink)
         val pendingLinks = ConcurrentLinkedQueue<OrderedLink>()
@@ -1189,22 +1189,22 @@ class AnimeLHDProvider : MainAPI() {
                         val bridge = p.optString("bridge_url")
                         if (bridge.isBlank()) return@async
 
-                        log("PLAYER START | [" + lang + "] " + server + " | bridge=" + safeUrl(bridge))
+                        log { "PLAYER START | [" + lang + "] " + server + " | bridge=" + safeUrl(bridge)}
                         val embed = withTimeoutOrNull(BRIDGE_TIMEOUT_MS) {
                             resolveBridge(bridge, "$WEB/ver/$slug/$episode")
                         }
                         if (embed == null) {
-                            log("bridge sin iframe: $lang $server")
+                            log { "bridge sin iframe: $lang $server"}
                             return@async
                         }
-                        log("EMBED RESOLVED | [" + lang + "] " + server + " | " + safeUrl(embed))
+                        log { "EMBED RESOLVED | [" + lang + "] " + server + " | " + safeUrl(embed)}
 
-                        log("EXTRACTOR ROUTE START | [" + lang + "] " + server + " | " + safeUrl(embed))
+                        log { "EXTRACTOR ROUTE START | [" + lang + "] " + server + " | " + safeUrl(embed)}
                         withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
                             val prefix = "[$lang] $server"
                             when {
                                 server.equals("Gamma", ignoreCase = true) ||                                    embed.contains("ashleyhardat.com", ignoreCase = true) -> {
-                                    log("VOE ROUTE | $prefix | embed=" + safeUrl(embed))
+                                    log { "VOE ROUTE | $prefix | embed=" + safeUrl(embed)}
                                     loadVoe(embed, prefix, emitForPlayer)
                                 }
                                 BYSE_EMBED.containsMatchIn(embed) ||
@@ -1212,7 +1212,7 @@ class AnimeLHDProvider : MainAPI() {
                                     val bysePrefix = "[$lang] " + server.replace(
                                         Regex("""(?i)(?:\s*[-·|]\s*)?720p?\b"""), ""
                                     ).trim().ifBlank { server }
-                                    log("BYSE ROUTE | $bysePrefix | embed=" + safeUrl(embed))
+                                    log { "BYSE ROUTE | $bysePrefix | embed=" + safeUrl(embed)}
                                     loadByseManual(embed, bysePrefix, "$WEB/ver/$slug/$episode", emitForPlayer)
                                 }
                                 LULU_HOSTS.any { embed.contains(it, ignoreCase = true) } ->
@@ -1223,7 +1223,7 @@ class AnimeLHDProvider : MainAPI() {
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        log("player ERROR -> ${e.javaClass.simpleName}: ${e.message}")
+                        log { "player ERROR -> ${e.javaClass.simpleName}: ${e.message}"}
                     }
                 }
             }.awaitAll()
@@ -1259,17 +1259,17 @@ class AnimeLHDProvider : MainAPI() {
                 headers = link.headers
                 extractorData = link.extractorData
             }
-            log("FINAL SOURCE ORDER[$index] | source=" + normalized.source + " | name=" + normalized.name + " | quality=" + normalized.quality)
+            log { "FINAL SOURCE ORDER[$index] | source=" + normalized.source + " | name=" + normalized.name + " | quality=" + normalized.quality}
             callback(normalized)
         }
 
-        log("LOADLINKS END | enlaces_emitidos=" + orderedLinks.size + " | players=" + players.size)
+        log { "LOADLINKS END | enlaces_emitidos=" + orderedLinks.size + " | players=" + players.size}
         return orderedLinks.isNotEmpty()
     }
 
     /** bridge_url -> URL del embed real (el iframe que devuelve el bridge). */
     private suspend fun resolveBridge(bridgeUrl: String, episodeReferer: String): String? {
-        log("BRIDGE REQUEST | " + safeUrl(bridgeUrl))
+        log { "BRIDGE REQUEST | " + safeUrl(bridgeUrl)}
         val body = fetch(
             bridgeUrl,
             extraHeaders = mapOf(
@@ -1277,11 +1277,11 @@ class AnimeLHDProvider : MainAPI() {
                 "Origin" to WEB
             )
         ) ?: run {
-            log("BRIDGE FAIL | fetch devolvió null")
+            log { "BRIDGE FAIL | fetch devolvió null"}
             return null
         }
         val src = IFRAME_SRC.find(body)?.groupValues?.get(1) ?: run {
-            log("BRIDGE FAIL | no se encontró iframe src | chars=" + body.length + " | preview=" + body.take(180).replace("\n", " "))
+            log { "BRIDGE FAIL | no se encontró iframe src | chars=" + body.length + " | preview=" + body.take(180).replace("\n", " ")}
             return null
         }
         return src.replace("&amp;", "&").let {
@@ -1379,13 +1379,13 @@ class AnimeLHDProvider : MainAPI() {
         var counter = 0
         while (counter < 200000 && (System.nanoTime() - started) / 1000000 < 14000) {
             if (byseLeadingZeroBits(byseWorkHash(nonce + ":" + counter)) >= difficulty) {
-                log("Byse PoW resuelto bits=" + difficulty + " intentos=" + (counter + 1))
+                log { "Byse PoW resuelto bits=" + difficulty + " intentos=" + (counter + 1)}
                 return counter.toString()
             }
             counter++
             if (counter % 256 == 0) delay(1)
         }
-        log("Byse PoW agotado bits=" + difficulty + " intentos=" + counter)
+        log { "Byse PoW agotado bits=" + difficulty + " intentos=" + counter}
         return null
     }
 
@@ -1447,31 +1447,31 @@ class AnimeLHDProvider : MainAPI() {
         val referers = listOf("$API/", "$WEB/", "$origin/").distinct()
         val collected = ConcurrentLinkedQueue<ExtractorLink>()
 
-        log("LOAD EXTRACTOR START | " + prefix + " | byse=" + isByse + " | embed=" + safeUrl(embed))
+        log { "LOAD EXTRACTOR START | " + prefix + " | byse=" + isByse + " | embed=" + safeUrl(embed)}
 
         for (candidate in candidates) {
             for (ref in referers) {
                 val before = collected.size
                 try {
-                    log("EXTRACTOR ATTEMPT | " + prefix + " | candidate=" + safeUrl(candidate) + " | referer=" + safeUrl(ref))
+                    log { "EXTRACTOR ATTEMPT | " + prefix + " | candidate=" + safeUrl(candidate) + " | referer=" + safeUrl(ref)}
                     loadExtractor(candidate, ref, subtitleCallback) { link ->
-                        log("EXTRACTOR LINK RAW | " + prefix + " | source=" + link.source + " | name=" + link.name + " | type=" + link.type + " | quality=" + link.quality + " | url=" + safeUrl(link.url) + " | referer=" + safeUrl(link.referer))
+                        log { "EXTRACTOR LINK RAW | " + prefix + " | source=" + link.source + " | name=" + link.name + " | type=" + link.type + " | quality=" + link.quality + " | url=" + safeUrl(link.url) + " | referer=" + safeUrl(link.referer)}
                         collected.add(link)
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    log("EXTRACTOR ATTEMPT ERROR | " + prefix + " | " + e.javaClass.simpleName + ": " + e.message)
+                    log { "EXTRACTOR ATTEMPT ERROR | " + prefix + " | " + e.javaClass.simpleName + ": " + e.message}
                 }
                 if (collected.size > before) break
             }
             if (collected.isNotEmpty()) break
         }
 
-        log("LOAD EXTRACTOR END | " + prefix + " | links=" + collected.size)
+        log { "LOAD EXTRACTOR END | " + prefix + " | links=" + collected.size}
         for (link in collected.distinctBy { it.url }) {
             val tagged = retag(link, prefix)
-            log("EXTRACTOR LINK EMIT | " + prefix + " | " + tagged.name + " | type=" + tagged.type + " | quality=" + tagged.quality + " | url=" + safeUrl(tagged.url))
+            log { "EXTRACTOR LINK EMIT | " + prefix + " | " + tagged.name + " | type=" + tagged.type + " | quality=" + tagged.quality + " | url=" + safeUrl(tagged.url)}
             emit(tagged)
         }
     }
@@ -1625,11 +1625,11 @@ class AnimeLHDProvider : MainAPI() {
                 this.headers = streamHeaders
             }
             emit(link)
-            log("Byse resuelto host=" + URI(streamUrl).host)
+            log { "Byse resuelto host=" + URI(streamUrl).host}
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            log("Byse resolver ERROR " + input.host + ": " + e.javaClass.simpleName + ": " + e.message)
+            log { "Byse resolver ERROR " + input.host + ": " + e.javaClass.simpleName + ": " + e.message}
         }
     }
 
@@ -1658,7 +1658,7 @@ class AnimeLHDProvider : MainAPI() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            log("HLS QUALITY | no se pudo leer manifiesto: ${e.javaClass.simpleName}")
+            log { "HLS QUALITY | no se pudo leer manifiesto: ${e.javaClass.simpleName}"}
             Qualities.Unknown.value
         }
     }
@@ -1669,17 +1669,17 @@ class AnimeLHDProvider : MainAPI() {
         emit: suspend (ExtractorLink) -> Unit
     ) {
         try {
-            log("VOE START | $prefix | embed=" + safeUrl(embedUrl))
+            log { "VOE START | $prefix | embed=" + safeUrl(embedUrl)}
             val sourceUrl = withTimeoutOrNull(VOE_TIMEOUT_NS / 1_000_000L) {
                 resolveVoe(embedUrl)
             }
             if (sourceUrl.isNullOrBlank()) {
-                log("VOE FAIL | $prefix | no se pudo extraer source")
+                log { "VOE FAIL | $prefix | no se pudo extraer source"}
                 return
             }
-            log("VOE SOURCE | $prefix | " + safeUrl(sourceUrl))
+            log { "VOE SOURCE | $prefix | " + safeUrl(sourceUrl)}
             val voeQuality = detectHlsQuality(sourceUrl, mapOf("Referer" to embedUrl))
-            log("VOE QUALITY | $prefix | $voeQuality")
+            log { "VOE QUALITY | $prefix | $voeQuality"}
             emit(newExtractorLink(
                 source = "VOE",
                 name = "$prefix · VOE",
@@ -1689,11 +1689,11 @@ class AnimeLHDProvider : MainAPI() {
                 referer = embedUrl
                 quality = voeQuality
             })
-            log("VOE EMIT | $prefix")
+            log { "VOE EMIT | $prefix"}
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            log("VOE ERROR | $prefix | ${e.javaClass.simpleName}: ${e.message}")
+            log { "VOE ERROR | $prefix | ${e.javaClass.simpleName}: ${e.message}"}
         }
     }
 
@@ -1881,7 +1881,7 @@ class AnimeLHDProvider : MainAPI() {
 
             String(decoded, Charsets.UTF_8)
         } catch (e: Exception) {
-            log("VOE decode ERROR -> ${e.message}")
+            log { "VOE decode ERROR -> ${e.message}"}
             null
         }
     }
@@ -1963,7 +1963,7 @@ class AnimeLHDProvider : MainAPI() {
     ) {
         val res = app.get(embed, headers = mapOf("Referer" to "$API/"))
         if (!res.isSuccessful) {
-            log("Lulu HTTP ${res.code}")
+            log { "Lulu HTTP ${res.code}"}
             return
         }
         val text = res.text
@@ -1978,7 +1978,7 @@ class AnimeLHDProvider : MainAPI() {
             ?: M3U8_ANY.find(unpacked)?.value
             ?: M3U8_ANY.find(text)?.value
             ?: run {
-                log("Lulu: no se encontró m3u8")
+                log { "Lulu: no se encontró m3u8"}
                 return
             }
 
@@ -1986,7 +1986,7 @@ class AnimeLHDProvider : MainAPI() {
 
         val luluReferer = "$origin/"
         val luluQuality = detectHlsQuality(m3u8, mapOf("Referer" to luluReferer))
-        log("LULU QUALITY | $prefix | $luluQuality")
+        log { "LULU QUALITY | $prefix | $luluQuality"}
         emit(
             newExtractorLink(
                 source = "LuluStream",
