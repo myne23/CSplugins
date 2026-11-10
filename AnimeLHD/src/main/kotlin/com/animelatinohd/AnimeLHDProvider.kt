@@ -372,15 +372,15 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             // No convertir IOException("canceled") en CancellationException propia:
             // NiceHttp puede propagarla como error fatal fuera del ciclo normal.
             if (!e.message.orEmpty().contains("canceled", ignoreCase = true)) {
-                log { "CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookies=${initialCookieJar.size} | clearance=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}"}
+                log { "CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookies=${initialCookieJar.size} | clearance=${if (initialCookies != null) "cookie" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}"}
             }
             throw e
         } catch (e: Exception) {
-            log { "CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookies=${initialCookieJar.size} | clearance=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}"}
+            log { "CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookies=${initialCookieJar.size} | clearance=${if (initialCookies != null) "cookie" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}"}
             throw e
         }
         val proceedMs = (System.nanoTime() - proceedStarted) / 1_000_000L
-        log { "CF INITIAL | cookies=${initialCookieJar.size} | clearance=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | code=${response.code} | proceedMs=${proceedMs} | server=${response.header("Server").orEmpty()} | cf-cache-status=${response.header("cf-cache-status").orEmpty()} | age=${response.header("age").orEmpty()} | server-timing=${response.header("server-timing").orEmpty()} | ${request.url.encodedPath}"}
+        log { "CF INITIAL | cookies=${initialCookieJar.size} | clearance=${when { initialCookies == null -> "no"; isChallenge(response) -> "cookie"; else -> "ok" }} | ua=${ua.take(40)} | code=${response.code} | proceedMs=${proceedMs} | server=${response.header("Server").orEmpty()} | cf-cache-status=${response.header("cf-cache-status").orEmpty()} | age=${response.header("age").orEmpty()} | server-timing=${response.header("server-timing").orEmpty()} | ${request.url.encodedPath}"}
         if (!isChallenge(response)) {
             if (response.code == 403 || response.code == 503) {
                 log { "CF NO-CHALLENGE | code=${response.code} | ctype=${response.header("Content-Type").orEmpty()} | path=${request.url.encodedPath}"}
@@ -412,8 +412,8 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 log { "CF COOKIE REFRESH FOUND | ${request.url.encodedPath}"}
                 return@withLock latest
             }
-            if (System.currentTimeMillis() - (lastFailedAt[host] ?: 0L) < 30_000L) {
-                val restanMs = 30_000L - (System.currentTimeMillis() - (lastFailedAt[host] ?: 0L))
+            if (System.currentTimeMillis() - (lastFailedAt[host] ?: 0L) < 10_000L) {
+                val restanMs = 10_000L - (System.currentTimeMillis() - (lastFailedAt[host] ?: 0L))
                 log { "CF BYPASS COOLDOWN | restanMs=${restanMs.coerceAtLeast(0L)} | ${request.url.encodedPath}"}
                 return@withLock null
             }
@@ -433,14 +433,41 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                     additionalUrls = listOf(Regex(".")),
                     userAgent = null,
                     useOkhttp = false,
-                    script = "document.title",
-                    scriptCallback = { title ->
-                        val cleanTitle = title.trim().trim('"')
-                        if (cleanTitle.isNotBlank() && titleLogged.compareAndSet(false, true)) {
-                            log { "CF WEBVIEW TITLE | title=" + cleanTitle }
+                    script = """
+                        (function() {
+                            const now = Date.now();
+                            if (!window.__animelhdCfDiagStart) {
+                                window.__animelhdCfDiagStart = now;
+                                window.__animelhdCfDiagLast = 0;
+                            }
+                            if (now - window.__animelhdCfDiagStart < 5000 ||
+                                now - window.__animelhdCfDiagLast < 3000) return "";
+                            window.__animelhdCfDiagLast = now;
+                            const turnstile = !!document.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
+                                !!document.querySelector('input[name="cf-turnstile-response"]');
+                            return JSON.stringify({
+                                title: document.title || "",
+                                turnstile: turnstile,
+                                iframe: !!document.querySelector('iframe'),
+                                ctype: (window._cf_chl_opt && window._cf_chl_opt.cType) || ""
+                            });
+                        })()
+                    """.trimIndent(),
+                    scriptCallback = { raw ->
+                        val diagnostic = runCatching {
+                            val jsonText = org.json.JSONTokener(raw).nextValue() as? String
+                            jsonText?.takeIf { it.isNotBlank() }?.let { JSONObject(it) }
+                        }.getOrNull()
+                        if (diagnostic != null) {
+                            log {
+                                "CF CHALLENGE | title=${diagnostic.optString("title")} | " +
+                                    "turnstile=${diagnostic.optBoolean("turnstile")} | " +
+                                    "iframe=${diagnostic.optBoolean("iframe")} | " +
+                                    "ctype=${diagnostic.optString("ctype")}"
+                            }
                         }
                     },
-                    timeout = 20_000L
+                    timeout = 30_000L
                 )
                 resolver.resolveUsingWebView(webViewRequest) {
                     val captured = readClearanceCookies(url)
