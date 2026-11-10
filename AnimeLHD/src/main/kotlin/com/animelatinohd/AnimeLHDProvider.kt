@@ -282,7 +282,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     }
 
     private fun persistWebViewUserAgent() {
-        val ua = WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: return
+        val ua = WebViewResolver.getWebViewUserAgent()?.takeIf { it.isNotBlank() } ?: return
         try {
             if (stableUserAgent() == ua) return
             CloudStreamApp.setKey("AnimeLHD_CF_UA", ua)
@@ -435,15 +435,16 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                     useOkhttp = false,
                     script = "document.title",
                     scriptCallback = { title ->
-                        if (titleLogged.compareAndSet(false, true)) {
-                            log { "CF WEBVIEW TITLE | title=" + title.trim().trim('"') }
+                        val cleanTitle = title.trim().trim('"')
+                        if (cleanTitle.isNotBlank() && titleLogged.compareAndSet(false, true)) {
+                            log { "CF WEBVIEW TITLE | title=" + cleanTitle }
                         }
                     },
                     timeout = 20_000L
                 )
                 resolver.resolveUsingWebView(webViewRequest) {
                     val captured = readClearanceCookies(url)
-                    if (!clearanceValue(captured).isNullOrBlank()) {
+                    if (isNewClearance(captured, rejectedCookies)) {
                         savedCookies[host] = captured!!
                         true
                     } else false
@@ -455,12 +456,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             } finally {
                 persistWebViewUserAgent()
                 val elapsed = (System.nanoTime() - started) / 1_000_000L
-                val hasClearance = !clearanceValue(latestClearance(url, host, rejectedCookies)).isNullOrBlank()
+                val hasClearance = isNewClearance(latestClearance(url, host, rejectedCookies), rejectedCookies)
                 log { "CF WEBVIEW END | ms=" + elapsed + " | clearance=" + if (hasClearance) "sí" else "no" }
             }
 
             val fresh = latestClearance(url, host, rejectedCookies)
-                ?.takeIf { !clearanceValue(it).isNullOrBlank() }
+                ?.takeIf { isNewClearance(it, rejectedCookies) }
             if (fresh == null) {
                 lastFailedAt[host] = System.currentTimeMillis()
                 log { "CF BYPASS FAIL | reason=" + (failureReason ?: "timeout o clearance ausente") + " | " + request.url.encodedPath }
