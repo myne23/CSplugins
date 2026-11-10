@@ -714,7 +714,8 @@ class AnimeLHDProvider : MainAPI() {
             val response = app.get(
                 url,
                 headers = headers,
-                interceptor = AnimeLHDCloudflareState.killer
+                interceptor = AnimeLHDCloudflareState.killer,
+                timeout = 40
             )
             val body = response.text
             log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | server=${response.headers["Server"].orEmpty()} | cfRay=${response.headers["cf-ray"].orEmpty()} | url=" + safeUrl(url))
