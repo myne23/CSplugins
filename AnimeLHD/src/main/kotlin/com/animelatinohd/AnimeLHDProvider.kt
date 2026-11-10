@@ -420,7 +420,6 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 
             val started = System.nanoTime()
             var failureReason: String? = null
-            val titleLogged = AtomicBoolean(false)
             log { "CF WEBVIEW START | url=" + safeUrl(url) }
             try {
                 // Se carga la página real: no se fuerza UA ni se usa OkHttp dentro del WebView.
