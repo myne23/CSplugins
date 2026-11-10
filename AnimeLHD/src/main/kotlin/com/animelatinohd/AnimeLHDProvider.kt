@@ -345,7 +345,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             val retry = proceed(request, available, ua)
             if (!isChallenge(retry)) {
                 savedCookies[host] = available
-                lastFailedAt = 0L
+                lastFailedAt.remove(host)
                 log("CF COOKIE REUSE VERIFIED | ${request.url.encodedPath} | code=${retry.code}")
                 return@runBlocking retry
             }
@@ -362,7 +362,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 log("CF COOKIE REFRESH FOUND | ${request.url.encodedPath}")
                 return@withLock latest
             }
-            if (System.currentTimeMillis() - lastFailedAt < 30_000L) {
+            if (System.currentTimeMillis() - (lastFailedAt[host] ?: 0L) < 30_000L) {
                 log("CF BYPASS COOLDOWN | ${request.url.encodedPath}")
                 return@withLock null
             }
@@ -399,7 +399,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 fresh = latestClearance(url, host, rejectedCookies)
             }
             if (!isNewClearance(fresh, rejectedCookies)) {
-                lastFailedAt = System.currentTimeMillis()
+                lastFailedAt[host] = System.currentTimeMillis()
                 log("CF BYPASS UNAVAILABLE | no apareció clearance nuevo | ${request.url.encodedPath}")
                 return@withLock null
             }
@@ -416,11 +416,11 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         if (isChallenge(verified)) {
             verified.close()
             savedCookies.remove(host)
-            lastFailedAt = System.currentTimeMillis()
+            lastFailedAt[host] = System.currentTimeMillis()
             log("CF BYPASS REJECTED | code=403/503 | ${request.url.encodedPath}")
             return@runBlocking chain.proceed(withCookiesAndUa(withoutClearance(request), null, ua))
         }
-        lastFailedAt = 0L
+        lastFailedAt.remove(host)
         log("CF BYPASS VERIFIED | code=${verified.code} | ${request.url.encodedPath}")
         verified
     }
