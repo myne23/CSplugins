@@ -175,6 +175,25 @@ private fun rscObjectsAfterMarker(
     return emptyList()
 }
 
+private fun rscObjectsAfterKey(
+    text: String,
+    key: String,
+    from: Int = 0,
+    accept: (JSONObject) -> Boolean
+): List<JSONObject> {
+    val marker = Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*\\[")
+    var cursor = from
+    while (cursor < text.length) {
+        val match = marker.find(text, cursor) ?: break
+        cursor = match.range.last + 1
+        val raw = extractBalanced(text, cursor) ?: continue
+        val array = runCatching { JSONArray(raw).objs() }.getOrNull() ?: continue
+        val valid = array.filter(accept)
+        if (valid.isNotEmpty()) return valid
+    }
+    return emptyList()
+}
+
 private fun rscListAfterMarkers(text: String): Pair<List<JSONObject>, Int>? {
     val markers = listOf("\"initialAnimes\":", "\"initialData\":", "\"animes\":", "\"data\":")
     for (marker in markers) {
@@ -887,10 +906,10 @@ class AnimeLHDProvider : MainAPI() {
                 }
 
                 val flat = flattenRsc(html)
-                val episodes = rscObjectsAfterMarker(flat, "\"episodes\":") {
+                val episodes = rscObjectsAfterKey(flat, "episodes") {
                     it.optInt("number", 0) > 0
                 }
-                val animes = rscObjectsAfterMarker(flat, "\"animes\":") {
+                val animes = rscObjectsAfterKey(flat, "animes") {
                     it.optString("slug").isNotBlank() && it.optString("name").isNotBlank()
                 }
 
@@ -1003,29 +1022,31 @@ class AnimeLHDProvider : MainAPI() {
         val html = fetch("$WEB/anime/$slug") ?: return null
         val flat = flattenRsc(html)
 
+        val animeMarker = Regex("\"anime\"\\s*:\\s*\\{")
         var animeCursor = 0
         var animeStart = -1
-        var anime: JSONObject? = null
+        var selectedAnime: JSONObject? = null
         while (animeCursor < flat.length) {
-            val candidate = flat.indexOf("\"anime\":", animeCursor)
-            if (candidate < 0) break
-            animeCursor = candidate + "\"anime\":".length
+            val match = animeMarker.find(flat, animeCursor) ?: break
+            animeCursor = match.range.last + 1
             val raw = extractBalanced(flat, animeCursor) ?: continue
             val parsed = runCatching { JSONObject(raw) }.getOrNull() ?: continue
-            if (parsed.optString("name").isNotBlank() &&
-                (parsed.optString("slug").isBlank() || parsed.optString("slug") == slug)
+            val candidateSlug = parsed.optString("slug")
+            val hasIdentity = parsed.optString("id").isNotBlank() || parsed.optString("name").isNotBlank()
+            if (hasIdentity && parsed.optString("name").isNotBlank() &&
+                (candidateSlug.isBlank() || candidateSlug == slug)
             ) {
-                animeStart = candidate
-                anime = parsed
+                animeStart = match.range.first
+                selectedAnime = parsed
                 break
             }
         }
-        val selectedAnime = anime ?: return null
+        val anime = selectedAnime ?: return null
 
         val title = selectedAnime.optString("name").ifBlank { return null }
         val type = selectedAnime.optString("type")
 
-        val episodeNumbers = rscObjectsAfterMarker(flat, "\"episodes\":", animeStart) {
+        val episodeNumbers = rscObjectsAfterKey(flat, "episodes", animeStart) {
             it.optInt("number", 0) > 0
         }.map { it.optInt("number", 0) }
             .filter { it > 0 }
