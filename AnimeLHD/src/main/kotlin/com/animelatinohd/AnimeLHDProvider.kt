@@ -66,13 +66,6 @@ private val VOE_CHALLENGE = Regex("""<altcha-widget[^>]+challenge=["']([^"']+)["
 private val VOE_SOURCE = Regex(""""source"\s*:\s*"([^"]+)"""")
 private val VOE_HEX_CHARS = "0123456789abcdef".toCharArray()
 
-/*
- * Keep producing same-origin requests while Turnstile is open. WebViewResolver
- * observes resource requests and can stop as soon as cf_clearance appears.
- */
-private const val CF_COOKIE_PROBE_SCRIPT = """(function(){try{if(window.__animelhdCfProbe)return;window.__animelhdCfProbe=true;var n=0;var timer=setInterval(function(){if(++n>60){clearInterval(timer);return;}try{fetch('/__cf_probe.png?__animelhd_cf_probe='+Date.now(),{method:'GET',credentials:'include',cache:'no-store'}).catch(function(){});}catch(e){}},1000);}catch(e){}})();"""
-
-
 private val LULU_HOSTS = listOf("luluvdoo.com", "luluvdo.com", "lulustream.com", "lulu.st")
 private const val BYSE_FALLBACK_HOST = "https://byse.sx"
 private val BYSE_EMBED = Regex("""^https?://(?:www\.)?byse[a-z0-9-]*\.[a-z]+/(.*)$""", RegexOption.IGNORE_CASE)
@@ -328,24 +321,16 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         )
     }
 
-    private fun readClearanceCookies(url: String): Map<String, String>? {
-        val raw = try {
-            CookieManager.getInstance()?.getCookie(url)
-        } catch (_: Exception) {
-            null
-        } ?: return null
-
-        val parsed = raw.split(";").mapNotNull { part ->
+    private fun readCookies(url: String): Map<String, String> {
+        val raw = try { CookieManager.getInstance()?.getCookie(url) } catch (_: Exception) { null }
+        return raw.orEmpty().split(";").mapNotNull { part ->
             val pair = part.trim().split("=", limit = 2)
             if (pair.size == 2 && pair[0].isNotBlank()) pair[0] to pair[1] else null
         }.toMap()
-
-        return parsed.takeIf {
-            it.entries.any { entry ->
-                entry.key.equals("cf_clearance", ignoreCase = true) && entry.value.isNotBlank()
-            }
-        }
     }
+
+    private fun readClearanceCookies(url: String): Map<String, String>? =
+        readCookies(url).takeIf { !clearanceValue(it).isNullOrBlank() }
 
     /*
      * Prefer the cookie captured and verified by this resolver over a stale
@@ -374,7 +359,8 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         val host = request.url.host
         val url = request.url.toString()
         val ua = stableUserAgent()
-        val initialCookies = readClearanceCookies(url)
+        val initialCookieJar = readCookies(url)
+        val initialCookies = initialCookieJar.takeIf { !clearanceValue(it).isNullOrBlank() }
         val initialRequest = withCookiesAndUa(request, initialCookies, ua)
         val proceedStarted = System.nanoTime()
         val response = try {
@@ -386,15 +372,15 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             // No convertir IOException("canceled") en CancellationException propia:
             // NiceHttp puede propagarla como error fatal fuera del ciclo normal.
             if (!e.message.orEmpty().contains("canceled", ignoreCase = true)) {
-                log { "CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}"}
+                log { "CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookies=${initialCookieJar.size} | clearance=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}"}
             }
             throw e
         } catch (e: Exception) {
-            log { "CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}"}
+            log { "CF INITIAL ERROR | elapsedMs=${(System.nanoTime() - proceedStarted) / 1_000_000L} | cookies=${initialCookieJar.size} | clearance=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | ${e.javaClass.simpleName}: ${e.message}"}
             throw e
         }
         val proceedMs = (System.nanoTime() - proceedStarted) / 1_000_000L
-        log { "CF INITIAL | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | code=${response.code} | proceedMs=${proceedMs} | server=${response.header("Server").orEmpty()} | cf-cache-status=${response.header("cf-cache-status").orEmpty()} | age=${response.header("age").orEmpty()} | server-timing=${response.header("server-timing").orEmpty()} | ${request.url.encodedPath}"}
+        log { "CF INITIAL | cookies=${initialCookieJar.size} | clearance=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | code=${response.code} | proceedMs=${proceedMs} | server=${response.header("Server").orEmpty()} | cf-cache-status=${response.header("cf-cache-status").orEmpty()} | age=${response.header("age").orEmpty()} | server-timing=${response.header("server-timing").orEmpty()} | ${request.url.encodedPath}"}
         if (!isChallenge(response)) {
             if (response.code == 403 || response.code == 503) {
                 log { "CF NO-CHALLENGE | code=${response.code} | ctype=${response.header("Content-Type").orEmpty()} | path=${request.url.encodedPath}"}
@@ -406,7 +392,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         var rejectedCookies = initialCookies
         val available = latestClearance(url, host, initialCookies)
         if (available != null && clearanceValue(available) != clearanceValue(initialCookies)) {
-            val retry = proceed(request, available, ua)
+            val retry = proceed(request, available, WebViewResolver.getWebViewUserAgent()?.takeIf { it.isNotBlank() } ?: ua)
             if (!isChallenge(retry)) {
                 savedCookies[host] = available
                 lastFailedAt.remove(host)
@@ -427,64 +413,76 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 return@withLock latest
             }
             if (System.currentTimeMillis() - (lastFailedAt[host] ?: 0L) < 30_000L) {
-                log { "CF BYPASS COOLDOWN | ${request.url.encodedPath}"}
+                val restanMs = 30_000L - (System.currentTimeMillis() - (lastFailedAt[host] ?: 0L))
+                log { "CF BYPASS COOLDOWN | restanMs=${restanMs.coerceAtLeast(0L)} | ${request.url.encodedPath}"}
                 return@withLock null
             }
 
             val started = System.nanoTime()
-            val fresh = withTimeoutOrNull(22_000L) {
-                try {
-                    val resolver = WebViewResolver(
-                        interceptUrl = Regex(".^"),
-                        additionalUrls = listOf(Regex("^https?://(?:www\\.)?animelatinohd\\.com(?:/|$)")),
-                        userAgent = null,
-                        useOkhttp = false,
-                        script = CF_COOKIE_PROBE_SCRIPT,
-                        timeout = 18_000
-                    )
-                    resolver.resolveUsingWebView(withCookiesAndUa(request, null, ua)) {
-                        persistWebViewUserAgent()
-                        val captured = readClearanceCookies(url)
-                        if (isNewClearance(captured, rejectedCookies)) {
-                            savedCookies[host] = captured!!
-                            log { "CF WEBVIEW COOKIE READY | ${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - started) / 1_000_000L}"}
-                            true
-                        } else false
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    log { "CF WEBVIEW ERROR | ${e.javaClass.simpleName}: ${e.message}"}
+            var failureReason: String? = null
+            val titleLogged = AtomicBoolean(false)
+            log { "CF WEBVIEW START | url=" + safeUrl(url) }
+            try {
+                // Se carga la página real: no se fuerza UA ni se usa OkHttp dentro del WebView.
+                val webViewRequest = request.newBuilder()
+                    .removeHeader("User-Agent")
+                    .removeHeader("Cookie")
+                    .build()
+                val resolver = WebViewResolver(
+                    interceptUrl = Regex(".^"),
+                    additionalUrls = listOf(Regex(".")),
+                    userAgent = null,
+                    useOkhttp = false,
+                    script = "document.title",
+                    scriptCallback = { title ->
+                        if (titleLogged.compareAndSet(false, true)) {
+                            log { "CF WEBVIEW TITLE | title=" + title.trim().trim('"') }
+                        }
+                    },
+                    timeout = 20_000L
+                )
+                resolver.resolveUsingWebView(webViewRequest) {
+                    val captured = readClearanceCookies(url)
+                    if (!clearanceValue(captured).isNullOrBlank()) {
+                        savedCookies[host] = captured!!
+                        true
+                    } else false
                 }
-
-                var captured = latestClearance(url, host, rejectedCookies)
-                val until = System.nanoTime() + 3_000_000_000L
-                while (!isNewClearance(captured, rejectedCookies) && System.nanoTime() < until) {
-                    delay(250)
-                    captured = latestClearance(url, host, rejectedCookies)
-                }
-                captured?.takeIf { isNewClearance(it, rejectedCookies) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failureReason = e.javaClass.simpleName + ": " + (e.message ?: "error sin detalle")
+            } finally {
+                persistWebViewUserAgent()
+                val elapsed = (System.nanoTime() - started) / 1_000_000L
+                val hasClearance = !clearanceValue(latestClearance(url, host, rejectedCookies)).isNullOrBlank()
+                log { "CF WEBVIEW END | ms=" + elapsed + " | clearance=" + if (hasClearance) "sí" else "no" }
             }
+
+            val fresh = latestClearance(url, host, rejectedCookies)
+                ?.takeIf { !clearanceValue(it).isNullOrBlank() }
             if (fresh == null) {
                 lastFailedAt[host] = System.currentTimeMillis()
-                log { "CF BYPASS UNAVAILABLE | timeout o clearance ausente | ${request.url.encodedPath}"}
-                return@withLock null
+                log { "CF BYPASS FAIL | reason=" + (failureReason ?: "timeout o clearance ausente") + " | " + request.url.encodedPath }
+                null
+            } else {
+                savedCookies[host] = fresh
+                lastFailedAt.remove(host)
+                fresh
             }
-            savedCookies[host] = fresh
-            log { "CF BYPASS COOKIE CAPTURED | ${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - started) / 1_000_000L}"}
-            fresh
         }
 
         if (cookiesForRetry == null) {
             return@runBlocking chain.proceed(initialRequest)
         }
 
-        val verified = proceed(request, cookiesForRetry, ua)
+        val retryUa = WebViewResolver.getWebViewUserAgent()?.takeIf { it.isNotBlank() } ?: ua
+        val verified = proceed(request, cookiesForRetry, retryUa)
         if (isChallenge(verified)) {
             verified.close()
             savedCookies.remove(host)
             lastFailedAt[host] = System.currentTimeMillis()
-            log { "CF BYPASS REJECTED | code=403/503 | ${request.url.encodedPath}"}
+            log { "CF BYPASS FAIL | reason=clearance rechazada por Cloudflare | ${request.url.encodedPath}"}
             return@runBlocking chain.proceed(initialRequest)
         }
         lastFailedAt.remove(host)
