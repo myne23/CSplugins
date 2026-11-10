@@ -392,7 +392,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         var rejectedCookies = initialCookies
         val available = latestClearance(url, host, initialCookies)
         if (available != null && clearanceValue(available) != clearanceValue(initialCookies)) {
-            val retry = proceed(request, available, WebViewResolver.getWebViewUserAgent()?.takeIf { it.isNotBlank() } ?: ua)
+            val retry = proceed(request, available, WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: ua)
             if (!isChallenge(retry)) {
                 savedCookies[host] = available
                 lastFailedAt.remove(host)
@@ -477,7 +477,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             return@runBlocking chain.proceed(initialRequest)
         }
 
-        val retryUa = WebViewResolver.getWebViewUserAgent()?.takeIf { it.isNotBlank() } ?: ua
+        val retryUa = WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() } ?: ua
         val verified = proceed(request, cookiesForRetry, retryUa)
         if (isChallenge(verified)) {
             verified.close()
