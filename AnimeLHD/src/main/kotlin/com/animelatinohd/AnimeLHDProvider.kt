@@ -161,6 +161,25 @@ private fun jsonAfter(text: String, marker: String, from: Int = 0): String? {
 private fun JSONArray.objs(): List<JSONObject> =
     (0 until length()).mapNotNull { optJSONObject(it) }
 
+private fun rscObjectsAfterMarker(
+    text: String,
+    marker: String,
+    from: Int = 0,
+    accept: (JSONObject) -> Boolean
+): List<JSONObject> {
+    var cursor = from
+    while (cursor < text.length) {
+        val index = text.indexOf(marker, cursor)
+        if (index < 0) break
+        cursor = index + marker.length
+        val raw = extractBalanced(text, cursor) ?: continue
+        val array = runCatching { JSONArray(raw).objs() }.getOrNull() ?: continue
+        val valid = array.filter(accept)
+        if (valid.isNotEmpty()) return valid
+    }
+    return emptyList()
+}
+
 private fun rscListAfterMarkers(text: String): Pair<List<JSONObject>, Int>? {
     val markers = listOf("\"initialAnimes\":", "\"initialData\":", "\"animes\":", "\"data\":")
     for (marker in markers) {
@@ -899,12 +918,12 @@ class AnimeLHDProvider : MainAPI() {
                 }
 
                 val flat = flattenRsc(html)
-                val episodes = jsonAfter(flat, "\"episodes\":")
-                    ?.let { runCatching { JSONArray(it).objs() }.getOrDefault(emptyList()) }
-                    ?: emptyList()
-                val animes = jsonAfter(flat, "\"animes\":")
-                    ?.let { runCatching { JSONArray(it).objs() }.getOrDefault(emptyList()) }
-                    ?: emptyList()
+                val episodes = rscObjectsAfterMarker(flat, "\"episodes\":") {
+                    it.optInt("number", 0) > 0
+                }
+                val animes = rscObjectsAfterMarker(flat, "\"animes\":") {
+                    it.optString("slug").isNotBlank() && it.optString("name").isNotBlank()
+                }
 
                 if (episodes.isNotEmpty() && animes.isNotEmpty()) {
                     data = AnimeLHDHomeData(episodes, animes)
@@ -1017,35 +1036,45 @@ class AnimeLHDProvider : MainAPI() {
         val html = fetch("$WEB/anime/$slug") ?: return null
         val flat = flattenRsc(html)
 
-        val animeStart = flat.indexOf("\"anime\":{\"id\":")
-        if (animeStart < 0) return null
-
-        val anime = try {
-            JSONObject(jsonAfter(flat, "\"anime\":", animeStart) ?: return null)
-        } catch (e: Exception) {
-            return null
+        var animeCursor = 0
+        var animeStart = -1
+        var anime: JSONObject? = null
+        while (animeCursor < flat.length) {
+            val candidate = flat.indexOf("\"anime\":", animeCursor)
+            if (candidate < 0) break
+            animeCursor = candidate + "\"anime\":".length
+            val raw = extractBalanced(flat, animeCursor) ?: continue
+            val parsed = runCatching { JSONObject(raw) }.getOrNull() ?: continue
+            if (parsed.optString("name").isNotBlank() &&
+                (parsed.optString("slug").isBlank() || parsed.optString("slug") == slug)
+            ) {
+                animeStart = candidate
+                anime = parsed
+                break
+            }
         }
+        val selectedAnime = anime ?: return null
 
-        val title = anime.optString("name").ifBlank { return null }
-        val type = anime.optString("type")
+        val title = selectedAnime.optString("name").ifBlank { return null }
+        val type = selectedAnime.optString("type")
 
-        val episodeNumbers = (jsonAfter(flat, "\"episodes\":", animeStart)
-            ?.let { JSONArray(it).objs() } ?: emptyList())
-            .map { it.optInt("number", 0) }
+        val episodeNumbers = rscObjectsAfterMarker(flat, "\"episodes\":", animeStart) {
+            it.optInt("number", 0) > 0
+        }.map { it.optInt("number", 0) }
             .filter { it > 0 }
             .distinct()
             .sorted()
 
-        val poster = tmdb(anime.optString("poster"), "w500")
-        val banner = tmdb(anime.optString("banner"), "w1280")
-        val plot = anime.optString("overview").ifBlank { null }
-        val yearValue = anime.optString("aired").take(4).toIntOrNull()
-        val tagList = anime.optString("genres")
+        val poster = tmdb(selectedAnime.optString("poster"), "w500")
+        val banner = tmdb(selectedAnime.optString("banner"), "w1280")
+        val plot = selectedAnime.optString("overview").ifBlank { null }
+        val yearValue = selectedAnime.optString("aired").take(4).toIntOrNull()
+        val tagList = selectedAnime.optString("genres")
             .split(",")
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .map { g -> g.replaceFirstChar { it.uppercase() } }
-        val statusValue = when (anime.optInt("status", -1)) {
+        val statusValue = when (selectedAnime.optInt("status", -1)) {
             0 -> ShowStatus.Completed
             1 -> ShowStatus.Ongoing
             else -> null
