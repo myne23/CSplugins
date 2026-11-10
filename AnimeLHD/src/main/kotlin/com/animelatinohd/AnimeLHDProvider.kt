@@ -271,6 +271,26 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private var lastManualShownAt = 0L
     @Volatile private var cachedUa: String? = null
 
+    private fun clearCfCookies() {
+        val cm = CookieManager.getInstance() ?: return
+        val names = listOf(
+            "cf_clearance", "__cf_bm", "_cfuvid",
+            "cf_chl_2", "cf_chl_prog", "cf_chl_rc_ni"
+        )
+        val hosts = listOf(
+            "https://www.animelatinohd.com/",
+            "https://animelatinohd.com/",
+            "https://website.animelatinohd.com/"
+        )
+        names.forEach { name ->
+            hosts.forEach { host ->
+                cm.setCookie(host, "$name=; Max-Age=0; Path=/; Secure")
+                cm.setCookie(host, "$name=; Max-Age=0; Path=/; Domain=animelatinohd.com; Secure")
+            }
+        }
+        cm.flush()
+    }
+
     private fun stableUserAgent(): String {
         cachedUa?.let { return it }
         val stored = try { CloudStreamApp.getKey("AnimeLHD_CF_UA", "") } catch (_: Exception) { "" }
@@ -533,12 +553,18 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 
         // Mutex coordina ambos modos: nunca se abre más de un WebView.
         val mode = cfMode()
+        log { "CF MODE | mode=$mode" }
         val cookiesForRetry: Map<String, String>? = bypassMutex.withLock {
             val latest = latestClearance(url, host, rejectedCookies)
             if (isNewClearance(latest, rejectedCookies)) {
                 savedCookies[host] = latest!!
                 log { "CF COOKIE REFRESH FOUND | ${request.url.encodedPath}"}
                 return@withLock latest
+            }
+            if (clearanceValue(initialCookies) != null) {
+                clearCfCookies()
+                savedCookies.clear()
+                log { "CF STALE CLEARED | reason=challenge con clearance previo | ${request.url.encodedPath}" }
             }
             if (mode == "manual") {
                 return@withLock manualClearance(url, host, rejectedCookies)
