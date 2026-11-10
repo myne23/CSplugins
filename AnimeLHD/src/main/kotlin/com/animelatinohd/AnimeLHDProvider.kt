@@ -909,10 +909,10 @@ class AnimeLHDProvider : MainAPI() {
                 }
 
                 val flat = flattenRsc(html)
-                val episodes = rscObjectsAfterKey(flat, "episodes") {
+                val episodes = rscObjectsAfterMarker(flat, "\"episodes\":") {
                     it.optInt("number", 0) > 0
                 }
-                val animes = rscObjectsAfterKey(flat, "animes") {
+                val animes = rscObjectsAfterMarker(flat, "\"animes\":") {
                     it.optString("slug").isNotBlank() && it.optString("name").isNotBlank()
                 }
 
@@ -921,6 +921,13 @@ class AnimeLHDProvider : MainAPI() {
                     break
                 }
 
+                if (episodes.isEmpty() || animes.isEmpty()) {
+                    val episodeMarker = flat.indexOf("\"episodes\"")
+                    val windowStart = if (episodeMarker >= 0) (episodeMarker - 150).coerceAtLeast(0) else 0
+                    val windowEnd = if (episodeMarker >= 0) (episodeMarker + 150).coerceAtMost(flat.length) else minOf(300, flat.length)
+                    log { "HOME PARSE | flatChars=${flat.length} | hasEpisodes=${flat.contains("\"episodes\"")} | hasAnimes=${flat.contains("\"animes\"")}" }
+                    log { "HOME PARSE WINDOW | ${flat.substring(windowStart, windowEnd)}" }
+                }
                 log { "HOME DATA PARTIAL | attempt=${attempt + 1} | episodes=${episodes.size} | animes=${animes.size}"}
                 if (attempt == 0) {
                     delay(700)
@@ -1014,42 +1021,51 @@ class AnimeLHDProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
 
+        log { "LOAD START | url=${safeUrl(url)}" }
+
         val slug = url
             .substringAfter("/anime/", "")
             .substringBefore("/")
             .substringBefore("?")
             .substringBefore("#")
             .trim()
-        if (slug.isBlank()) return null
-
-        val html = fetch("$WEB/anime/$slug") ?: return null
-        val flat = flattenRsc(html)
-
-        val animeMarker = Regex("\"anime\"\\s*:\\s*\\{")
-        var animeCursor = 0
-        var animeStart = -1
-        var selectedAnime: JSONObject? = null
-        while (animeCursor < flat.length) {
-            val match = animeMarker.find(flat, animeCursor) ?: break
-            animeCursor = match.range.last + 1
-            val raw = extractBalanced(flat, animeCursor) ?: continue
-            val parsed = runCatching { JSONObject(raw) }.getOrNull() ?: continue
-            val candidateSlug = parsed.optString("slug")
-            val hasIdentity = parsed.optString("id").isNotBlank() || parsed.optString("name").isNotBlank()
-            if (hasIdentity && parsed.optString("name").isNotBlank() &&
-                (candidateSlug.isBlank() || candidateSlug == slug)
-            ) {
-                animeStart = match.range.first
-                selectedAnime = parsed
-                break
-            }
+        if (slug.isBlank()) {
+            log { "LOAD FAIL | reason=slug vacío" }
+            return null
         }
-        val anime = selectedAnime ?: return null
 
-        val title = anime.optString("name").ifBlank { return null }
+        val html = fetch("$WEB/anime/$slug")
+        if (html.isNullOrBlank()) {
+            log { "LOAD FAIL | reason=sin HTML" }
+            return null
+        }
+        val flat = flattenRsc(html)
+        val hasAnimeMarker = flat.contains("\"anime\":")
+        log { "LOAD HTML | chars=${html.length} | hasAnimeMarker=$hasAnimeMarker" }
+
+        val animeStart = flat.indexOf("\"anime\":{\"id\":")
+        if (animeStart < 0) {
+            log { "LOAD FAIL | reason=marker no encontrado" }
+            return null
+        }
+
+        val anime = try {
+            JSONObject(jsonAfter(flat, "\"anime\":", animeStart) ?: run {
+                log { "LOAD FAIL | reason=JSON inválido" }
+                return null
+            })
+        } catch (e: Exception) {
+            log { "LOAD FAIL | reason=JSON inválido" }
+            return null
+        }
+
+        val title = anime.optString("name").ifBlank {
+            log { "LOAD FAIL | reason=título vacío" }
+            return null
+        }
         val type = anime.optString("type")
 
-        val episodeNumbers = rscObjectsAfterKey(flat, "episodes", animeStart) {
+        val episodeNumbers = rscObjectsAfterMarker(flat, "\"episodes\":", animeStart) {
             it.optInt("number", 0) > 0
         }.map { it.optInt("number", 0) }
             .filter { it > 0 }
@@ -1094,6 +1110,8 @@ class AnimeLHDProvider : MainAPI() {
                 year = yearValue
                 tags = tagList
                 recommendations = recs
+            }.also {
+                log { "LOAD OK | title=$title | type=$type | episodes=${episodeNumbers.size} | movie=true" }
             }
         }
 
@@ -1113,6 +1131,9 @@ class AnimeLHDProvider : MainAPI() {
             tags = tagList
             showStatus = statusValue
             recommendations = recs
+        }
+        .also {
+            log { "LOAD OK | title=$title | type=$type | episodes=${episodes.size} | movie=false" }
         }
     }
 
