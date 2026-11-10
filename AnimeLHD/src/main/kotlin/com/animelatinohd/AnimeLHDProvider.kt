@@ -386,14 +386,15 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         var result = false
         try {
             withContext(Dispatchers.Main.immediate) {
-                webView = WebView(activity).apply {
+                val manualWebView = WebView(activity).apply {
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
                 }
+                webView = manualWebView
                 dialog = AlertDialog.Builder(activity)
                     .setTitle("Cloudflare")
                     .setMessage("Completá la verificación para continuar")
-                    .setView(webView)
+                    .setView(manualWebView)
                     .setNegativeButton("Cancelar") { d, _ ->
                         cancelReason = "usuario"
                         d.dismiss()
@@ -409,7 +410,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 dialog?.show()
                 lastManualShownAt = System.currentTimeMillis()
                 log { "CF MANUAL START | url=" + safeUrl(WEB) }
-                webView?.loadUrl(WEB)
+                manualWebView.loadUrl(WEB)
                 handler.postDelayed(poll, 500L)
             }
 
