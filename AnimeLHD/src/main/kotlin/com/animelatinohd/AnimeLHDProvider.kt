@@ -255,8 +255,10 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private fun isChallenge(response: Response): Boolean {
         val server = response.header("Server").orEmpty()
         val mitigated = response.header("cf-mitigated").equals("challenge", ignoreCase = true)
-        return response.code in errorCodes &&
-            (mitigated || cloudflareServers.any { server.contains(it, ignoreCase = true) })
+        return mitigated || (
+            response.code in errorCodes &&
+                cloudflareServers.any { server.contains(it, ignoreCase = true) }
+        )
     }
 
     private fun withoutClearance(request: Request): Request {
