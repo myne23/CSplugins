@@ -774,7 +774,7 @@ class AnimeLHDProvider : MainAPI() {
         // La API de AnimeLHD devuelve 403 Unauthorized y en CloudX puede
         // quedarse esperando sin completar la respuesta. Usamos directamente
         // las páginas públicas de Next.js para categorías y búsqueda.
-        log("API SKIP | se usa HTML directamente")
+
         log("HTML FALLBACK START | url=" + safeUrl(htmlUrl) + " | key=" + htmlKey)
         // El interceptor resuelve el challenge una sola vez y comparte la cookie
         // con las categorías que esperan; aquí solo repetimos ante un fallo transitorio.
