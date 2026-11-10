@@ -161,6 +161,35 @@ private fun jsonAfter(text: String, marker: String, from: Int = 0): String? {
 private fun JSONArray.objs(): List<JSONObject> =
     (0 until length()).mapNotNull { optJSONObject(it) }
 
+private fun rscListAfterMarkers(text: String): Pair<List<JSONObject>, Int>? {
+    val markers = listOf("\"initialAnimes\":", "\"initialData\":", "\"animes\":", "\"data\":")
+    for (marker in markers) {
+        var from = 0
+        while (from < text.length) {
+            val index = text.indexOf(marker, from)
+            if (index < 0) break
+            from = index + marker.length
+            val raw = extractBalanced(text, from) ?: continue
+            val parsed = runCatching {
+                when (raw.firstOrNull()) {
+                    '[' -> JSONArray(raw).objs() to 1
+                    '{' -> {
+                        val obj = JSONObject(raw)
+                        val array = obj.optJSONArray("data")
+                            ?: obj.optJSONArray("animes")
+                            ?: obj.optJSONArray("initialAnimes")
+                            ?: obj.optJSONArray("initialData")
+                        (array?.objs() ?: emptyList()) to obj.optInt("last_page", 1)
+                    }
+                    else -> emptyList<JSONObject>() to 1
+                }
+            }.getOrNull() ?: continue
+            if (parsed.first.isNotEmpty()) return parsed
+        }
+    }
+    return null
+}
+
 private fun tmdb(path: String?, size: String = "w300"): String? {
     val p = path?.trim().orEmpty()
     if (p.isBlank() || p == "null") return null
@@ -786,24 +815,15 @@ class AnimeLHDProvider : MainAPI() {
             " | hasInitialData=" + flat.contains("\"initialData\":") +
             " | hasData=" + flat.contains("\"data\":") +
             " | hasSearch=" + flat.contains("search", ignoreCase = true))
-        val objText = jsonAfter(flat, htmlKey)
-        if (objText == null) {
+        val parsed = rscListAfterMarkers(flat)
+        if (parsed == null) {
             val markers = listOf("\"initialAnimes\":", "\"initialData\":", "\"animes\":", "\"data\":")
                 .filter { flat.contains(it) }
             log("HTML FALLBACK PARSE MISS | requestedKey=" + htmlKey + " | foundMarkers=" + markers.joinToString())
             return emptyList<JSONObject>() to 1
         }
-        val obj = try {
-            JSONObject(objText)
-        } catch (e: Exception) {
-            log("HTML FALLBACK JSON ERROR | " + e.javaClass.simpleName + ": " + e.message)
-            return emptyList<JSONObject>() to 1
-        }
-        val data = obj.optJSONArray("data")
-        log("HTML FALLBACK PARSED | keys=" + obj.keys().asSequence().toList().joinToString() +
-            " | dataCount=" + (data?.length() ?: -1) +
-            " | lastPage=" + obj.optInt("last_page", 1))
-        return (data?.objs() ?: emptyList()) to obj.optInt("last_page", 1)
+        log("HTML FALLBACK PARSED | dataCount=" + parsed.first.size + " | lastPage=" + parsed.second)
+        return parsed
     }
 
     private suspend fun homeData(forceRefresh: Boolean = false): AnimeLHDHomeData? {
