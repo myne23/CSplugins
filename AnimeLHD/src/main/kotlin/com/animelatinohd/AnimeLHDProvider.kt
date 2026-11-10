@@ -1,6 +1,10 @@
 package com.animelatinohd
 
 import android.util.Log
+import android.app.AlertDialog
+import android.os.Handler
+import android.os.Looper
+import android.webkit.WebView
 import com.lagradost.cloudstream3.*
 import android.webkit.CookieManager
 import com.lagradost.cloudstream3.USER_AGENT
@@ -21,6 +25,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -261,6 +268,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private val cloudflareServers = setOf("cloudflare", "cloudflare-nginx")
     private val errorCodes = setOf(403, 503)
     private val lastFailedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private var lastManualShownAt = 0L
     @Volatile private var cachedUa: String? = null
 
     private fun stableUserAgent(): String {
@@ -331,6 +339,124 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 
     private fun readClearanceCookies(url: String): Map<String, String>? =
         readCookies(url).takeIf { !clearanceValue(it).isNullOrBlank() }
+
+    private fun cfMode(): String {
+        val mode = try {
+            CloudStreamApp.getKey("AnimeLHD", "CF_MODE", "auto_manual") as? String
+        } catch (_: Exception) {
+            null
+        }
+        return mode?.takeIf { it == "auto" || it == "auto_manual" || it == "manual" }
+            ?: "auto_manual"
+    }
+
+    private suspend fun showManualCloudflare(rejected: Map<String, String>?): Boolean {
+        val activity = CommonActivity.activity
+        if (activity == null || activity.isFinishing || !activity.hasWindowFocus()) {
+            log { "CF MANUAL CANCEL | reason=actividad no disponible" }
+            return false
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastManualShownAt < 300_000L) {
+            log { "CF MANUAL CANCEL | reason=espera de 5 minutos" }
+            return false
+        }
+
+        val started = System.nanoTime()
+        val deferred = CompletableDeferred<Boolean>()
+        val handler = Handler(Looper.getMainLooper())
+        var dialog: AlertDialog? = null
+        var webView: WebView? = null
+        var cancelReason = "cerrado"
+        val poll = object : Runnable {
+            override fun run() {
+                val currentClearance = readClearanceCookies(WEB)
+                val currentValue = clearanceValue(currentClearance)
+                val hasClearance = !currentValue.isNullOrBlank() &&
+                    currentValue != clearanceValue(rejected)
+                if (hasClearance) {
+                    deferred.complete(true)
+                    dialog?.dismiss()
+                } else {
+                    handler.postDelayed(this, 500L)
+                }
+            }
+        }
+
+        var result = false
+        try {
+            withContext(Dispatchers.Main.immediate) {
+                webView = WebView(activity).apply {
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                }
+                dialog = AlertDialog.Builder(activity)
+                    .setTitle("Cloudflare")
+                    .setMessage("Completá la verificación para continuar")
+                    .setView(webView)
+                    .setNegativeButton("Cancelar") { d, _ ->
+                        cancelReason = "usuario"
+                        d.dismiss()
+                    }
+                    .create()
+                dialog?.setOnDismissListener {
+                    handler.removeCallbacks(poll)
+                    runCatching { webView?.stopLoading() }
+                    runCatching { webView?.destroy() }
+                    webView = null
+                    if (!deferred.isCompleted) deferred.complete(false)
+                }
+                dialog?.show()
+                lastManualShownAt = System.currentTimeMillis()
+                log { "CF MANUAL START | url=" + safeUrl(WEB) }
+                webView?.loadUrl(WEB)
+                handler.postDelayed(poll, 500L)
+            }
+
+            result = withTimeoutOrNull(90_000L) { deferred.await() } ?: false
+            if (!result && cancelReason == "cerrado") cancelReason = "timeout"
+            return result
+        } catch (e: CancellationException) {
+            cancelReason = "cancelación"
+            throw e
+        } catch (e: Exception) {
+            cancelReason = e.javaClass.simpleName
+            log { "CF MANUAL CANCEL | reason=$cancelReason" }
+            return false
+        } finally {
+            withContext(NonCancellable + Dispatchers.Main.immediate) {
+                handler.removeCallbacks(poll)
+                if (dialog?.isShowing == true) dialog?.dismiss()
+                else {
+                    runCatching { webView?.stopLoading() }
+                    runCatching { webView?.destroy() }
+                    webView = null
+                }
+            }
+            val currentValue = clearanceValue(readClearanceCookies(WEB))
+            val hasClearance = !currentValue.isNullOrBlank() &&
+                currentValue != clearanceValue(rejected)
+            val elapsed = (System.nanoTime() - started) / 1_000_000L
+            log { "CF MANUAL END | ms=$elapsed | clearance=" + if (hasClearance) "sí" else "no" }
+            if (!result) log { "CF MANUAL CANCEL | reason=$cancelReason" }
+        }
+    }
+
+    private suspend fun manualClearance(
+        url: String,
+        host: String,
+        rejected: Map<String, String>?
+    ): Map<String, String>? {
+        if (!showManualCloudflare(rejected)) return null
+        val fresh = readClearanceCookies(url)?.takeIf { isNewClearance(it, rejected) }
+        if (fresh == null) {
+            log { "CF MANUAL CANCEL | reason=cookie ausente o rechazada" }
+            return null
+        }
+        savedCookies[host] = fresh
+        persistWebViewUserAgent()
+        return fresh
+    }
 
     /*
      * Prefer the cookie captured and verified by this resolver over a stale
@@ -404,7 +530,8 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             log { "CF COOKIE RETRY REJECTED | ${request.url.encodedPath} | ua=${ua.take(40)}"}
         }
 
-        // Mutex solo para coordinar WebView. La verificación HTTP ocurre fuera.
+        // Mutex coordina ambos modos: nunca se abre más de un WebView.
+        val mode = cfMode()
         val cookiesForRetry: Map<String, String>? = bypassMutex.withLock {
             val latest = latestClearance(url, host, rejectedCookies)
             if (isNewClearance(latest, rejectedCookies)) {
@@ -412,10 +539,15 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                 log { "CF COOKIE REFRESH FOUND | ${request.url.encodedPath}"}
                 return@withLock latest
             }
+            if (mode == "manual") {
+                return@withLock manualClearance(url, host, rejectedCookies)
+            }
             if (System.currentTimeMillis() - (lastFailedAt[host] ?: 0L) < 10_000L) {
                 val restanMs = 10_000L - (System.currentTimeMillis() - (lastFailedAt[host] ?: 0L))
                 log { "CF BYPASS COOLDOWN | restanMs=${restanMs.coerceAtLeast(0L)} | ${request.url.encodedPath}"}
-                return@withLock null
+                return@withLock if (mode == "auto_manual") {
+                    manualClearance(url, host, rejectedCookies)
+                } else null
             }
 
             val started = System.nanoTime()
@@ -491,7 +623,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             if (fresh == null) {
                 lastFailedAt[host] = System.currentTimeMillis()
                 log { "CF BYPASS FAIL | reason=" + (failureReason ?: "timeout o clearance ausente") + " | " + request.url.encodedPath }
-                null
+                if (mode == "auto_manual") manualClearance(url, host, rejectedCookies) else null
             } else {
                 savedCookies[host] = fresh
                 lastFailedAt.remove(host)
