@@ -268,6 +268,10 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private val errorCodes = setOf(403, 503)
     private val lastFailedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private var lastManualShownAt = 0L
+    // Tras una clearance invisible rechazada no tiene sentido gastar 30s en
+    // otro WebView: se va directo al manual durante este lapso. Se guarda en
+    // disco para no repetir la espera tras reiniciar la app.
+    @Volatile private var autoDisabledUntil = readAutoOffUntil()
     @Volatile private var cachedUa: String? = null
 
     private fun clearCfCookies() {
@@ -367,6 +371,21 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         }
         return mode?.takeIf { it == "auto" || it == "auto_manual" || it == "manual" }
             ?: "auto_manual"
+    }
+
+    private fun readAutoOffUntil(): Long = try {
+        CloudStreamApp.getKey("AnimeLHD", "CF_AUTO_OFF_UNTIL", 0L) ?: 0L
+    } catch (_: Exception) {
+        0L
+    }
+
+    private fun writeAutoOffUntil(value: Long) {
+        autoDisabledUntil = value
+        try {
+            CloudStreamApp.setKey("AnimeLHD", "CF_AUTO_OFF_UNTIL", value)
+        } catch (_: Exception) {
+            // Sin contexto no se persiste; el valor en memoria sigue vigente.
+        }
     }
 
     private suspend fun showManualCloudflare(rejected: Map<String, String>?): Boolean {
@@ -470,6 +489,15 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         host: String,
         rejected: Map<String, String>?
     ): Map<String, String>? {
+        // Otra petición pudo resolver el challenge manual mientras esta esperaba
+        // el mutex (o el diálogo ya se cerró). Reutilizar esa cookie evita un
+        // segundo diálogo y, sobre todo, evita terminar en 403.
+        val existing = latestClearance(url, host, rejected)
+        if (isNewClearance(existing, rejected)) {
+            savedCookies[host] = existing!!
+            log { "CF MANUAL REUSE | ${safeUrl(url)}" }
+            return existing
+        }
         if (!showManualCloudflare(rejected)) return null
         val fresh = readClearanceCookies(url)?.takeIf { isNewClearance(it, rejected) }
         if (fresh == null) {
@@ -561,6 +589,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         // Mutex coordina ambos modos: nunca se abre más de un WebView.
         val mode = cfMode()
         log { "CF MODE | mode=$mode" }
+        var usedAutoWebView = false
         val cookiesForRetry: Map<String, String>? = bypassMutex.withLock {
             val latest = latestClearance(url, host, rejectedCookies)
             if (isNewClearance(latest, rejectedCookies)) {
@@ -576,8 +605,15 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             if (mode == "manual") {
                 return@withLock manualClearance(url, host, rejectedCookies)
             }
-            if (System.currentTimeMillis() - (lastFailedAt[host] ?: 0L) < 10_000L) {
-                val restanMs = 10_000L - (System.currentTimeMillis() - (lastFailedAt[host] ?: 0L))
+            val now = System.currentTimeMillis()
+            if (now < autoDisabledUntil) {
+                log { "CF AUTO SKIP | restanMs=${autoDisabledUntil - now} | ${request.url.encodedPath}"}
+                return@withLock if (mode == "auto_manual") {
+                    manualClearance(url, host, rejectedCookies)
+                } else null
+            }
+            if (now - (lastFailedAt[host] ?: 0L) < 10_000L) {
+                val restanMs = 10_000L - (now - (lastFailedAt[host] ?: 0L))
                 log { "CF BYPASS COOLDOWN | restanMs=${restanMs.coerceAtLeast(0L)} | ${request.url.encodedPath}"}
                 return@withLock if (mode == "auto_manual") {
                     manualClearance(url, host, rejectedCookies)
@@ -661,6 +697,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             } else {
                 savedCookies[host] = fresh
                 lastFailedAt.remove(host)
+                usedAutoWebView = true
                 fresh
             }
         }
@@ -676,6 +713,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
             savedCookies.remove(host)
             lastFailedAt[host] = System.currentTimeMillis()
             log { "CF BYPASS FAIL | reason=clearance rechazada por Cloudflare | ${request.url.encodedPath}"}
+            if (usedAutoWebView) {
+                // La clearance del WebView invisible no sirve para OkHttp:
+                // se evita repetir la espera en las próximas cargas.
+                writeAutoOffUntil(System.currentTimeMillis() + 300_000L)
+                log { "CF AUTO OFF | ms=300000 | reason=clearance invisible rechazada" }
+            }
             if (mode == "auto_manual") {
                 // El mutex evita que varias peticiones abran su propio diálogo
                 // manual al mismo tiempo.
@@ -689,12 +732,17 @@ private class AnimeLHDCloudflareKiller : Interceptor {
                         return@runBlocking manualRetry
                     }
                     manualRetry.close()
+                    savedCookies.remove(host)
                     log { "CF BYPASS FAIL | reason=manual rechazado | ${request.url.encodedPath}"}
                 }
             }
             return@runBlocking chain.proceed(initialRequest)
         }
         lastFailedAt.remove(host)
+        if (usedAutoWebView && autoDisabledUntil != 0L) {
+            writeAutoOffUntil(0L)
+            log { "CF AUTO ON | clearance invisible aceptada" }
+        }
         log { "CF BYPASS VERIFIED | code=${verified.code} | ${request.url.encodedPath}"}
         log { "CF BYPASS TOTAL | path=${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - interceptStarted) / 1_000_000L}"}
         verified
@@ -742,7 +790,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     ): Response {
         val started = System.nanoTime()
         val response = chain.proceed(withCookiesAndUa(request, cookies, userAgent))
-        log { "CF RETRY | code=${response.code} | ms=${(System.nanoTime() - started) / 1_000_000L} | server-timing=${response.header("Server-Timing").orEmpty()} | ${request.url.encodedPath}"}
+        log { "CF RETRY | code=${response.code} | ms=${(System.nanoTime() - started) / 1_000_000L} | clr=${clearanceValue(cookies)?.take(6)} | server-timing=${response.header("Server-Timing").orEmpty()} | ${request.url.encodedPath}"}
         return response
     }
 }
