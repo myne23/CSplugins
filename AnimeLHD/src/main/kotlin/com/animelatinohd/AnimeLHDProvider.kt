@@ -721,6 +721,13 @@ class AnimeLHDProvider : MainAPI() {
             log("HTTP RESULT | code=${response.code} | ok=${response.isSuccessful} | chars=${body.length} | server=${response.headers["Server"].orEmpty()} | cfRay=${response.headers["cf-ray"].orEmpty()} | url=" + safeUrl(url))
 
             if (response.isSuccessful) {
+                val cloudflareInterstitial = body.contains("Just a moment", ignoreCase = true) ||
+                    body.contains("cf-chl-", ignoreCase = true) ||
+                    body.contains("cf-challenge", ignoreCase = true)
+                if (cloudflareInterstitial) {
+                    log("HTTP CHALLENGE BODY | no se guarda en caché | " + safeUrl(url))
+                    return null
+                }
                 if (cacheable) rememberPage(url, body)
                 if (cacheable && url == "$WEB/latinos?page=1") {
                     try { CloudStreamApp.setKey("AnimeLHD", LATINOS_PAGE1_DISK_KEY, body)
