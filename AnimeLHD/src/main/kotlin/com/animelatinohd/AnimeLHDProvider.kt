@@ -299,7 +299,8 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     private fun isChallenge(response: Response): Boolean {
         val server = response.header("Server").orEmpty()
         val mitigated = response.header("cf-mitigated").equals("challenge", ignoreCase = true)
-        return mitigated || (
+        val serverTiming = response.header("Server-Timing").orEmpty()
+        return mitigated || serverTiming.contains("chlray", ignoreCase = true) || (
             response.code in errorCodes &&
                 cloudflareServers.any { server.contains(it, ignoreCase = true) }
         )
@@ -346,6 +347,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
     }
 
     override fun intercept(chain: Interceptor.Chain): Response = runBlocking {
+        val interceptStarted = System.nanoTime()
         val request = chain.request()
         val host = request.url.host
         val url = request.url.toString()
@@ -371,7 +373,12 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         }
         val proceedMs = (System.nanoTime() - proceedStarted) / 1_000_000L
         log("CF INITIAL | cookie=${if (initialCookies != null) "sí" else "no"} | ua=${ua.take(40)} | code=${response.code} | proceedMs=${proceedMs} | server=${response.header("Server").orEmpty()} | cf-cache-status=${response.header("cf-cache-status").orEmpty()} | age=${response.header("age").orEmpty()} | server-timing=${response.header("server-timing").orEmpty()} | ${request.url.encodedPath}")
-        if (!isChallenge(response)) return@runBlocking response
+        if (!isChallenge(response)) {
+            if (response.code == 403 || response.code == 503) {
+                log("CF NO-CHALLENGE | code=${response.code} | ctype=${response.header("Content-Type").orEmpty()} | path=${request.url.encodedPath}")
+            }
+            return@runBlocking response
+        }
         response.close()
 
         var rejectedCookies = initialCookies
@@ -460,6 +467,7 @@ private class AnimeLHDCloudflareKiller : Interceptor {
         }
         lastFailedAt.remove(host)
         log("CF BYPASS VERIFIED | code=${verified.code} | ${request.url.encodedPath}")
+        log("CF BYPASS TOTAL | path=${request.url.encodedPath} | elapsedMs=${(System.nanoTime() - interceptStarted) / 1_000_000L}")
         verified
     }
 
