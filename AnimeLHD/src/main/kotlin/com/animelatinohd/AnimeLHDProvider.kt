@@ -1,8 +1,6 @@
 package com.animelatinohd
 
 import android.util.Log
-import android.os.Handler
-import android.os.Looper
 import com.lagradost.cloudstream3.*
 import android.webkit.CookieManager
 import com.lagradost.cloudstream3.USER_AGENT
@@ -25,7 +23,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
-import org.jsoup.Jsoup
 import java.net.URLEncoder
 import java.net.URI
 import com.lagradost.nicehttp.JsonAsString
@@ -40,8 +37,6 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import java.io.IOException
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 /* ====================================================================
  * Config
@@ -59,7 +54,6 @@ private const val HOME_DISK_KEY = "AnimeLHD_HOME_DISK_V1"
 private const val LATINOS_PAGE1_DISK_KEY = "AnimeLHD_LATINOS_PAGE1_DISK_V1"
 // Las páginas Next.js pueden ocupar 0,5–2 MB; 80 entradas disparaban la RAM en TV.
 private const val PAGE_CACHE_MAX = 12
-private const val API_UNAUTHORIZED_COOLDOWN_MS = 10 * 60 * 1000L
 private const val BRIDGE_TIMEOUT_MS = 10_000L
 private const val EXTRACTOR_TIMEOUT_MS = 9_000L
 private const val VOE_TIMEOUT_NS = 25_000_000_000L
@@ -522,13 +516,6 @@ private class AnimeLHDCloudflareKiller : Interceptor {
 private object AnimeLHDCloudflareState {
     // Resolver Cloudflare personalizado de AnimeLHD, compartido entre instancias.
     val killer = AnimeLHDCloudflareKiller()
-    val bootstrapMutex = Mutex()
-
-    @Volatile
-    var sessionBootstrapped = false
-
-    @Volatile
-    var retryAfter: Long = 0L
 }
 
 private data class AnimeLHDHomeData(
@@ -618,24 +605,9 @@ class AnimeLHDProvider : MainAPI() {
     )
 
     // CloudStream puede crear más de una instancia del proveedor al abrir el home.
-    // Todas comparten el mismo interceptor, mutex y estado de bootstrap.
+    // Todas comparten el mismo interceptor.
     private val cfKiller: AnimeLHDCloudflareKiller
         get() = AnimeLHDCloudflareState.killer
-
-    private val cfBootstrapMutex: Mutex
-        get() = AnimeLHDCloudflareState.bootstrapMutex
-
-    private var cfSessionBootstrapped: Boolean
-        get() = AnimeLHDCloudflareState.sessionBootstrapped
-        set(value) {
-            AnimeLHDCloudflareState.sessionBootstrapped = value
-        }
-
-    private var cfBootstrapRetryAfter: Long
-        get() = AnimeLHDCloudflareState.retryAfter
-        set(value) {
-            AnimeLHDCloudflareState.retryAfter = value
-        }
 
     // La portada se comparte entre instancias del proveedor: recent y added
     // suelen ser solicitadas por separado al abrir el home, incluso en paralelo.
@@ -669,11 +641,6 @@ class AnimeLHDProvider : MainAPI() {
             } else break
         }
     }
-
-    // La API devuelve Unauthorized de forma consistente; evitamos repetir
-    // esa llamada en cada categoría/búsqueda y usamos el HTML público.
-    @Volatile
-    private var apiUnavailableUntil: Long = 0L
 
     /* ------------------------------------------------------------
      * HTTP
@@ -789,13 +756,6 @@ class AnimeLHDProvider : MainAPI() {
                 body
             } else {
                 log("HTTP ERROR BODY | " + body.take(180).replace("\n", " "))
-                if (json && response.code == 403 &&
-                    (body.contains("Unauthorized", ignoreCase = true) ||
-                     body.contains("\\\"success\\\":false", ignoreCase = true))
-                ) {
-                    apiUnavailableUntil = System.currentTimeMillis() + API_UNAUTHORIZED_COOLDOWN_MS
-                    log("API COOLDOWN | Unauthorized; se priorizará HTML durante 10 minutos")
-                }
                 null
             }
         } catch (e: CancellationException) {
@@ -807,7 +767,6 @@ class AnimeLHDProvider : MainAPI() {
     }
     /** Intenta la API JSON; si falla, parsea el HTML de la página equivalente. */
     private suspend fun fetchList(
-        apiUrl: String,
         htmlUrl: String,
         htmlKey: String
     ): Pair<List<JSONObject>, Int> {
@@ -976,7 +935,7 @@ class AnimeLHDProvider : MainAPI() {
                                 TvType.Anime
                             ) {
                                 posterUrl = tmdb(ep.optString("anime_image"))
-                                if (number > 0) addDubStatus(DubStatus.Subbed, number)
+                                if (number > 0) addDubStatus(DubStatus.Dubbed, number)
                             }
                         }
                         .distinctBy { it.url }
@@ -997,7 +956,6 @@ class AnimeLHDProvider : MainAPI() {
             else -> {
                 val key = request.data // latinos | castellanos
                 val (raw, last) = fetchList(
-                    "$API/api/$key?page=$page",
                     "$WEB/$key?page=$page",
                     "\"initialData\":"
                 )
@@ -1012,7 +970,6 @@ class AnimeLHDProvider : MainAPI() {
         val q = URLEncoder.encode(query, "UTF-8")
         log("SEARCH START | query=" + query + " | encoded=" + q)
         val (raw, _) = fetchList(
-            "$API/api/animes?search=$q&page=1",
             "$WEB/directorio?search=$q",
             "\"initialAnimes\":"
         )
