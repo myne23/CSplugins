@@ -84,6 +84,9 @@ private inline fun log(message: () -> String) {
     if (DEBUG) Log.d("AnimeLHD", message())
 }
 
+// Compatibilidad: las funciones de fuentes conservan sus llamadas de log originales.
+private fun log(message: String) = log { message }
+
 private fun safeUrl(url: String?): String {
     if (url.isNullOrBlank()) return "<vacío>"
     return url.substringBefore("#").substringBefore("?")
@@ -1137,29 +1140,29 @@ class AnimeLHDProvider : MainAPI() {
             .ifBlank { rawSlug }
         val episode = parts[1].trim().toIntOrNull() ?: return false
 
-        log { "LOADLINKS START | rawSlug=" + rawSlug + " | slug=" + slug + " | episodio=" + episode + " | casting=" + isCasting}
+        log("LOADLINKS START | rawSlug=" + rawSlug + " | slug=" + slug + " | episodio=" + episode + " | casting=" + isCasting)
         val html = fetch("$WEB/ver/$slug/$episode") ?: run {
-            log { "LOADLINKS ABORT | no se pudo descargar la página"}
+            log("LOADLINKS ABORT | no se pudo descargar la página")
             return false
         }
-        log { "WATCH HTML | chars=" + html.length + " | next_f_push=" + html.contains("self.__next_f.push")}
+        log("WATCH HTML | chars=" + html.length + " | next_f_push=" + html.contains("self.__next_f.push"))
         val flat = flattenRsc(html)
-        log { "WATCH RSC | chars=" + flat.length + " | players_marker=" + flat.contains("\"players\":")}
+        log("WATCH RSC | chars=" + flat.length + " | players_marker=" + flat.contains("\"players\":"))
 
         val playersJson = jsonAfter(flat, "\"players\":")
         if (playersJson == null) {
-            log { "LOADLINKS ABORT | no se encontró el bloque players"}
+            log("LOADLINKS ABORT | no se encontró el bloque players")
             return false
         }
         val players = try {
             JSONArray(playersJson).objs()
         } catch (e: Exception) {
-            log { "LOADLINKS ABORT | JSON players inválido: " + e.javaClass.simpleName + ": " + e.message}
+            log("LOADLINKS ABORT | JSON players inválido: " + e.javaClass.simpleName + ": " + e.message)
             return false
         }
 
-        log { "PLAYERS FOUND | count=" + players.size}
-        players.forEachIndexed { index, p -> log { "PLAYER[" + index + "] | lang=" + p.optString("language") + " | server=" + p.optString("server_name") + " | bridge=" + safeUrl(p.optString("bridge_url"))} }
+        log("PLAYERS FOUND | count=" + players.size)
+        players.forEachIndexed { index, p -> log("PLAYER[" + index + "] | lang=" + p.optString("language") + " | server=" + p.optString("server_name") + " | bridge=" + safeUrl(p.optString("bridge_url"))) }
 
         data class OrderedLink(val languageRank: Int, val sequence: Int, val link: ExtractorLink)
         val pendingLinks = ConcurrentLinkedQueue<OrderedLink>()
@@ -1189,22 +1192,22 @@ class AnimeLHDProvider : MainAPI() {
                         val bridge = p.optString("bridge_url")
                         if (bridge.isBlank()) return@async
 
-                        log { "PLAYER START | [" + lang + "] " + server + " | bridge=" + safeUrl(bridge)}
+                        log("PLAYER START | [" + lang + "] " + server + " | bridge=" + safeUrl(bridge))
                         val embed = withTimeoutOrNull(BRIDGE_TIMEOUT_MS) {
                             resolveBridge(bridge, "$WEB/ver/$slug/$episode")
                         }
                         if (embed == null) {
-                            log { "bridge sin iframe: $lang $server"}
+                            log("bridge sin iframe: $lang $server")
                             return@async
                         }
-                        log { "EMBED RESOLVED | [" + lang + "] " + server + " | " + safeUrl(embed)}
+                        log("EMBED RESOLVED | [" + lang + "] " + server + " | " + safeUrl(embed))
 
-                        log { "EXTRACTOR ROUTE START | [" + lang + "] " + server + " | " + safeUrl(embed)}
+                        log("EXTRACTOR ROUTE START | [" + lang + "] " + server + " | " + safeUrl(embed))
                         withTimeoutOrNull(EXTRACTOR_TIMEOUT_MS) {
                             val prefix = "[$lang] $server"
                             when {
                                 server.equals("Gamma", ignoreCase = true) ||                                    embed.contains("ashleyhardat.com", ignoreCase = true) -> {
-                                    log { "VOE ROUTE | $prefix | embed=" + safeUrl(embed)}
+                                    log("VOE ROUTE | $prefix | embed=" + safeUrl(embed))
                                     loadVoe(embed, prefix, emitForPlayer)
                                 }
                                 BYSE_EMBED.containsMatchIn(embed) ||
@@ -1212,7 +1215,7 @@ class AnimeLHDProvider : MainAPI() {
                                     val bysePrefix = "[$lang] " + server.replace(
                                         Regex("""(?i)(?:\s*[-·|]\s*)?720p?\b"""), ""
                                     ).trim().ifBlank { server }
-                                    log { "BYSE ROUTE | $bysePrefix | embed=" + safeUrl(embed)}
+                                    log("BYSE ROUTE | $bysePrefix | embed=" + safeUrl(embed))
                                     loadByseManual(embed, bysePrefix, "$WEB/ver/$slug/$episode", emitForPlayer)
                                 }
                                 LULU_HOSTS.any { embed.contains(it, ignoreCase = true) } ->
@@ -1223,7 +1226,7 @@ class AnimeLHDProvider : MainAPI() {
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        log { "player ERROR -> ${e.javaClass.simpleName}: ${e.message}"}
+                        log("player ERROR -> ${e.javaClass.simpleName}: ${e.message}")
                     }
                 }
             }.awaitAll()
@@ -1259,11 +1262,11 @@ class AnimeLHDProvider : MainAPI() {
                 headers = link.headers
                 extractorData = link.extractorData
             }
-            log { "FINAL SOURCE ORDER[$index] | source=" + normalized.source + " | name=" + normalized.name + " | quality=" + normalized.quality}
+            log("FINAL SOURCE ORDER[$index] | source=" + normalized.source + " | name=" + normalized.name + " | quality=" + normalized.quality)
             callback(normalized)
         }
 
-        log { "LOADLINKS END | enlaces_emitidos=" + orderedLinks.size + " | players=" + players.size}
+        log("LOADLINKS END | enlaces_emitidos=" + orderedLinks.size + " | players=" + players.size)
         return orderedLinks.isNotEmpty()
     }
 
@@ -1447,31 +1450,31 @@ class AnimeLHDProvider : MainAPI() {
         val referers = listOf("$API/", "$WEB/", "$origin/").distinct()
         val collected = ConcurrentLinkedQueue<ExtractorLink>()
 
-        log { "LOAD EXTRACTOR START | " + prefix + " | byse=" + isByse + " | embed=" + safeUrl(embed)}
+        log("LOAD EXTRACTOR START | " + prefix + " | byse=" + isByse + " | embed=" + safeUrl(embed))
 
         for (candidate in candidates) {
             for (ref in referers) {
                 val before = collected.size
                 try {
-                    log { "EXTRACTOR ATTEMPT | " + prefix + " | candidate=" + safeUrl(candidate) + " | referer=" + safeUrl(ref)}
+                    log("EXTRACTOR ATTEMPT | " + prefix + " | candidate=" + safeUrl(candidate) + " | referer=" + safeUrl(ref))
                     loadExtractor(candidate, ref, subtitleCallback) { link ->
-                        log { "EXTRACTOR LINK RAW | " + prefix + " | source=" + link.source + " | name=" + link.name + " | type=" + link.type + " | quality=" + link.quality + " | url=" + safeUrl(link.url) + " | referer=" + safeUrl(link.referer)}
+                        log("EXTRACTOR LINK RAW | " + prefix + " | source=" + link.source + " | name=" + link.name + " | type=" + link.type + " | quality=" + link.quality + " | url=" + safeUrl(link.url) + " | referer=" + safeUrl(link.referer))
                         collected.add(link)
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    log { "EXTRACTOR ATTEMPT ERROR | " + prefix + " | " + e.javaClass.simpleName + ": " + e.message}
+                    log("EXTRACTOR ATTEMPT ERROR | " + prefix + " | " + e.javaClass.simpleName + ": " + e.message)
                 }
                 if (collected.size > before) break
             }
             if (collected.isNotEmpty()) break
         }
 
-        log { "LOAD EXTRACTOR END | " + prefix + " | links=" + collected.size}
+        log("LOAD EXTRACTOR END | " + prefix + " | links=" + collected.size)
         for (link in collected.distinctBy { it.url }) {
             val tagged = retag(link, prefix)
-            log { "EXTRACTOR LINK EMIT | " + prefix + " | " + tagged.name + " | type=" + tagged.type + " | quality=" + tagged.quality + " | url=" + safeUrl(tagged.url)}
+            log("EXTRACTOR LINK EMIT | " + prefix + " | " + tagged.name + " | type=" + tagged.type + " | quality=" + tagged.quality + " | url=" + safeUrl(tagged.url))
             emit(tagged)
         }
     }
@@ -1625,11 +1628,11 @@ class AnimeLHDProvider : MainAPI() {
                 this.headers = streamHeaders
             }
             emit(link)
-            log { "Byse resuelto host=" + URI(streamUrl).host}
+            log("Byse resuelto host=" + URI(streamUrl).host)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            log { "Byse resolver ERROR " + input.host + ": " + e.javaClass.simpleName + ": " + e.message}
+            log("Byse resolver ERROR " + input.host + ": " + e.javaClass.simpleName + ": " + e.message)
         }
     }
 
@@ -1658,7 +1661,7 @@ class AnimeLHDProvider : MainAPI() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            log { "HLS QUALITY | no se pudo leer manifiesto: ${e.javaClass.simpleName}"}
+            log("HLS QUALITY | no se pudo leer manifiesto: ${e.javaClass.simpleName}")
             Qualities.Unknown.value
         }
     }
@@ -1669,17 +1672,17 @@ class AnimeLHDProvider : MainAPI() {
         emit: suspend (ExtractorLink) -> Unit
     ) {
         try {
-            log { "VOE START | $prefix | embed=" + safeUrl(embedUrl)}
+            log("VOE START | $prefix | embed=" + safeUrl(embedUrl))
             val sourceUrl = withTimeoutOrNull(VOE_TIMEOUT_NS / 1_000_000L) {
                 resolveVoe(embedUrl)
             }
             if (sourceUrl.isNullOrBlank()) {
-                log { "VOE FAIL | $prefix | no se pudo extraer source"}
+                log("VOE FAIL | $prefix | no se pudo extraer source")
                 return
             }
-            log { "VOE SOURCE | $prefix | " + safeUrl(sourceUrl)}
+            log("VOE SOURCE | $prefix | " + safeUrl(sourceUrl))
             val voeQuality = detectHlsQuality(sourceUrl, mapOf("Referer" to embedUrl))
-            log { "VOE QUALITY | $prefix | $voeQuality"}
+            log("VOE QUALITY | $prefix | $voeQuality")
             emit(newExtractorLink(
                 source = "VOE",
                 name = "$prefix · VOE",
@@ -1689,11 +1692,11 @@ class AnimeLHDProvider : MainAPI() {
                 referer = embedUrl
                 quality = voeQuality
             })
-            log { "VOE EMIT | $prefix"}
+            log("VOE EMIT | $prefix")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            log { "VOE ERROR | $prefix | ${e.javaClass.simpleName}: ${e.message}"}
+            log("VOE ERROR | $prefix | ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
@@ -1881,7 +1884,7 @@ class AnimeLHDProvider : MainAPI() {
 
             String(decoded, Charsets.UTF_8)
         } catch (e: Exception) {
-            log { "VOE decode ERROR -> ${e.message}"}
+            log("VOE decode ERROR -> ${e.message}")
             null
         }
     }
@@ -1963,7 +1966,7 @@ class AnimeLHDProvider : MainAPI() {
     ) {
         val res = app.get(embed, headers = mapOf("Referer" to "$API/"))
         if (!res.isSuccessful) {
-            log { "Lulu HTTP ${res.code}"}
+            log("Lulu HTTP ${res.code}")
             return
         }
         val text = res.text
@@ -1978,7 +1981,7 @@ class AnimeLHDProvider : MainAPI() {
             ?: M3U8_ANY.find(unpacked)?.value
             ?: M3U8_ANY.find(text)?.value
             ?: run {
-                log { "Lulu: no se encontró m3u8"}
+                log("Lulu: no se encontró m3u8")
                 return
             }
 
@@ -1986,7 +1989,7 @@ class AnimeLHDProvider : MainAPI() {
 
         val luluReferer = "$origin/"
         val luluQuality = detectHlsQuality(m3u8, mapOf("Referer" to luluReferer))
-        log { "LULU QUALITY | $prefix | $luluQuality"}
+        log("LULU QUALITY | $prefix | $luluQuality")
         emit(
             newExtractorLink(
                 source = "LuluStream",
