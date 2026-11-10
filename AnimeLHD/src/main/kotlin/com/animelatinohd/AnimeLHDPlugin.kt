@@ -46,7 +46,7 @@ class AnimeLHDPlugin : Plugin() {
 
         val persistedUa = CloudStreamApp.getKey("AnimeLHD_CF_UA", "") as? String
         val effectiveUa = persistedUa?.takeIf { it.isNotBlank() }
-            ?: WebViewResolver.webViewUserAgent.takeIf { it.isNotBlank() }
+            ?: WebViewResolver.webViewUserAgent?.takeIf { it.isNotBlank() }
             ?: WebSettings.getDefaultUserAgent(context)
         val status = "cf_clearance: ${if (hasClearance) "presente" else "ausente"}\n" +
             "User-Agent: ${effectiveUa.take(60)}${if (effectiveUa.length > 60) "…" else ""}"
