@@ -38,6 +38,7 @@ import javax.crypto.spec.SecretKeySpec
 import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -544,8 +545,9 @@ private object AnimeLHDHomeState {
 
 private object AnimeLHDBackgroundRefresh {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    val homeMutex = Mutex()
-    val latinosMutex = Mutex()}
+    val homeRunning = AtomicBoolean(false)
+    val latinosRunning = AtomicBoolean(false)
+}
 
 private fun readHomeDiskCache(): Pair<Long, AnimeLHDHomeData>? = try {
     val raw = CloudStreamApp.getKey("AnimeLHD", HOME_DISK_KEY, "") as? String ?: ""
@@ -725,13 +727,13 @@ class AnimeLHDProvider : MainAPI() {
             val diskHtml = try { CloudStreamApp.getKey("AnimeLHD", LATINOS_PAGE1_DISK_KEY, "") as? String ?: "" } catch (_: Exception) { "" }
             if (!diskHtml.isNullOrBlank()) {
                 rememberPage(url, diskHtml)
-                if (AnimeLHDBackgroundRefresh.latinosMutex.tryLock()) {
+                if (AnimeLHDBackgroundRefresh.latinosRunning.compareAndSet(false, true)) {
                     AnimeLHDBackgroundRefresh.scope.launch {
                         try {
                             log("LATINOS DISK CACHE HIT | refresco en segundo plano")
                             fetch(url, forceNetwork = true)
                         } finally {
-                            AnimeLHDBackgroundRefresh.latinosMutex.unlock()
+                            AnimeLHDBackgroundRefresh.latinosRunning.set(false)
                         }
                     }
                 }
@@ -870,7 +872,7 @@ class AnimeLHDProvider : MainAPI() {
 
                 // La caché vencida solo se usa como respaldo visual si está completa.
                 // La actualización se dispara en background sin bloquear la portada.
-                if (AnimeLHDBackgroundRefresh.homeMutex.tryLock()) {
+                if (AnimeLHDBackgroundRefresh.homeRunning.compareAndSet(false, true)) {
                     AnimeLHDBackgroundRefresh.scope.launch {
                         try {
                             log("HOME DISK CACHE STALE | refresh background | ageMs=$age")
@@ -881,7 +883,7 @@ class AnimeLHDProvider : MainAPI() {
                                 homeData(forceRefresh = true)
                             }
                         } finally {
-                            AnimeLHDBackgroundRefresh.homeMutex.unlock()
+                            AnimeLHDBackgroundRefresh.homeRunning.set(false)
                         }
                     }
                 }
