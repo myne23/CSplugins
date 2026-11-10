@@ -1043,8 +1043,8 @@ class AnimeLHDProvider : MainAPI() {
         }
         val anime = selectedAnime ?: return null
 
-        val title = selectedAnime.optString("name").ifBlank { return null }
-        val type = selectedAnime.optString("type")
+        val title = anime.optString("name").ifBlank { return null }
+        val type = anime.optString("type")
 
         val episodeNumbers = rscObjectsAfterKey(flat, "episodes", animeStart) {
             it.optInt("number", 0) > 0
@@ -1053,16 +1053,16 @@ class AnimeLHDProvider : MainAPI() {
             .distinct()
             .sorted()
 
-        val poster = tmdb(selectedAnime.optString("poster"), "w500")
-        val banner = tmdb(selectedAnime.optString("banner"), "w1280")
-        val plot = selectedAnime.optString("overview").ifBlank { null }
-        val yearValue = selectedAnime.optString("aired").take(4).toIntOrNull()
-        val tagList = selectedAnime.optString("genres")
+        val poster = tmdb(anime.optString("poster"), "w500")
+        val banner = tmdb(anime.optString("banner"), "w1280")
+        val plot = anime.optString("overview").ifBlank { null }
+        val yearValue = anime.optString("aired").take(4).toIntOrNull()
+        val tagList = anime.optString("genres")
             .split(",")
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .map { g -> g.replaceFirstChar { it.uppercase() } }
-        val statusValue = when (selectedAnime.optInt("status", -1)) {
+        val statusValue = when (anime.optInt("status", -1)) {
             0 -> ShowStatus.Completed
             1 -> ShowStatus.Ongoing
             else -> null
