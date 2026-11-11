@@ -338,7 +338,7 @@ class AniPmProvider : MainAPI() {
 
         val episodeList = episodes.map { (number, ep) ->
             val epTitle = ep.str("title")?.takeIf { it != "Episode $number" && it != "Episodio $number" }
-            newEpisode("$canonical|$number|${anilistId ?: ""}", fix = false) {
+            newEpisode("$canonical|$number|${anilistId ?: ""}", fix = false, initializer = {
                 this.name = epTitle ?: "Episodio $number"
                 this.episode = number
                 this.season = 1
@@ -346,9 +346,8 @@ class AniPmProvider : MainAPI() {
                 cover(ep.str("thumbnail"))?.let { this.posterUrl = it }
                 val runtime = ep.optInt("runtimeSeconds", 0)
                 if (runtime > 0) this.runTime = (runtime / 60).coerceAtLeast(1)
-            }
+            })
         }
-
         return newTvSeriesLoadResponse(title, canonical, TvType.Anime, episodeList) {
             posterUrl = cover(data.str("poster"))
             backgroundPosterUrl = cover(data.str("banner"))
