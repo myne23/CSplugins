@@ -1,4 +1,4 @@
-version = 2
+version = 3
 
 cloudstream {
     description = "Ani.Pm: anime sub/dub en HD (catálogo propio y servidores directos)"

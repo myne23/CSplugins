@@ -259,6 +259,11 @@ class AniPmProvider : MainAPI() {
         val image = if (preferBanner) banner ?: poster else poster ?: banner
         val year = item.int("year")
         val url = seriesUrl(source, id)
+        // En el feed de últimos episodios no hay contadores: usamos el número
+        // del episodio publicado para la etiqueta de sub/dub.
+        val latestEpisode = item.int("epNumber")
+        val dubEpisodes = item.int("dubCount") ?: if (item.optBoolean("dub")) latestEpisode else null
+        val subEpisodes = item.int("subCount") ?: if (item.optBoolean("sub")) latestEpisode else null
 
         return if (tvType == TvType.AnimeMovie) {
             newMovieSearchResponse(name = title, url = url, type = tvType, fix = false) {
@@ -269,12 +274,8 @@ class AniPmProvider : MainAPI() {
             newAnimeSearchResponse(name = title, url = url, type = tvType, fix = false) {
                 posterUrl = image
                 this.year = year
-                val dub = item.optInt("dubCount", 0)
-                val sub = item.optInt("subCount", 0)
-                when {
-                    dub > 0 -> addDubStatus(DubStatus.Dubbed, dub)
-                    sub > 0 -> addDubStatus(DubStatus.Subbed, sub)
-                }
+                if (dubEpisodes != null) addDubStatus(DubStatus.Dubbed, dubEpisodes)
+                if (subEpisodes != null) addDubStatus(DubStatus.Subbed, subEpisodes)
             }
         }
     }
