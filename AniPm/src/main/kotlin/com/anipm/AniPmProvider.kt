@@ -11,6 +11,8 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.ShowStatus
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.addDubStatus
+import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newAnimeSearchResponse
 import com.lagradost.cloudstream3.newEpisode
@@ -336,7 +338,7 @@ class AniPmProvider : MainAPI() {
 
         val episodeList = episodes.map { (number, ep) ->
             val epTitle = ep.str("title")?.takeIf { it != "Episode $number" && it != "Episodio $number" }
-            newEpisode("$canonical|$number|${anilistId ?: ""}") {
+            newEpisode("$canonical|$number|${anilistId ?: ""}", fix = false) {
                 this.name = epTitle ?: "Episodio $number"
                 this.episode = number
                 this.season = 1
