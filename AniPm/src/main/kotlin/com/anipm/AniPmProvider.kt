@@ -45,6 +45,10 @@ private const val WEB = "https://ani.pm"
 private const val SETTLAR = "https://embed.settlar.io"
 private const val BETA_ZONE = "https://beta.cno.to"
 
+// ani.pm y beta.cno.to rechazan (403) las peticiones sin un User-Agent de navegador.
+private const val UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
 private const val ANILIST_OFFSET = 1_000_000L
 
 private fun log(msg: () -> String) {
@@ -94,6 +98,7 @@ class AniPmProvider : MainAPI() {
     override val mainPage = mainPageOf("inicio" to "Inicio")
 
     private val jsonHeaders = mapOf(
+        "User-Agent" to UA,
         "Accept" to "application/json",
         "Accept-Language" to "es-ES,es;q=0.9,en;q=0.8",
         "Referer" to "$WEB/"
@@ -454,6 +459,7 @@ class AniPmProvider : MainAPI() {
         ) {
             referer = "$origin/"
             quality = Qualities.Unknown.value
+            headers = mapOf("User-Agent" to UA, "Accept" to "*/*")
         })
         log { "BETA OK | ep=$episode | ${short(master)}" }
         return true
@@ -474,7 +480,7 @@ class AniPmProvider : MainAPI() {
         return try {
             val response = app.get(
                 url,
-                headers = mapOf("Accept" to "*/*", "Referer" to referer),
+                headers = mapOf("User-Agent" to UA, "Accept" to "*/*", "Referer" to referer),
                 timeout = 20L
             )
             response.code in 200..299 && response.text.trimStart().startsWith("#EXTM3U")
@@ -569,6 +575,7 @@ class AniPmProvider : MainAPI() {
         ) {
             referer = "$SETTLAR/"
             quality = Qualities.Unknown.value
+            headers = mapOf("User-Agent" to UA, "Accept" to "*/*")
         })
 
         val subtitles = embed.optJSONArray("subtitles")
