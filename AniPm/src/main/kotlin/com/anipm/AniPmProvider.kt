@@ -422,16 +422,20 @@ class AniPmProvider : MainAPI() {
         val subEpisodes = ArrayList<Episode>(episodes.size)
         val dubEpisodes = ArrayList<Episode>()
         for ((number, ep) in episodes) {
-            val episode = newEpisode(episodeUrl(source, id, number, anilistId)) {
-                val epTitle = ep.str("title")?.takeIf { it != "Episode $number" && it != "Episodio $number" }
-                this.name = epTitle ?: "Episodio $number"
-                this.episode = number
-                this.season = 1
-                ep.str("description")?.let { this.description = it }
-                cover(ep.str("thumbnail"))?.let { this.posterUrl = it }
-                val runtime = ep.optInt("runtimeSeconds", 0)
-                if (runtime > 0) this.runTime = (runtime / 60).coerceAtLeast(1)
-            }
+            val episode = newEpisode(
+                episodeUrl(source, id, number, anilistId),
+                initializer = {
+                    val epTitle = ep.str("title")
+                        ?.takeIf { it != "Episode $number" && it != "Episodio $number" }
+                    this.name = epTitle ?: "Episodio $number"
+                    this.episode = number
+                    this.season = 1
+                    ep.str("description")?.let { this.description = it }
+                    cover(ep.str("thumbnail"))?.let { this.posterUrl = it }
+                    val runtime = ep.optInt("runtimeSeconds", 0)
+                    if (runtime > 0) this.runTime = (runtime / 60).coerceAtLeast(1)
+                }
+            )
             val hasSub = ep.optBoolean("sub", true)
             val hasDub = ep.optBoolean("dub", false)
             when {
