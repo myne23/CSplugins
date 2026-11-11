@@ -30,7 +30,7 @@ import java.net.URLEncoder
 /* ====================================================================
  * Ani.Pm (ani.pm) - catálogo + reproducción
  *
- * El catálogo se lee de la API JSON pública del sitio (/api/anime/*).
+ * El catálogo se lee de la API JSON pública del sitio (/api/anime/...).
  * La reproducción usa dos fuentes:
  *   1) beta.cno.to: HLS master directo (multi-audio y multi-sub, sin CF).
  *   2) embed.settlar.io: respaldo con la sesión que firma ani.pm.
