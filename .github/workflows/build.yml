@@ -76,9 +76,21 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/src
           chmod +x gradlew
-          ./gradlew make makePluginsJson
+          set -o pipefail
+          ./gradlew make makePluginsJson 2>&1 | tee $GITHUB_WORKSPACE/build.log
           cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
           cp build/plugins.json $GITHUB_WORKSPACE/builds
+
+      - name: Publish build log
+        if: failure()
+        run: |
+          cd $GITHUB_WORKSPACE/builds
+          cp $GITHUB_WORKSPACE/build.log build.log
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git add build.log
+          git commit -m "Build log" || exit 0
+          git push --force origin HEAD:ci-log
 
       - name: Push builds
         run: |
