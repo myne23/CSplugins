@@ -2,6 +2,7 @@ package com.anipm
 
 import android.util.Log
 import com.lagradost.cloudstream3.DubStatus
+import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -12,19 +13,21 @@ import com.lagradost.cloudstream3.ShowStatus
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.addDubStatus
+import com.lagradost.cloudstream3.addEpisodes
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.mainPageOf
+import com.lagradost.cloudstream3.newAnimeLoadResponse
 import com.lagradost.cloudstream3.newAnimeSearchResponse
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newSubtitleFile
-import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -80,6 +83,70 @@ private fun JSONObject.array(key: String): List<JSONObject> {
     return out
 }
 
+private fun JSONObject.stringList(key: String): List<String> {
+    val arr = optJSONArray(key) ?: return emptyList()
+    val out = ArrayList<String>(arr.length())
+    for (i in 0 until arr.length()) {
+        val value = arr.optString(i).trim()
+        if (value.isNotEmpty()) out.add(value)
+    }
+    return out
+}
+
+/** Referencia interna del plugin: https://ani.pm/x/<fuente>/<id>[/<ep>/<anilist>] */
+private data class Ref(
+    val source: String,
+    val id: Long,
+    val episode: Int? = null,
+    val anilistId: Long? = null
+)
+
+private fun seriesUrl(source: String, id: Long): String = "$WEB/x/$source/$id"
+
+private fun episodeUrl(source: String, id: Long, episode: Int, anilistId: Long?): String =
+    "$WEB/x/$source/$id/$episode/${anilistId ?: 0}"
+
+private fun parseRef(url: String): Ref? {
+    val clean = url.trim()
+
+    // Compatibilidad con referencias antiguas: "settlar|123" y también
+    // "https://ani.pm/settlar|123" (versiones que aplican fixUrl a todo).
+    if (clean.contains("|")) {
+        val parts = clean.split("|")
+        val head = parts.getOrNull(0)?.substringAfterLast('/')?.lowercase()
+        val id = parts.getOrNull(1)?.toLongOrNull() ?: return null
+        return Ref(
+            source = if (head == "anilist") "anilist" else "settlar",
+            id = id,
+            episode = parts.getOrNull(2)?.toIntOrNull(),
+            anilistId = parts.getOrNull(3)?.toLongOrNull()?.takeIf { it > 0 }
+        )
+    }
+
+    val marker = "/x/"
+    val index = clean.indexOf(marker)
+    if (index < 0) return null
+    val parts = clean.substring(index + marker.length).trim('/').split('/')
+    val source = parts.getOrNull(0)?.lowercase() ?: return null
+    if (source != "settlar" && source != "anilist") return null
+    val id = parts.getOrNull(1)?.toLongOrNull() ?: return null
+    return Ref(
+        source = source,
+        id = id,
+        episode = parts.getOrNull(2)?.toIntOrNull(),
+        anilistId = parts.getOrNull(3)?.toLongOrNull()?.takeIf { it > 0 }
+    )
+}
+
+// Contenido adulto que no queremos listar en el catálogo.
+private val blockedGenres = setOf("hentai")
+
+private fun isBlocked(item: JSONObject): Boolean {
+    val genres = item.stringList("genres").map { it.lowercase() }
+    val tags = item.stringList("tags").map { it.lowercase() }
+    return genres.any { it in blockedGenres } || tags.any { it in blockedGenres }
+}
+
 class AniPmProvider : MainAPI() {
 
     override var mainUrl = WEB
@@ -121,6 +188,8 @@ class AniPmProvider : MainAPI() {
                 return null
             }
             JSONObject(response.text)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             log { "API ERROR | ${e.javaClass.simpleName}: ${e.message} | url=${short(url)}" }
             null
@@ -160,6 +229,7 @@ class AniPmProvider : MainAPI() {
         preferBanner: Boolean,
         nameSuffix: String? = null
     ): SearchResponse? {
+        if (isBlocked(item)) return null
         val rawTitle = item.str("title") ?: return null
         val title = if (nameSuffix != null) "$rawTitle · $nameSuffix" else rawTitle
         val anilistId = item.str("anilistId")?.toLongOrNull()
@@ -188,7 +258,7 @@ class AniPmProvider : MainAPI() {
         val banner = cover(item.str("banner")) ?: cover(item.str("heroBackdrop"))
         val image = if (preferBanner) banner ?: poster else poster ?: banner
         val year = item.int("year")
-        val url = "$source|$id"
+        val url = seriesUrl(source, id)
 
         return if (tvType == TvType.AnimeMovie) {
             newMovieSearchResponse(name = title, url = url, type = tvType, fix = false) {
@@ -227,21 +297,6 @@ class AniPmProvider : MainAPI() {
 
         val sections = ArrayList<HomePageList>(4)
 
-        val hero = parseItems(data.optJSONArray("hero"), null, preferBanner = true)
-        if (hero.isNotEmpty()) {
-            sections.add(HomePageList("Portada", hero, isHorizontalImages = true))
-        }
-
-        val trending = parseItems(data.optJSONArray("trending"))
-        if (trending.isNotEmpty()) {
-            sections.add(HomePageList("Tendencias", trending))
-        }
-
-        val top = parseItems(data.optJSONArray("top"))
-        if (top.isNotEmpty()) {
-            sections.add(HomePageList("Top anime", top))
-        }
-
         val latest = ArrayList<SearchResponse>()
         for (item in data.array("latest")) {
             val ep = item.int("epNumber")
@@ -255,6 +310,21 @@ class AniPmProvider : MainAPI() {
         }
         if (latest.isNotEmpty()) {
             sections.add(HomePageList("Últimos episodios", latest))
+        }
+
+        val hero = parseItems(data.optJSONArray("hero"), null, preferBanner = true)
+        if (hero.isNotEmpty()) {
+            sections.add(HomePageList("Portada", hero, isHorizontalImages = true))
+        }
+
+        val trending = parseItems(data.optJSONArray("trending"))
+        if (trending.isNotEmpty()) {
+            sections.add(HomePageList("Tendencias", trending))
+        }
+
+        val top = parseItems(data.optJSONArray("top"))
+        if (top.isNotEmpty()) {
+            sections.add(HomePageList("Top anime", top))
         }
 
         log { "HOME OK | secciones=${sections.size} | hero=${hero.size} | trending=${trending.size} | top=${top.size} | latest=${latest.size}" }
@@ -306,9 +376,12 @@ class AniPmProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val parts = url.split("|")
-        val source = parts.getOrNull(0) ?: "settlar"
-        val id = parts.getOrNull(1)?.toLongOrNull() ?: return null
+        val ref = parseRef(url) ?: run {
+            log { "LOAD FAIL | referencia inválida | ${short(url)}" }
+            return null
+        }
+        val source = ref.source
+        val id = ref.id
 
         val data = fetchSeries(source, id) ?: run {
             log { "LOAD FAIL | source=$source id=$id" }
@@ -318,7 +391,7 @@ class AniPmProvider : MainAPI() {
         val title = data.str("title") ?: return null
         val anilistId = data.str("anilistId")?.toLongOrNull()
         val typeRaw = (data.str("type") ?: "").uppercase()
-        val canonical = "$source|$id"
+        val canonical = seriesUrl(source, id)
 
         val episodes = data.array("episodes")
             .mapNotNull { ep ->
@@ -332,7 +405,12 @@ class AniPmProvider : MainAPI() {
 
         if (typeRaw == "MOVIE") {
             val ep = episodes.firstOrNull()?.first ?: 1
-            return newMovieLoadResponse(title, canonical, TvType.AnimeMovie, "$canonical|$ep|${anilistId ?: ""}") {
+            return newMovieLoadResponse(
+                title,
+                canonical,
+                TvType.AnimeMovie,
+                episodeUrl(source, id, ep, anilistId)
+            ) {
                 posterUrl = cover(data.str("poster"))
                 backgroundPosterUrl = cover(data.str("banner"))
                 plot = data.str("synopsis")
@@ -341,9 +419,11 @@ class AniPmProvider : MainAPI() {
             }
         }
 
-        val episodeList = episodes.map { (number, ep) ->
-            val epTitle = ep.str("title")?.takeIf { it != "Episode $number" && it != "Episodio $number" }
-            newEpisode("$canonical|$number|${anilistId ?: ""}", fix = false, initializer = {
+        val subEpisodes = ArrayList<Episode>(episodes.size)
+        val dubEpisodes = ArrayList<Episode>()
+        for ((number, ep) in episodes) {
+            val episode = newEpisode(episodeUrl(source, id, number, anilistId)) {
+                val epTitle = ep.str("title")?.takeIf { it != "Episode $number" && it != "Episodio $number" }
                 this.name = epTitle ?: "Episodio $number"
                 this.episode = number
                 this.season = 1
@@ -351,9 +431,19 @@ class AniPmProvider : MainAPI() {
                 cover(ep.str("thumbnail"))?.let { this.posterUrl = it }
                 val runtime = ep.optInt("runtimeSeconds", 0)
                 if (runtime > 0) this.runTime = (runtime / 60).coerceAtLeast(1)
-            })
+            }
+            val hasSub = ep.optBoolean("sub", true)
+            val hasDub = ep.optBoolean("dub", false)
+            when {
+                hasSub -> subEpisodes.add(episode)
+                !hasDub -> subEpisodes.add(episode)
+            }
+            if (hasDub) dubEpisodes.add(episode)
         }
-        return newTvSeriesLoadResponse(title, canonical, TvType.Anime, episodeList) {
+
+        log { "LOAD IDIOMAS | title=$title | sub=${subEpisodes.size} | dub=${dubEpisodes.size}" }
+
+        return newAnimeLoadResponse(title, canonical, TvType.Anime) {
             posterUrl = cover(data.str("poster"))
             backgroundPosterUrl = cover(data.str("banner"))
             plot = data.str("synopsis")
@@ -364,6 +454,8 @@ class AniPmProvider : MainAPI() {
                 "finished", "completed" -> ShowStatus.Completed
                 else -> null
             }
+            addEpisodes(DubStatus.Subbed, subEpisodes)
+            addEpisodes(DubStatus.Dubbed, dubEpisodes)
         }
     }
 
@@ -387,11 +479,14 @@ class AniPmProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val parts = data.split("|")
-        val source = parts.getOrNull(0) ?: "settlar"
-        val id = parts.getOrNull(1)?.toLongOrNull() ?: return false
-        val episode = parts.getOrNull(2)?.toIntOrNull() ?: 1
-        var anilistId = parts.getOrNull(3)?.toLongOrNull()
+        val ref = parseRef(data) ?: run {
+            log { "LINKS FAIL | referencia inválida | ${short(data)}" }
+            return false
+        }
+        val source = ref.source
+        val id = ref.id
+        val episode = ref.episode ?: 1
+        var anilistId = ref.anilistId
         if (anilistId == null && source == "anilist") anilistId = id
 
         log { "LINKS | source=$source id=$id ep=$episode anilist=${anilistId ?: "-"}" }
@@ -484,6 +579,8 @@ class AniPmProvider : MainAPI() {
                 timeout = 20L
             )
             response.code in 200..299 && response.text.trimStart().startsWith("#EXTM3U")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             log { "VERIFY ERROR | ${e.javaClass.simpleName}: ${e.message}" }
             false
