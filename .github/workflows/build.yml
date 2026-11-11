@@ -76,7 +76,22 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/src
           chmod +x gradlew
-          ./gradlew make makePluginsJson
+          set +e
+          ./gradlew make makePluginsJson --console=plain > "$GITHUB_WORKSPACE/build-error.log" 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            cd $GITHUB_WORKSPACE/builds
+            cp "$GITHUB_WORKSPACE/build-error.log" .
+            git config --local user.email "actions@github.com"
+            git config --local user.name "GitHub Actions"
+            git add build-error.log
+            git commit -m "Build error log $GITHUB_SHA" || true
+            git push || true
+            echo "=========== BUILD FAILED, last lines ==========="
+            tail -n 150 "$GITHUB_WORKSPACE/build-error.log"
+            exit 1
+          fi
           cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
           cp build/plugins.json $GITHUB_WORKSPACE/builds
 
