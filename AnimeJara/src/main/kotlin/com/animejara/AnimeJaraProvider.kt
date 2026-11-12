@@ -60,9 +60,9 @@ import org.jsoup.nodes.Element
  * La ficha de cada serie trae TEMPORADAS_DATA (JSON) con los episodios y
  * sus idiomas. Cada episodio/película embebe un reproductor de
  * streamhj.top que lista servidores externos. Los servidores se resuelven
- * en paralelo: FileLions/VidHide y Uqload a mano (para elegir el hls4 que
- * funciona), Byse con su flujo de challenge/attest/PoW/AES-GCM, y el resto
- * con los extractores de CloudStream y un respaldo manual de .m3u8.
+ * en paralelo: FileLions/VidHide a mano (para elegir el hls4 que funciona),
+ * Byse con su flujo de challenge/attest/PoW/AES-GCM, y el resto con los
+ * extractores de CloudStream y un respaldo manual de .m3u8.
  * ==================================================================== */
 
 private const val DEBUG = true
