@@ -1038,9 +1038,9 @@ class AnimeJaraProvider : MainAPI() {
                 .firstOrNull { it.startsWith("http") }
                 ?: return null
 
-            val finalHost = hostOf(response.url.ifBlank { serverUrl })
+            val finalPage = response.url.ifBlank { serverUrl }
             log { "LINKS MANUAL | $host | ${short(stream)}" }
-            ManualLink(stream, "https://$finalHost/")
+            ManualLink(stream, finalPage)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
