@@ -2,7 +2,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1")
 }
 
-version = 3
+version = 4
 
 cloudstream {
     description = "AnimeJara: anime latino, castellano y japonés (sub) con reproductor multi-servidor"

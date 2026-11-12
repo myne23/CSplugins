@@ -173,6 +173,20 @@ private fun prettyLang(raw: String): String {
     }
 }
 
+/** Idioma original (japonés) usado en las pestañas de subtitulado. */
+private fun isSubLanguage(raw: String): Boolean {
+    val value = raw.uppercase()
+    return value.contains("JAPON") || value.contains("JAP") ||
+        value.contains("SUB") || value.contains("ORIGINAL")
+}
+
+/** Idiomas de doblaje disponibles (latino, castellano o español). */
+private fun isDubLanguage(raw: String): Boolean {
+    val value = raw.uppercase()
+    return value.contains("LATINO") || value.contains("CASTELLANO") ||
+        value.contains("ESPANOL") || value.contains("ESPAÑOL") || value.contains("DUB")
+}
+
 /**
  * Extrae el primer array JSON que aparece después de [key]. Se recorre el
  * texto contando corchetes y respetando las cadenas, para no cortar el JSON
@@ -263,8 +277,7 @@ class AnimeJaraProvider : MainAPI() {
     override val mainPage = mainPageOf(
         "inicio" to "Inicio",
         "latino" to "Anime latino",
-        "castellano" to "Anime castellano",
-        "japones" to "Anime japonés (sub)"
+        "castellano" to "Anime castellano"
     )
 
     /* ------------------------------------------------------------
@@ -306,7 +319,6 @@ class AnimeJaraProvider : MainAPI() {
         val idioma = when (request.data) {
             "latino" -> "LATINO"
             "castellano" -> "CASTELLANO"
-            "japones" -> "JAPONES"
             else -> null
         }
         return catalogPage(page, request, idioma)
@@ -337,10 +349,6 @@ class AnimeJaraProvider : MainAPI() {
         log { "HOME | ranking=${ranking.size}" }
         if (ranking.isNotEmpty()) {
             sections.add(HomePageList("Ranking de hoy", ranking))
-        }
-
-        heroCard(doc)?.let { hero ->
-            sections.add(HomePageList("Destacado", listOf(hero), isHorizontalImages = true))
         }
 
         return newHomePageResponse(sections, hasNext = false)
@@ -489,24 +497,6 @@ class AnimeJaraProvider : MainAPI() {
         return newAnimeSearchResponse(title, href, TvType.Anime) {
             posterUrl = poster
             this.score = scoreValue
-        }
-    }
-
-    private fun heroCard(doc: Document): SearchResponse? {
-        val href = absHref(doc.selectFirst("#heroLink")?.attr("href").orEmpty())
-        if (href.isBlank()) return null
-        val title = doc.selectFirst("#heroTitle")?.text()?.trim().orEmpty()
-        if (title.isBlank()) return null
-        val poster = imageUrl(doc.selectFirst("#heroImg"))
-
-        if (href.contains("/movie/")) {
-            return newMovieSearchResponse(title, href, TvType.AnimeMovie) {
-                posterUrl = poster
-            }
-        }
-
-        return newAnimeSearchResponse(title, href, TvType.Anime) {
-            posterUrl = poster
         }
     }
 
@@ -680,7 +670,10 @@ class AnimeJaraProvider : MainAPI() {
 
         for (ep in parsed.sortedWith(compareBy({ it.season }, { it.number }))) {
             val epUrl = "$WEB/episode/$slug-${ep.season}x${ep.rawNumber}/"
-            val episode = newEpisode(epUrl, initializer = {
+
+            // El marcador viaja en el dato del episodio y permite filtrar
+            // los servidores: subtitulado = japonés, doblado = latino/castellano.
+            fun makeEpisode(mode: String): Episode = newEpisode("$epUrl#jara=$mode", initializer = {
                 this.name = ep.title ?: "Episodio ${ep.number}"
                 this.episode = ep.number
                 this.season = ep.season
@@ -689,13 +682,10 @@ class AnimeJaraProvider : MainAPI() {
                 ep.date?.let { addDate(it, "yyyy-MM-dd HH:mm:ss") }
             })
 
-            val langs = ep.languages.map { it.uppercase() }
-            val hasSub = langs.any { it.contains("JAPON") || it.contains("SUB") }
-            val hasDub = langs.any {
-                it.contains("LATINO") || it.contains("CASTELLANO") || it.contains("DUB")
-            }
-            if (hasSub || !hasDub) subEpisodes.add(episode)
-            if (hasDub) dubEpisodes.add(episode)
+            val hasSub = ep.languages.any { isSubLanguage(it) }
+            val hasDub = ep.languages.any { isDubLanguage(it) }
+            if (hasSub || !hasDub) subEpisodes.add(makeEpisode("sub"))
+            if (hasDub) dubEpisodes.add(makeEpisode("dub"))
         }
 
         log { "LOAD IDIOMAS | title=$title | sub=${subEpisodes.size} | dub=${dubEpisodes.size}" }
@@ -773,8 +763,12 @@ class AnimeJaraProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val url = data.trim()
-        log { "LINKS | $url" }
+        val rawData = data.trim()
+        val selection = rawData.substringAfter("#jara=", "").lowercase()
+        val url = rawData.substringBefore("#jara=")
+        log {
+            "LINKS | $url" + if (selection.isNotEmpty()) " | modo=$selection" else ""
+        }
         if (url.isEmpty() || !url.contains("animejara.com")) {
             log { "LINKS FAIL | url no reconocida" }
             return false
@@ -788,13 +782,24 @@ class AnimeJaraProvider : MainAPI() {
 
             val html = response.text
             val isMovie = url.contains("/movie/")
-            val groups = parseLanguageGroups(response.document, html, isMovie)
+            val allGroups = parseLanguageGroups(response.document, html, isMovie)
+            val groups = when (selection) {
+                "sub" -> allGroups.filter { isSubLanguage(it.name) }
+                "dub" -> allGroups.filter { isDubLanguage(it.name) }
+                else -> allGroups
+            }
             if (groups.isEmpty()) {
-                log { "LINKS FAIL | sin idiomas/servidores | ${short(url)}" }
+                log {
+                    "LINKS FAIL | sin idiomas para modo " +
+                        "'${selection.ifEmpty { "todos" }}' | ${short(url)}"
+                }
                 return false
             }
 
-            log { "LINKS IDIOMAS | ${groups.joinToString { "${it.name}(${it.embeds.size})" }}" }
+            log {
+                "LINKS IDIOMAS | modo=${selection.ifEmpty { "todos" }} | " +
+                    groups.joinToString { "${it.name}(${it.embeds.size})" }
+            }
 
             val emitted = ConcurrentHashMap.newKeySet<String>()
             val total = AtomicInteger(0)
