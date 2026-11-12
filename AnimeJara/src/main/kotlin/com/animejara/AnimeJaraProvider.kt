@@ -1108,7 +1108,7 @@ class AnimeJaraProvider : MainAPI() {
 
     private fun isByseUrl(url: String): Boolean = BYSE_EMBED.containsMatchIn(url)
 
-    private fun jaraLink(
+    private suspend fun jaraLink(
         label: String,
         sourceName: String,
         url: String,
