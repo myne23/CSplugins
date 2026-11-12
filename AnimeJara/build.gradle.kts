@@ -1,4 +1,4 @@
-version = 2
+version = 3
 
 cloudstream {
     description = "AnimeJara: anime latino, castellano y japonés (sub) con reproductor multi-servidor"
