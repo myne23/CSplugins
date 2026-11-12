@@ -1700,9 +1700,9 @@ class AnimeJaraProvider : MainAPI() {
                     else -> ExtractorLinkType.VIDEO
                 }
             ) {
-                referer = pageUrl
+                this.referer = pageUrl
                 quality = chosen.third
-                headers = streamHeaders
+                this.headers = streamHeaders
             }
         } catch (e: CancellationException) {
             throw e
