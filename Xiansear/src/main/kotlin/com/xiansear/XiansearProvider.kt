@@ -17,6 +17,7 @@ import org.json.JSONTokener
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
@@ -45,6 +46,13 @@ private data class RawEpisode(
     val season: Int,
     val number: Int,
     val title: String?
+)
+
+private data class TvCatalogItem(
+    val title: String,
+    val slug: String,
+    val poster: String?,
+    val contentType: String
 )
 
 private data class PlayerSource(
@@ -103,6 +111,7 @@ class XiansearProvider : MainAPI() {
 
     private var catalogCache: List<SearchResponse>? = null
     private var donghuaCache: List<SearchResponse>? = null
+    private var tvCatalogCache: List<TvCatalogItem>? = null
     private val episodeCache = ConcurrentHashMap<String, EpisodeInfo>()
 
     /* ------------------------------------------------------------
@@ -196,11 +205,17 @@ class XiansearProvider : MainAPI() {
     }
 
     private suspend fun catalogPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (page > 1) {
+        val items = allCatalog()
+        val from = (page - 1) * PAGE_SIZE
+        if (from >= items.size) {
             return newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
-        val items = allCatalog()
-        return newHomePageResponse(request.name, items, hasNext = false)
+        val to = minOf(from + PAGE_SIZE, items.size)
+        return newHomePageResponse(
+            request.name,
+            items.subList(from, to),
+            hasNext = to < items.size
+        )
     }
 
     private suspend fun allPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -217,21 +232,97 @@ class XiansearProvider : MainAPI() {
         )
     }
 
+    /**
+     * El catálogo de TV entrega las 604 fichas (con póster) en una sola
+     * petición. Es la fuente más liviana para las categorías con imágenes.
+     */
+    private suspend fun tvCatalog(): List<TvCatalogItem> {
+        tvCatalogCache?.let { return it }
+        val doc = getDoc("$WEB/tv/catalogo", "$WEB/") ?: return emptyList()
+        val items = parseTvCatalog(extractFlight(doc.html()))
+        if (items.isNotEmpty()) tvCatalogCache = items
+        log("TV CATALOGO | items=${items.size}")
+        return items
+    }
+
+    private fun parseTvCatalog(flight: String): List<TvCatalogItem> {
+        val array = jsonArrayAfter(flight, "\"items\":") ?: return emptyList()
+        val out = ArrayList<TvCatalogItem>(array.length())
+        val seen = HashSet<String>()
+
+        for (i in 0 until array.length()) {
+            val obj = array.optJSONObject(i) ?: continue
+            val title = obj.optString("seriesName").trim()
+            val href = obj.optString("href").trim()
+            if (title.isEmpty() || href.isEmpty()) continue
+
+            val slug = href.substringAfter("/tv/serie/", href.substringAfter("/serie/", ""))
+                .substringBefore('/')
+                .substringBefore('?')
+                .trim()
+            if (slug.isEmpty() || !seen.add(slug)) continue
+
+            out.add(
+                TvCatalogItem(
+                    title = title,
+                    slug = slug,
+                    poster = absolute(obj.optString("iconUrl"))?.let { posterVariant(it) },
+                    contentType = obj.optString("contentType").trim().lowercase()
+                )
+            )
+        }
+
+        return out
+    }
+
+    private fun tvSearchResponse(item: TvCatalogItem): SearchResponse {
+        val target = "$WEB/serie/${item.slug}"
+        return if (item.contentType == "pelicula") {
+            newMovieSearchResponse(item.title, target, TvType.AnimeMovie) {
+                posterUrl = item.poster
+            }
+        } else {
+            newAnimeSearchResponse(item.title, target, TvType.Anime) {
+                posterUrl = item.poster
+            }
+        }
+    }
+
+    private fun seriesSlug(url: String): String =
+        url.substringAfter("/serie/", "")
+            .substringBefore('/')
+            .substringBefore('?')
+            .trim()
+
     private suspend fun allCatalog(): List<SearchResponse> {
         catalogCache?.let { return it }
-        val doc = getDoc("$WEB/catalogo", "$WEB/") ?: return emptyList()
-        val items = parseSeriesCards(doc)
+        val items = tvCatalog().map { tvSearchResponse(it) }
         if (items.isNotEmpty()) catalogCache = items
         log("CATALOGO | series=${items.size}")
         return items
     }
 
+    /**
+     * La lista A-Z del sitio no trae pósters. Se enriquece con el catálogo
+     * de TV, que sí incluye la imagen y el tipo de cada ficha.
+     */
     private suspend fun allDonghuas(): List<SearchResponse> {
         donghuaCache?.let { return it }
         val doc = getDoc("$WEB/donghuas", "$WEB/") ?: return emptyList()
-        val items = parseSeriesCards(doc)
-        if (items.isNotEmpty()) donghuaCache = items
-        log("DONGHUAS | series=${items.size}")
+        val base = parseSeriesCards(doc)
+        if (base.isEmpty()) return emptyList()
+
+        val bySlug = tvCatalog().associateBy { it.slug }
+        val items = base.map { item ->
+            val tv = bySlug[seriesSlug(item.url)]
+            if (tv != null) tvSearchResponse(tv) else item
+        }
+
+        // Si el catálogo de TV falló, no se cachea la lista sin pósters:
+        // así el siguiente intento vuelve a pedir las imágenes.
+        if (bySlug.isNotEmpty()) donghuaCache = items
+
+        log("DONGHUAS | series=${items.size} | posters=${items.count { !it.posterUrl.isNullOrBlank() }}")
         return items
     }
 
@@ -264,7 +355,7 @@ class XiansearProvider : MainAPI() {
             if (title.isEmpty() || path.isEmpty()) continue
 
             val href = absolute(path) ?: continue
-            val poster = absolute(item.optString("iconUrl"))
+            val poster = absolute(item.optString("iconUrl"))?.let { posterVariant(it) }
 
             if (type == "pelicula") {
                 out.add(newMovieSearchResponse(title, href, TvType.AnimeMovie) {
@@ -288,13 +379,38 @@ class XiansearProvider : MainAPI() {
      * ------------------------------------------------------------ */
 
     override suspend fun load(url: String): LoadResponse? {
+        val raw = url.substringBefore('#').trim()
+        if (raw.isEmpty()) return null
+
+        if (raw.contains("/ver/donghua/")) {
+            // Los "últimos episodios" apuntan al capítulo. Se abre la ficha
+            // de la serie para que el usuario pueda elegir cualquier capítulo.
+            val episodeSlug = raw.substringAfter("/ver/donghua/", "")
+                .substringBefore('/')
+                .substringBefore('?')
+                .trim()
+            if (episodeSlug.isNotBlank()) {
+                loadSeries("$WEB/serie/$episodeSlug")?.let { return it }
+            }
+            return loadEpisode(raw)
+        }
+
+        if (raw.contains("/tv/serie/")) {
+            val tvSlug = raw.substringAfter("/tv/serie/", "")
+                .substringBefore('/')
+                .substringBefore('?')
+                .trim()
+            if (tvSlug.isBlank()) return null
+            return loadSeries("$WEB/serie/$tvSlug")
+        }
+
+        if (!raw.contains("/serie/")) return null
+        return loadSeries(raw)
+    }
+
+    private suspend fun loadSeries(url: String): LoadResponse? {
         val target = url.substringBefore('#').trim()
         if (target.isEmpty()) return null
-
-        if (target.contains("/ver/donghua/")) {
-            return loadEpisode(target)
-        }
-        if (!target.contains("/serie/")) return null
 
         val doc = getDoc(target, "$WEB/") ?: return null
         val objects = ldObjects(doc)
@@ -307,13 +423,12 @@ class XiansearProvider : MainAPI() {
             .ifBlank { doc.title().substringBefore(" · ").trim() }
         if (title.isBlank()) return null
 
-        val poster = absolute(meta.optString("image"))
+        val posterRaw = absolute(meta.optString("image"))
+        val poster = posterRaw?.let { posterVariant(it) }
+        val background = posterRaw?.let { backgroundVariant(it) }
         val plot = meta.optString("description").trim().takeIf { it.isNotEmpty() }
         val tags = stringsOf(meta.opt("genre"))
-        val slug = target.substringAfter("/serie/", "")
-            .substringBefore('/')
-            .substringBefore('?')
-            .trim()
+        val slug = seriesSlug(target)
         if (slug.isBlank()) return null
 
         val flight = extractFlight(doc.html())
@@ -328,7 +443,7 @@ class XiansearProvider : MainAPI() {
                 ?: return null
             return newMovieLoadResponse(title, target, TvType.AnimeMovie, movieEpisodeUrl) {
                 posterUrl = poster
-                backgroundPosterUrl = poster
+                backgroundPosterUrl = background
                 this.plot = plot
                 this.tags = tags
             }
@@ -344,7 +459,7 @@ class XiansearProvider : MainAPI() {
 
         return newAnimeLoadResponse(title, target, TvType.Anime) {
             posterUrl = poster
-            backgroundPosterUrl = poster
+            backgroundPosterUrl = background
             this.plot = plot
             this.tags = tags
             showStatus = status
@@ -446,6 +561,9 @@ class XiansearProvider : MainAPI() {
         }
 
         // Servidores iframe que no tienen resolución propia aquí.
+        // Un mismo extractor puede devolver varias calidades (VOE, Filemoon…).
+        // Se agrupa por servidor y se emite solo la mejor calidad de cada uno.
+        val generic = ArrayList<Pair<ExtractorLink, String>>()
         for (source in sources) {
             val lower = source.url.lowercase()
             if (source.kind.equals("wyvern", true)) continue
@@ -464,19 +582,31 @@ class XiansearProvider : MainAPI() {
             } catch (e: Exception) {
                 log("EXTRACTOR ERROR | ${short(source.url)} | ${e.javaClass.simpleName}: ${e.message}")
             }
-            for (link in collected) {
-                callback(newExtractorLink(
-                    source = name,
-                    name = "$name · ${link.name.ifBlank { source.label }}",
-                    url = link.url,
-                    type = link.type
-                ) {
-                    referer = link.referer
-                    quality = link.quality
-                    headers = link.headers
-                })
-                emitted++
+            collected.forEach { generic.add(it to source.label) }
+        }
+
+        val bestByServer = LinkedHashMap<String, Pair<ExtractorLink, String>>()
+        for (item in generic) {
+            val key = extractorKey(item.first)
+            val previous = bestByServer[key]
+            if (previous == null || qualityRank(item.first) > qualityRank(previous.first)) {
+                bestByServer[key] = item
             }
+        }
+
+        for ((link, fallbackLabel) in bestByServer.values) {
+            callback(newExtractorLink(
+                source = name,
+                name = "$name · ${link.name.ifBlank { fallbackLabel }}",
+                url = link.url,
+                type = link.type
+            ) {
+                referer = link.referer
+                quality = link.quality
+                headers = link.headers
+            })
+            emitted++
+            log("LINK | ${link.name} | ${short(link.url)}")
         }
 
         // Último recurso: si el proxy de Rumble falló, probar el embed.
@@ -516,9 +646,19 @@ class XiansearProvider : MainAPI() {
     }
 
     private suspend fun resolveEpisodeUrl(data: String): String? {
-        val target = data.substringBefore('#').trim()
+        var target = data.substringBefore('#').trim()
         if (target.contains("/ver/donghua/")) return target
-        if (!target.contains("/serie/")) return null
+
+        if (target.contains("/tv/serie/")) {
+            val tvSlug = target.substringAfter("/tv/serie/", "")
+                .substringBefore('/')
+                .substringBefore('?')
+                .trim()
+            if (tvSlug.isBlank()) return null
+            target = "$WEB/serie/$tvSlug"
+        } else if (!target.contains("/serie/")) {
+            return null
+        }
 
         val doc = getDoc(target, "$WEB/") ?: return null
         val slug = target.substringAfter("/serie/", "")
@@ -558,9 +698,9 @@ class XiansearProvider : MainAPI() {
         val sources = parseSources(flight)
         val title = cleanTitle(jsonStringField(flight, "episodeTitle"))
             ?: cleanTitle(episodeObj?.optString("name"))
-        val poster = absolute(jsonStringField(flight, "posterUrl"))
+        val poster = (absolute(jsonStringField(flight, "posterUrl"))
             ?: absolute(firstString(episodeObj?.opt("thumbnailUrl")))
-            ?: absolute(firstString(episodeObj?.opt("image")))
+            ?: absolute(firstString(episodeObj?.opt("image"))))?.let { posterVariant(it) }
         val plot = jsonStringField(flight, "synopsisShort")?.trim()?.takeIf { it.isNotEmpty() }
             ?: episodeObj?.optString("description")?.trim()?.takeIf { it.isNotEmpty() }
 
@@ -718,7 +858,8 @@ class XiansearProvider : MainAPI() {
     /**
      * Los episodios antiguos del sitio suelen tener solo OK.ru.
      * La página del embed trae MP4 por calidad y, casi siempre, un manifest
-     * DASH en "metadataUrl"; se emiten ambos para tener respaldo.
+     * DASH en "metadataUrl". Se emite un único enlace: el mejor MP4 y, solo
+     * si no hay MP4, el DASH como respaldo.
      */
     private suspend fun resolveOkRu(url: String, referer: String?): ResolvedSources {
         val links = ArrayList<LinkSpec>()
@@ -762,7 +903,7 @@ class XiansearProvider : MainAPI() {
                 }
                 ranked.sortedByDescending { it.first }
                     .distinctBy { it.second }
-                    .take(2)
+                    .take(1)
                     .forEach { (quality, stream) ->
                         links.add(LinkSpec(
                             label = if (quality > 0) "OK.ru ${quality}p" else "OK.ru",
@@ -773,15 +914,17 @@ class XiansearProvider : MainAPI() {
                     }
             }
 
-            val metadata = Regex(""""metadataUrl"\s*:\s*"([^"]+)""")
-                .find(text)?.groupValues?.getOrNull(1)
-            if (!metadata.isNullOrBlank()) {
-                links.add(LinkSpec(
-                    label = "OK.ru (DASH)",
-                    url = metadata,
-                    type = ExtractorLinkType.DASH,
-                    headers = linkHeaders
-                ))
+            if (links.isEmpty()) {
+                val metadata = Regex(""""metadataUrl"\s*:\s*"([^"]+)""")
+                    .find(text)?.groupValues?.getOrNull(1)
+                if (!metadata.isNullOrBlank()) {
+                    links.add(LinkSpec(
+                        label = "OK.ru",
+                        url = metadata,
+                        type = ExtractorLinkType.DASH,
+                        headers = linkHeaders
+                    ))
+                }
             }
         } catch (e: CancellationException) {
             throw e
@@ -840,6 +983,34 @@ class XiansearProvider : MainAPI() {
         }
         return null
     }
+
+    /**
+     * Clave para agrupar variantes de un mismo servidor. VOE devuelve una
+     * entrada por calidad con el mismo nombre; se conserva la de mayor peso.
+     */
+    private fun extractorKey(link: ExtractorLink): String {
+        var key = link.name.trim().lowercase()
+        key = key.replace(
+            Regex("""(?i)[\(\[]?\s*(?:4k|uhd|fhd|full\s*hd|hd|sd|1440p?|1080p?|720p?|480p?|360p?|240p?|144p?)\s*[\)\]]?"""),
+            " "
+        )
+        key = key.replace(Regex("""(?i)\((?:hls|mp4|dash|m3u8)\)"""), " ")
+        key = key.replace(Regex("""\s+"""), " ")
+            .trim(' ', '-', '_', ':', '|', '·', '.', ',')
+
+        if (key.isNotEmpty() && key !in setOf("extractor", "servidor", "server", "unknown", "video", "iframe")) {
+            return key
+        }
+
+        return try {
+            URI(link.url).host?.removePrefix("www.") ?: link.url
+        } catch (_: Exception) {
+            link.url
+        }
+    }
+
+    private fun qualityRank(link: ExtractorLink): Int =
+        if (link.quality > 0) link.quality else 0
 
     /* ------------------------------------------------------------
      * Tarjetas
@@ -1206,19 +1377,57 @@ class XiansearProvider : MainAPI() {
     private fun episodeUrl(slug: String, episode: RawEpisode): String =
         "$WEB/ver/donghua/$slug/temporada-${episode.season}-episodio-${episode.number}"
 
-    private fun episodeName(series: String, episode: RawEpisode): String {
-        val fallback = "Episodio ${episode.number}"
+    /**
+     * Devuelve solo el título real del capítulo. Si el texto únicamente
+     * repite temporada/episodio, devuelve null para que CloudStream muestre
+     * la numeración limpia ("T1 E1") sin duplicarla.
+     */
+    private fun episodeName(series: String, episode: RawEpisode): String? {
         val raw = episode.title?.trim().orEmpty()
-        if (raw.isEmpty()) return fallback
+        if (raw.isEmpty()) return null
+
+        val combined = Regex(
+            """(?i)\b(?:temporada|season|temp)\s*\d+\s*[-–—:·|]?\s*(?:episodio|episode|cap[ií]tulo|cap|ep)\s*\d+\b""" +
+                """|\bT\s*\d+\s*E(?:p|pisodio)?\s*\d+\b""" +
+                """|\bS\s*\d+\s*E(?:p)?\s*\d+\b"""
+        )
+        val episodeOnly = Regex("""(?i)\b(?:episodio|episode|cap[ií]tulo|cap|ep)\s*\d+\b""")
+        val seasonOnly = Regex("""(?i)\b(?:temporada|season|temp)\s*\d+\b""")
 
         var clean = raw
-        if (clean.startsWith(series, ignoreCase = true)) {
-            clean = clean.substring(series.length).trim(' ', ':', '-', '·')
+        val marker = combined.findAll(clean).lastOrNull()
+        clean = when {
+            marker != null -> clean.substring(marker.range.last + 1)
+            else -> {
+                val ep = episodeOnly.findAll(clean).lastOrNull()
+                if (ep != null) {
+                    clean.substring(ep.range.last + 1)
+                } else {
+                    val season = seasonOnly.findAll(clean).lastOrNull()
+                    if (season != null) clean.substring(season.range.last + 1) else clean
+                }
+            }
         }
-        if (clean.matches(Regex("""(?i)temporada\s+\d+\s+episodio\s+\d+"""))) {
-            return fallback
+
+        for (name in listOf(series, "Busca Dioses")) {
+            if (name.isNotBlank()) {
+                clean = clean.replace(Regex(Regex.escape(name), RegexOption.IGNORE_CASE), " ")
+            }
         }
-        return clean.ifBlank { fallback }
+
+        clean = clean
+            .replace(Regex("""(?i)\b(?:temporada|season|temp)\s*\d+\b"""), " ")
+            .replace(Regex("""(?i)\b(?:episodio|episode|cap[ií]tulo|cap|ep)\s*\d+\b"""), " ")
+            .replace(Regex("""(?i)\b[TSE]\s*\d+(?:\s*[xE]\s*\d+)?\b"""), " ")
+            .replace(
+                Regex("""(?i)\b(?:completo|completa|en\s+español|español|latino|online|serie|nuevo\s+episodio|xiansear|ver)\b"""),
+                " "
+            )
+            .replace(Regex("""\s+"""), " ")
+            .trim(' ', ':', '-', '–', '—', '·', '|', '/', ',', '.', ';', '(', ')', '[', ']')
+
+        if (clean.isEmpty() || clean.matches(Regex("""\d+"""))) return null
+        return clean
     }
 
     private fun cleanTitle(raw: String?): String? {
@@ -1263,6 +1472,20 @@ class XiansearProvider : MainAPI() {
             else -> "$WEB/$value"
         }
     }
+
+    /**
+     * El CDN de Xiansear sirve el póster original si no se le pide tamaño.
+     * Para las tarjetas basta una variante webp de 300 px.
+     */
+    private fun assetVariant(url: String, width: Int): String {
+        if (!url.contains("base.xiansear.net/assets/")) return url
+        if (url.contains("?")) return url
+        return "$url?width=$width&quality=70&format=webp&fit=cover"
+    }
+
+    private fun posterVariant(url: String): String = assetVariant(url, 300)
+
+    private fun backgroundVariant(url: String): String = assetVariant(url, 1280)
 
     private fun imageUrl(element: Element?): String? {
         if (element == null) return null
