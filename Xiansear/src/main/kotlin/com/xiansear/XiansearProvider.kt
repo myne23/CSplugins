@@ -329,8 +329,8 @@ class XiansearProvider : MainAPI() {
             return newMovieLoadResponse(title, target, TvType.AnimeMovie, movieEpisodeUrl) {
                 posterUrl = poster
                 backgroundPosterUrl = poster
-                plot = plot
-                tags = tags
+                this.plot = plot
+                this.tags = tags
             }
         }
 
@@ -345,8 +345,8 @@ class XiansearProvider : MainAPI() {
         return newAnimeLoadResponse(title, target, TvType.Anime) {
             posterUrl = poster
             backgroundPosterUrl = poster
-            plot = plot
-            tags = tags
+            this.plot = plot
+            this.tags = tags
             showStatus = status
             addEpisodes(DubStatus.Subbed, episodes)
         }
@@ -773,7 +773,7 @@ class XiansearProvider : MainAPI() {
                     }
             }
 
-            val metadata = Regex(""""metadataUrl"\s*:\s*"([^"]+)"""")
+            val metadata = Regex(""""metadataUrl"\s*:\s*"([^"]+)""")
                 .find(text)?.groupValues?.getOrNull(1)
             if (!metadata.isNullOrBlank()) {
                 links.add(LinkSpec(
