@@ -451,7 +451,8 @@ class XiansearProvider : MainAPI() {
 
         val episodes = rows.map { row ->
             newEpisode(episodeUrl(slug, row), initializer = {
-                this.name = episodeName(title, row)
+                // Solo temporada y número: evita mostrar títulos reales en la lista.
+                this.name = null
                 this.episode = row.number
                 this.season = row.season
             })
@@ -500,10 +501,10 @@ class XiansearProvider : MainAPI() {
         val episodeId = info.id
         val wantsWyvern = sources.any { it.kind.equals("wyvern", true) } || sources.isEmpty()
         val wantsRumble = sources.any { it.url.contains("rumble", true) } || sources.isEmpty()
-        val dailymotionIds = sources
+        val dailymotionSources = sources
             .filter { it.url.contains("dailymotion", true) || it.url.contains("dai.ly", true) }
-            .mapNotNull { dailymotionId(it.url) }
-            .distinct()
+            .mapNotNull { source -> dailymotionId(source.url)?.let { id -> id to source.url } }
+            .distinctBy { it.first }
         val okRuUrls = sources
             .filter { it.url.contains("ok.ru", true) || it.url.contains("okru", true) }
             .map { it.url }
@@ -518,8 +519,8 @@ class XiansearProvider : MainAPI() {
             if (episodeId != null && wantsRumble) {
                 jobs.add(async { resolveRumble(episodeId) })
             }
-            dailymotionIds.forEach { id ->
-                jobs.add(async { resolveDailymotion(id) })
+            dailymotionSources.forEach { (id, playerUrl) ->
+                jobs.add(async { resolveDailymotion(id, playerUrl) })
             }
             okRuUrls.forEach { url ->
                 jobs.add(async { resolveOkRu(url, episodeUrl) })
@@ -815,33 +816,78 @@ class XiansearProvider : MainAPI() {
         return ResolvedSources(links, emptyList())
     }
 
-    private suspend fun resolveDailymotion(id: String): ResolvedSources {
+    private suspend fun resolveDailymotion(id: String, sourceUrl: String? = null): ResolvedSources {
         val links = ArrayList<LinkSpec>()
         try {
-            val headers = mapOf(
+            val playerUrl = sourceUrl
+                ?.trim()
+                ?.let { if (it.startsWith("//")) "https:$it" else it }
+                ?.takeIf { it.startsWith("http") }
+                ?: "https://geo.dailymotion.com/player/x1nsci.html?video=$id"
+
+            // El CDN de Dailymotion exige las cookies que entrega el reproductor
+            // (ts y v1st) además de un Referer de Dailymotion. Sin ambas cosas
+            // el manifiesto HLS responde 403.
+            var cookies = emptyMap<String, String>()
+            try {
+                val cookieSource = if (playerUrl.contains("dailymotion.com/player/")) {
+                    playerUrl
+                } else {
+                    "https://www.dailymotion.com/player/metadata/video/$id"
+                }
+                val playerResponse = app.get(
+                    cookieSource,
+                    headers = mapOf(
+                        "User-Agent" to UA,
+                        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Referer" to "$WEB/"
+                    ),
+                    timeout = 20L
+                )
+                cookies = playerResponse.cookies.filterValues { it.isNotBlank() }
+                log("DM PLAYER | HTTP ${playerResponse.code} | cookies=${cookies.keys.joinToString(",")} | $id")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("DM PLAYER ERROR | $id | ${e.javaClass.simpleName}: ${e.message}")
+            }
+
+            val cookieHeader = cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
+            val referer = if (playerUrl.contains("geo.dailymotion.com/player/")) {
+                playerUrl
+            } else {
+                "https://www.dailymotion.com/"
+            }
+            val apiHeaders = mutableMapOf(
                 "Accept" to "application/json",
                 "Origin" to "https://geo.dailymotion.com",
-                "Referer" to "https://geo.dailymotion.com/",
+                "Referer" to referer,
                 "X-Request-Origin" to "https://geo.dailymotion.com",
                 "User-Agent" to UA
             )
+            if (cookieHeader.isNotBlank()) apiHeaders["Cookie"] = cookieHeader
+
             val response = app.get(
                 "https://geo.dailymotion.com/videos/$id",
-                headers = headers,
+                headers = apiHeaders,
                 timeout = 20L
             )
             if (response.code in 200..299) {
                 val obj = JSONObject(response.text)
                 val streamUrl = obj.optJSONObject("stream")?.optString("url")?.trim().orEmpty()
                 if (streamUrl.isNotBlank()) {
+                    val linkHeaders = mutableMapOf(
+                        "Accept" to "*/*",
+                        "Referer" to referer,
+                        "Origin" to "https://geo.dailymotion.com",
+                        "User-Agent" to UA
+                    )
+                    if (cookieHeader.isNotBlank()) linkHeaders["Cookie"] = cookieHeader
                     links.add(LinkSpec(
                         label = "Dailymotion",
                         url = streamUrl,
                         type = ExtractorLinkType.M3U8,
-                        headers = mapOf(
-                            "Referer" to "https://geo.dailymotion.com/",
-                            "Origin" to "https://geo.dailymotion.com"
-                        )
+                        headers = linkHeaders
                     ))
                 }
             } else {
@@ -1376,59 +1422,6 @@ class XiansearProvider : MainAPI() {
 
     private fun episodeUrl(slug: String, episode: RawEpisode): String =
         "$WEB/ver/donghua/$slug/temporada-${episode.season}-episodio-${episode.number}"
-
-    /**
-     * Devuelve solo el título real del capítulo. Si el texto únicamente
-     * repite temporada/episodio, devuelve null para que CloudStream muestre
-     * la numeración limpia ("T1 E1") sin duplicarla.
-     */
-    private fun episodeName(series: String, episode: RawEpisode): String? {
-        val raw = episode.title?.trim().orEmpty()
-        if (raw.isEmpty()) return null
-
-        val combined = Regex(
-            """(?i)\b(?:temporada|season|temp)\s*\d+\s*[-–—:·|]?\s*(?:episodio|episode|cap[ií]tulo|cap|ep)\s*\d+\b""" +
-                """|\bT\s*\d+\s*E(?:p|pisodio)?\s*\d+\b""" +
-                """|\bS\s*\d+\s*E(?:p)?\s*\d+\b"""
-        )
-        val episodeOnly = Regex("""(?i)\b(?:episodio|episode|cap[ií]tulo|cap|ep)\s*\d+\b""")
-        val seasonOnly = Regex("""(?i)\b(?:temporada|season|temp)\s*\d+\b""")
-
-        var clean = raw
-        val marker = combined.findAll(clean).lastOrNull()
-        clean = when {
-            marker != null -> clean.substring(marker.range.last + 1)
-            else -> {
-                val ep = episodeOnly.findAll(clean).lastOrNull()
-                if (ep != null) {
-                    clean.substring(ep.range.last + 1)
-                } else {
-                    val season = seasonOnly.findAll(clean).lastOrNull()
-                    if (season != null) clean.substring(season.range.last + 1) else clean
-                }
-            }
-        }
-
-        for (name in listOf(series, "Busca Dioses")) {
-            if (name.isNotBlank()) {
-                clean = clean.replace(Regex(Regex.escape(name), RegexOption.IGNORE_CASE), " ")
-            }
-        }
-
-        clean = clean
-            .replace(Regex("""(?i)\b(?:temporada|season|temp)\s*\d+\b"""), " ")
-            .replace(Regex("""(?i)\b(?:episodio|episode|cap[ií]tulo|cap|ep)\s*\d+\b"""), " ")
-            .replace(Regex("""(?i)\b[TSE]\s*\d+(?:\s*[xE]\s*\d+)?\b"""), " ")
-            .replace(
-                Regex("""(?i)\b(?:completo|completa|en\s+español|español|latino|online|serie|nuevo\s+episodio|xiansear|ver)\b"""),
-                " "
-            )
-            .replace(Regex("""\s+"""), " ")
-            .trim(' ', ':', '-', '–', '—', '·', '|', '/', ',', '.', ';', '(', ')', '[', ']')
-
-        if (clean.isEmpty() || clean.matches(Regex("""\d+"""))) return null
-        return clean
-    }
 
     private fun cleanTitle(raw: String?): String? {
         val value = raw?.trim().orEmpty()
