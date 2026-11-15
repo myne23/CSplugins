@@ -546,15 +546,22 @@ class XiansearProvider : MainAPI() {
             }
             for (link in result.links) {
                 if (!link.url.startsWith("http") || !seenLinks.add(link.url)) continue
+                val linkReferer = link.headers.entries
+                    .firstOrNull { it.key.equals("Referer", true) }
+                    ?.value
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "$WEB/"
+                val linkHeaders = mapOf("User-Agent" to UA) +
+                    link.headers.filterKeys { !it.equals("Referer", true) }
                 callback(newExtractorLink(
                     source = name,
                     name = "$name · ${link.label}",
                     url = link.url,
                     type = link.type
                 ) {
-                    referer = "$WEB/"
+                    referer = linkReferer
                     quality = Qualities.Unknown.value
-                    headers = mapOf("User-Agent" to UA) + link.headers
+                    headers = linkHeaders
                 })
                 emitted++
                 log("LINK | ${link.label} | ${short(link.url)}")
