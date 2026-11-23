@@ -229,8 +229,21 @@ class MonosChinosProvider : MainAPI() {
                 ?.let { cleanText(it) }
                 ?.takeIf { it.isNotBlank() }
                 ?: continue
-            val title = Regex("""\s*cap[ií]tulo\s*(\d+)\s*$""", OPT_I)
-                .replace(rawTitle) { " · Episodio ${it.groupValues[1]}" }
+
+            val epSlug = url.substringAfterLast("/")
+            val number = Regex("""-episodio-(\d+)(?:-\d+)?$""", OPT_I)
+                .find(epSlug)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: Regex("""cap[ií]tulo\s*(\d+)""", OPT_I)
+                    .find(rawTitle)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: continue
+            val seriesSlug = epSlug
+                .replace(Regex("""-episodio-\d+(?:-\d+)?$""", OPT_I), "")
+                .removeSuffix("-sub-espanol")
+            val seriesUrl = "$mainUrl/anime/$seriesSlug-sub-espanol"
+            val baseTitle = rawTitle
+                .replace(Regex("""\s*cap[ií]tulo\s*\d+\s*$""", OPT_I), "")
+                .trim()
+            val title = "$baseTitle - Episodio $number"
 
             val poster = (RX_DATA_SRC.find(article)?.groupValues?.getOrNull(1)
                 ?: RX_IMG_SRC.find(article)?.groupValues?.getOrNull(1))
@@ -238,8 +251,9 @@ class MonosChinosProvider : MainAPI() {
                 ?.takeIf { !it.contains("capblank", true) }
 
             out.add(
-                newAnimeSearchResponse(title, url, TvType.Anime) {
+                newAnimeSearchResponse(title, seriesUrl, TvType.Anime) {
                     this.posterUrl = poster
+                    addDubStatus(DubStatus.Subbed, number)
                 }
             )
         }
