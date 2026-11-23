@@ -735,8 +735,14 @@ class MegadedeProvider : MainAPI() {
 
         val isStreamwish = displayName.equals("Streamwish", ignoreCase = true)
 
+        // hglink.to ya no es un streamwish directo: su loader salta a mirrors
+        // que el extractor viejo de CloudStream no conoce. Lo mandamos por el
+        // dominio streamwish.to para que entre en StreamWishExtractor (que
+        // tiene fallback con WebView y sigue el redirect JavaScript).
+        val extractorUrl = if (isStreamwish) normalizeStreamwishUrl(realUrl) else realUrl
+
         try {
-            val completed = withTimeoutOrNull(20000L) {
+            val completed = withTimeoutOrNull(30000L) {
                 val streamwishLinks = java.util.Collections.synchronizedList(
                     mutableListOf<ExtractorLink>()
                 )
@@ -762,7 +768,7 @@ class MegadedeProvider : MainAPI() {
                 }
 
                 loadExtractor(
-                    realUrl,
+                    extractorUrl,
                     serverUrl,
                     subtitleCallback,
                     extractorCallback
@@ -770,7 +776,7 @@ class MegadedeProvider : MainAPI() {
 
                 if (isStreamwish) {
                     if (streamwishLinks.isEmpty()) {
-                        callback(newExtractorLink(displayName, labeledName, realUrl))
+                        callback(newExtractorLink(displayName, labeledName, extractorUrl))
                         found.set(true)
                     } else {
                         val snapshot = streamwishLinks.toList()
@@ -807,14 +813,14 @@ class MegadedeProvider : MainAPI() {
             }
 
             if (completed == null) {
-                logd { "LINKS EXTRACTOR TIMEOUT: name=$displayName limite=20000ms" }
+                logd { "LINKS EXTRACTOR TIMEOUT: name=$displayName limite=30000ms" }
             }
         } catch (e: Exception) {
             e.rethrowIfCancelled()
-            Log.e(TAG, "LINKS loadExtractor ERROR: name=$displayName url=$realUrl", e)
+            Log.e(TAG, "LINKS loadExtractor ERROR: name=$displayName url=$extractorUrl", e)
 
             try {
-                callback(newExtractorLink(displayName, labeledName, realUrl))
+                callback(newExtractorLink(displayName, labeledName, extractorUrl))
                 found.set(true)
             } catch (fallbackError: Exception) {
                 fallbackError.rethrowIfCancelled()
@@ -863,6 +869,28 @@ class MegadedeProvider : MainAPI() {
             ?.groupValues
             ?.getOrNull(1)
             ?.let { absoluteUrl(it) }
+    }
+
+    /**
+     * hglink.to / hgcloud.to son dominios "redirect" de Streamwish: el loader
+     * elige un mirror al azar que el extractor de CloudStream no reconoce.
+     * Reescribimos a streamwish.to, que sí entra en StreamWishExtractor y
+     * resuelve el redirect con WebView.
+     */
+    private fun normalizeStreamwishUrl(url: String): String {
+        if (url.contains("streamwish.to", ignoreCase = true)) return url
+
+        val id = when {
+            url.contains("/e/", ignoreCase = true) ->
+                url.substringAfter("/e/", "").substringBefore("?").substringBefore("#").trim('/')
+
+            url.contains("/f/", ignoreCase = true) ->
+                url.substringAfter("/f/", "").substringBefore("?").substringBefore("#").trim('/')
+
+            else -> ""
+        }
+
+        return if (id.isBlank()) url else "https://streamwish.to/e/$id"
     }
 
     // ======================================================================
