@@ -29,6 +29,7 @@ import javax.crypto.spec.SecretKeySpec
 
 private const val DEBUG = true
 private const val TAG = "MonosChinos"
+private const val LATEST = "latest"
 
 private const val UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -148,12 +149,11 @@ class MonosChinosProvider : MainAPI() {
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
+        LATEST to "Últimos episodios",
         "$mainUrl/emision" to "En emisión",
         "$mainUrl/animes" to "Catálogo",
         "$mainUrl/genero/accion" to "Acción",
-        "$mainUrl/genero/drama" to "Drama",
-        "$mainUrl/genero/comedia" to "Comedia",
-        "$mainUrl/genero/ciencia-ficcion" to "Ciencia Ficción"
+        "$mainUrl/genero/comedia" to "Comedia"
     )
 
     private val siteHeaders: Map<String, String>
@@ -213,9 +213,56 @@ class MonosChinosProvider : MainAPI() {
         return out
     }
 
+    private fun parseEpisodeCards(html: String): List<SearchResponse> {
+        val out = ArrayList<SearchResponse>()
+        val seen = HashSet<String>()
+
+        for (match in RX_ARTICLE.findAll(html)) {
+            val article = match.groupValues[1]
+            val href = RX_HREF_ANY.find(article)?.groupValues?.getOrNull(1) ?: continue
+            if (!href.contains("/ver/", true)) continue
+
+            val url = absoluteUrl(href)
+            if (!seen.add(url)) continue
+
+            val rawTitle = RX_ALT.find(article)?.groupValues?.getOrNull(1)
+                ?.let { cleanText(it) }
+                ?.takeIf { it.isNotBlank() }
+                ?: continue
+            val title = Regex("""\s*cap[ií]tulo\s*(\d+)\s*$""", OPT_I)
+                .replace(rawTitle) { " · Episodio ${it.groupValues[1]}" }
+
+            val poster = (RX_DATA_SRC.find(article)?.groupValues?.getOrNull(1)
+                ?: RX_IMG_SRC.find(article)?.groupValues?.getOrNull(1))
+                ?.let { cleanText(it) }
+                ?.takeIf { !it.contains("capblank", true) }
+
+            out.add(
+                newAnimeSearchResponse(title, url, TvType.Anime) {
+                    this.posterUrl = poster
+                }
+            )
+        }
+
+        log { "parseEpisodeCards -> ${out.size}" }
+        return out
+    }
+
     /* ------------------------------ HOME ------------------------------ */
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        if (request.data == LATEST) {
+            val items = try {
+                parseEpisodeCards(app.get(mainUrl, headers = siteHeaders, timeout = 20).text)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log { "HOME ERROR ${request.name}: ${e.message}" }
+                emptyList()
+            }
+            return newHomePageResponse(request.name, items, hasNext = false)
+        }
+
         val base = request.data.ifBlank { mainUrl }
         val url = if (page > 1) {
             if (base.contains("?")) "$base&p=$page" else "$base?p=$page"
