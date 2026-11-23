@@ -127,10 +127,18 @@ class MegadedeProvider : MainAPI() {
         }
 
         // Embed69
+        // Formato actual: la clave AES es SHA256(LINK_CHALLENGE + LINK_SALT).
+        // Ya no hay PoW, pero se conserva el esquema antiguo como fallback.
+        private val RX_LINK_CHALLENGE = Regex(
+            """LINK_CHALLENGE\s*=\s*['"]([^'"]+)['"]""", OPT_I
+        )
+        private val RX_LINK_SALT = Regex("""LINK_SALT\s*=\s*['"]([^'"]+)['"]""", OPT_I)
         private val RX_POW_CHALLENGE = Regex("""POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]""", OPT_I)
         private val RX_POW_SALT = Regex("""POW_SALT\s*=\s*['"]([^'"]+)['"]""", OPT_I)
         private val RX_POW_DIFFICULTY = Regex("""POW_DIFFICULTY\s*=\s*(\d+)""", OPT_I)
-        private val RX_DATA_LINK = Regex("""let\s+dataLink\s*=\s*(\[[\s\S]*?\]);""", OPT_I)
+        private val RX_DATA_LINK = Regex(
+            """(?:let|const|var)\s+dataLink\s*=\s*(\[[\s\S]*?\]);""", OPT_I
+        )
 
         // Voe
         private val RX_VOE_REDIRECT = Regex(
@@ -954,28 +962,38 @@ class MegadedeProvider : MainAPI() {
 
         val html = response.text
 
-        val challenge = RX_POW_CHALLENGE.find(html)?.groupValues?.getOrNull(1)
-            ?: return emptyList()
-
-        val salt = RX_POW_SALT.find(html)?.groupValues?.getOrNull(1)
-            ?: return emptyList()
-
-        val difficulty = RX_POW_DIFFICULTY.find(html)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
-            ?: 3
-
         val dataLinkText = RX_DATA_LINK.find(html)?.groupValues?.getOrNull(1)
             ?: return emptyList()
 
-        val nonce = withContext(Dispatchers.Default) {
-            solvePow(challenge, difficulty)
+        // El sitio pasó de PoW (POW_CHALLENGE + nonce + POW_SALT) a una clave
+        // directa (LINK_CHALLENGE + LINK_SALT). Si no reconocemos ninguno,
+        // devolvemos vacío en vez de descifrar con una clave inventada.
+        val key: ByteArray = run {
+            val linkChallenge = RX_LINK_CHALLENGE.find(html)?.groupValues?.getOrNull(1)
+            val linkSalt = RX_LINK_SALT.find(html)?.groupValues?.getOrNull(1)
+
+            if (!linkChallenge.isNullOrBlank() && !linkSalt.isNullOrBlank()) {
+                logd { "Embed69 clave directa: LINK_CHALLENGE + LINK_SALT" }
+                sha256Bytes("$linkChallenge$linkSalt")
+            } else {
+                val challenge = RX_POW_CHALLENGE.find(html)?.groupValues?.getOrNull(1)
+                    ?: return emptyList()
+                val salt = RX_POW_SALT.find(html)?.groupValues?.getOrNull(1)
+                    ?: return emptyList()
+                val difficulty = RX_POW_DIFFICULTY.find(html)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.toIntOrNull()
+                    ?: 3
+
+                val nonce = withContext(Dispatchers.Default) {
+                    solvePow(challenge, difficulty)
+                }
+
+                logd { "Embed69 PoW nonce=$nonce difficulty=$difficulty" }
+                sha256Bytes("$challenge$nonce$salt")
+            }
         }
-
-        logd { "Embed69 PoW nonce=$nonce difficulty=$difficulty" }
-
-        val key = sha256Bytes("$challenge$nonce$salt")
 
         val array = JSONArray(dataLinkText)
         val results = ArrayList<Triple<String, String, String>>()
@@ -1004,7 +1022,14 @@ class MegadedeProvider : MainAPI() {
                     continue
                 }
 
-                results.add(Triple(serverName, language, decrypted))
+                // El player del sitio quita backticks y espacios al texto descifrado.
+                results.add(
+                    Triple(
+                        serverName,
+                        language,
+                        decrypted.replace("`", "").trim()
+                    )
+                )
             }
         }
 
@@ -1238,7 +1263,14 @@ class MegadedeProvider : MainAPI() {
                     headers = mapOf(
                         "User-Agent" to USER_AGENT,
                         "Referer" to realUrl,
-                        "Origin" to "https://katherineschoolphone.com",
+                        // El dominio de Voe cambia entre redirects: el Origin debe
+                        // ser el de la página real que resolvió el challenge.
+                        "Origin" to try {
+                            val uri = java.net.URL(realUrl)
+                            "${uri.protocol}://${uri.host}"
+                        } catch (e: Exception) {
+                            realUrl.substringBefore("/")
+                        },
                         "Cookie" to voeCookies,
                         "Content-Type" to "application/x-www-form-urlencoded"
                     ),

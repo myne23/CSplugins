@@ -2,7 +2,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1")
 }
 
-version = 1
+version = 2
 
 cloudstream {
     description = "Megadede provider"
@@ -12,7 +12,8 @@ cloudstream {
 
     tvTypes = listOf(
         "Movie",
-        "TvSeries"
+        "TvSeries",
+        "Anime"
     )
 
     requiresResources = false
