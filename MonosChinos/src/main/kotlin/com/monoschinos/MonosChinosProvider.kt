@@ -119,48 +119,6 @@ private fun cleanText(value: String): String =
         .replace(RX_SPACES, " ")
         .trim()
 
-private fun parseCards(html: String): List<SearchResponse> {
-    val out = ArrayList<SearchResponse>()
-    val seen = HashSet<String>()
-
-    for (match in RX_ARTICLE.findAll(html)) {
-        val article = match.groupValues[1]
-        val href = RX_HREF_ANIME.find(article)?.groupValues?.getOrNull(1)
-            ?: RX_HREF_ANY.find(article)?.groupValues?.getOrNull(1)
-            ?: continue
-        if (!href.contains("/anime/", true)) continue
-
-        val url = when {
-            href.startsWith("http", true) -> href
-            href.startsWith("//") -> "https:$href"
-            href.startsWith("/") -> "https://monoschinos.st$href"
-            else -> "https://monoschinos.st/$href"
-        }
-        if (!seen.add(url)) continue
-
-        val title = RX_ALT.find(article)?.groupValues?.getOrNull(1)
-            ?.let { cleanText(it) }
-            ?.takeIf { it.isNotBlank() && !it.equals("anime", true) }
-            ?: RX_HEADING.find(article)?.groupValues?.get(1)?.let { cleanText(it) }
-            ?: continue
-        if (title.isBlank()) continue
-
-        val poster = (RX_DATA_SRC.find(article)?.groupValues?.getOrNull(1)
-            ?: RX_IMG_SRC.find(article)?.groupValues?.getOrNull(1))
-            ?.let { cleanText(it) }
-            ?.takeIf { !it.contains("capblank", true) && !it.endsWith("anime.png", true) }
-
-        out.add(
-            newAnimeSearchResponse(title, url, TvType.Anime) {
-                this.posterUrl = poster
-            }
-        )
-    }
-
-    log { "parseCards -> ${out.size}" }
-    return out
-}
-
 private class LinkSink(private val callback: (ExtractorLink) -> Unit) {
     private val seen = ConcurrentHashMap.newKeySet<String>()
     private val lock = Any()
@@ -212,6 +170,48 @@ class MonosChinosProvider : MainAPI() {
             "Accept" to "application/json, text/plain, */*",
             "X-Requested-With" to "XMLHttpRequest"
         )
+
+    private fun parseCards(html: String): List<SearchResponse> {
+        val out = ArrayList<SearchResponse>()
+        val seen = HashSet<String>()
+
+        for (match in RX_ARTICLE.findAll(html)) {
+            val article = match.groupValues[1]
+            val href = RX_HREF_ANIME.find(article)?.groupValues?.getOrNull(1)
+                ?: RX_HREF_ANY.find(article)?.groupValues?.getOrNull(1)
+                ?: continue
+            if (!href.contains("/anime/", true)) continue
+
+            val url = when {
+                href.startsWith("http", true) -> href
+                href.startsWith("//") -> "https:$href"
+                href.startsWith("/") -> "https://monoschinos.st$href"
+                else -> "https://monoschinos.st/$href"
+            }
+            if (!seen.add(url)) continue
+
+            val title = RX_ALT.find(article)?.groupValues?.getOrNull(1)
+                ?.let { cleanText(it) }
+                ?.takeIf { it.isNotBlank() && !it.equals("anime", true) }
+                ?: RX_HEADING.find(article)?.groupValues?.get(1)?.let { cleanText(it) }
+                ?: continue
+            if (title.isBlank()) continue
+
+            val poster = (RX_DATA_SRC.find(article)?.groupValues?.getOrNull(1)
+                ?: RX_IMG_SRC.find(article)?.groupValues?.getOrNull(1))
+                ?.let { cleanText(it) }
+                ?.takeIf { !it.contains("capblank", true) && !it.endsWith("anime.png", true) }
+
+            out.add(
+                newAnimeSearchResponse(title, url, TvType.Anime) {
+                    this.posterUrl = poster
+                }
+            )
+        }
+
+        log { "parseCards -> ${out.size}" }
+        return out
+    }
 
     /* ------------------------------ HOME ------------------------------ */
 
@@ -845,7 +845,7 @@ class MonosChinosProvider : MainAPI() {
                 ) {
                     referer = pageUrl
                     quality = actualQuality
-                    headers = streamHeaders
+                    this.headers = streamHeaders
                 }
             )
             log { "Byse resuelto host=${URI(streamUrl).host}" }
